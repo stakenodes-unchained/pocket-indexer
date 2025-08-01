@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"  # Only bind to localhost
+    volumes:
+      - redis-data:/data
+    command: >
+      redis-server 
+      --appendonly yes 
+      --save 900 1 
+      --save 300 10 
+      --save 60 10000 
+      --maxmemory 2gb 
+      --maxmemory-policy volatile-lru 
+      --loglevel warning 
+      --tcp-keepalive 300 
+      --lazyfree-lazy-eviction yes
+      --replicaof no one
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+    networks:
+      - default
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: somestringpassword
+      POSTGRES_DB: pocket_indexer
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - default
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-3005}:3005"
+    env_file:
+      - .env
+    environment:
+      - RPC_ENDPOINTS=${RPC_ENDPOINTS}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - PORT=${PORT:-3005}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_DB=${REDIS_DB:-0}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
+      - HISTORICAL_BATCH_SIZE=${HISTORICAL_BATCH_SIZE:-50}
+      - HISTORY_CACHE_TTL=${HISTORY_CACHE_TTL:-3600}  # Cache TTL for historical data (1 hour default)
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+    networks:
+      - default
+
+volumes:
+  redis-data:
+  pg-data: 
