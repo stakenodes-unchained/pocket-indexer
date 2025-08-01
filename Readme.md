@@ -170,15 +170,15 @@ Optional: Add an AI-powered **GraphQL query assistant** inside devtools or dashb
 
 ### Phase 1: Foundation
 
-* [ ] Set up PostgreSQL schema using GPT
-* [ ] Set up Hasura with schema exposure
-* [ ] Create a basic Pocket RPC fetcher script
+* [x] Set up PostgreSQL schema using GPT
+* [x] Set up Hasura with schema exposure
+* [x] Create a basic Pocket RPC fetcher script
 
 ### Phase 2: Data Indexing Engine
 
-* [ ] Build a loop to index block-by-block
-* [ ] Use LLM to help generate transformation code
-* [ ] Insert into DB with basic error handling
+* [x] Build a loop to index block-by-block
+* [x] Use LLM to help generate transformation code
+* [x] Insert into DB with basic error handling
 
 ### Phase 3: Validation + Frontend
 
@@ -188,35 +188,8 @@ Optional: Add an AI-powered **GraphQL query assistant** inside devtools or dashb
 
 ### Phase 4: Optimization
 
-* [ ] Add retry, deduplication, and batch indexing
+* [x] Add retry, deduplication, and batch indexing
 * [ ] Use cron + health checks
 * [ ] Add AI-powered dashboard alerts
 
 ---
-
-## 🧪 Example: Generate Transformation Logic from Pocket Block
-
-> "Given this JSON structure from a Pocket Network block, generate a JavaScript function that extracts block height, hash, timestamp, proposer, and transaction list for insertion into a PostgreSQL table."
-
-The model can respond with:
-
-```ts
-function transformBlock(rawBlock) {
-  return {
-    id: rawBlock.hash,
-    height: rawBlock.header.height,
-    hash: rawBlock.hash,
-    timestamp: new Date(rawBlock.header.time),
-    proposer: rawBlock.header.proposer_address,
-    transactions: rawBlock.txs.map(tx => ({
-      hash: tx.hash,
-      sender: tx.sender,
-      recipient: tx.recipient,
-      amount: tx.amount,
-      type: tx.type,
-      status: tx.status,
-      timestamp: new Date(tx.timestamp),
-    }))
-  };
-}
-```
