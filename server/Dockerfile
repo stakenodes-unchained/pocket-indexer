@@ -27,6 +27,6 @@ USER node
 
 # Expose the port your app runs on
 EXPOSE 3005
-
+RUN npm run migrate
 # Command to run the server
 CMD ["node", "index.js"]
