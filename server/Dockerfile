@@ -32,7 +32,7 @@ RUN chown -R node:node .
 USER node
 
 # Expose the port your app runs on
-EXPOSE 3005
+EXPOSE 3006
 
 # Command to run the startup script
 CMD ["./start.sh"]

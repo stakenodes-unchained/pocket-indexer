@@ -91,22 +91,22 @@ npm start
 
 ```bash
 # Get transactions from a specific chain (paginated)
-curl http://localhost:3005/api/v1/transactions?chain=shannon&page=1&limit=10
+curl http://localhost:3006/api/v1/transactions?chain=shannon&page=1&limit=10
 
 # Get transaction count for all chains
-curl http://localhost:3005/api/v1/transactions/count
+curl http://localhost:3006/api/v1/transactions/count
 
 # Get transaction count for a specific chain (returns historical data)
-curl http://localhost:3005/api/v1/transactions/count?chain=shannon
+curl http://localhost:3006/api/v1/transactions/count?chain=shannon
 
 # Get a specific transaction
-curl http://localhost:3005/api/v1/transactions/{TRANSACTION_HASH}
+curl http://localhost:3006/api/v1/transactions/{TRANSACTION_HASH}
 
 # Get available chains
-curl http://localhost:3005/api/v1/chains
+curl http://localhost:3006/api/v1/chains
 
 # Get chain statistics
-curl http://localhost:3005/api/v1/chains/stats
+curl http://localhost:3006/api/v1/chains/stats
 ```
 
 ## Performance Considerations
