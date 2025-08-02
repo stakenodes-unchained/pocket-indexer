@@ -47,13 +47,29 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
   // Extract transactions from the block data
   const rawTxs = blockData.block?.data?.txs || blockData.sdk_block?.data?.txs || [];
 
-  // Save block in DB
-  await client.query(
-    `INSERT INTO blocks (id, height, hash, timestamp, proposer)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (id) DO NOTHING`,
-    [blockId, height, hash, timestamp, proposer]
-  );
+  // Save block in DB with conflict handling
+  try {
+    const result = await client.query(
+      `INSERT INTO blocks (id, height, hash, timestamp, proposer, chain)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (chain, height) DO NOTHING
+       RETURNING id`,
+      [blockId, height, hash, timestamp, proposer, chain]
+    );
+
+    // If no rows were inserted, the block already exists
+    if (result.rows.length === 0) {
+      console.log(`Block at height ${height} for chain ${chain} already exists, skipping...`);
+      return null;
+    }
+  } catch (error) {
+    // Handle unique constraint violation on chain and height
+    if (error.code === '23505' && error.constraint === 'blocks_chain_height_key') {
+      console.log(`Block at height ${height} for chain ${chain} already exists, skipping...`);
+      return null;
+    }
+    throw error;
+  }
 
   // Process and save transactions
   const processedTxs = [];
@@ -280,12 +296,16 @@ async function saveClaim(claim) {
 }
 
 /**
- * Get the last processed block height from the database
+ * Get the last processed block height from the database for a specific chain
+ * @param {string} chain Chain name
  * @returns {Promise<number>}
  */
-async function getLastProcessedHeight() {
+async function getLastProcessedHeight(chain) {
   await connectClients();
-  const res = await pgClient.query('SELECT MAX(height) as max FROM blocks');
+  const res = await pgClient.query(
+    'SELECT MAX(height) as max FROM blocks WHERE chain = $1',
+    [chain]
+  );
   return res.rows[0].max ? parseInt(res.rows[0].max, 10) : 0;
 }
 

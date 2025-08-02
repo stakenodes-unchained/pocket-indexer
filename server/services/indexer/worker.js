@@ -40,6 +40,13 @@ async function processBlock(blockData) {
 
     // Save block to database
     let block = await saveBlock(blockData, rpcName, rpcUrl);
+    
+    // If block already exists, skip processing
+    if (!block) {
+      console.log(`[Worker ${workerData.id}] Block already exists, skipping processing`);
+      return;
+    }
+    
     for (const tx of block.transactions) {
       try {
         // Parse and save entities based on transaction type
@@ -93,7 +100,7 @@ async function processBlock(blockData) {
 
 async function syncHistoricalBlocks() {
   log('Starting historical block sync...');
-  let currentHeight = await getLastProcessedHeight();
+  let currentHeight = await getLastProcessedHeight(rpcName);
   const latestBlock = await fetchLatestBlock(rpcUrl);
   const latestHeight = parseInt(latestBlock.block.header.height, 10);
 
@@ -106,7 +113,7 @@ async function syncHistoricalBlocks() {
 
 async function monitorNewBlocks() {
   log('Starting new block monitor...');
-  let lastProcessedHeight = await getLastProcessedHeight();
+  let lastProcessedHeight = await getLastProcessedHeight(rpcName);
 
   setInterval(async () => {
     try {

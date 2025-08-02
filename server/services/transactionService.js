@@ -274,16 +274,16 @@ class TransactionService {
         );
         const txCount = parseInt(txCountResult.rows[0].total, 10);
         
-        // Get latest block height from blocks table
+        // Get latest block height from blocks table for this chain
         const latestHeightResult = await this.pgClient.query(
-          'SELECT MAX(height) as max_height FROM blocks',
-          []
+          'SELECT MAX(height) as max_height FROM blocks WHERE chain = $1',
+          [chainName]
         );
         const latestHeight = latestHeightResult.rows[0].max_height || 0;
         
         // Get processed height (latest transaction timestamp converted to approximate height)
         const processedHeightResult = await this.pgClient.query(
-          'SELECT MAX(b.height) as latest_height FROM transactions t JOIN blocks b ON t.block_id = b.id WHERE t.chain = $1',
+          'SELECT MAX(b.height) as latest_height FROM transactions t JOIN blocks b ON t.block_id = b.id WHERE t.chain = $1 AND b.chain = $1',
           [chainName]
         );
         const processedHeight = processedHeightResult.rows[0].latest_height || 0;
