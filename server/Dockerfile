@@ -1,6 +1,9 @@
 # Use the official Node.js image as base
 FROM node:18
 
+# Install PostgreSQL client tools
+RUN apt-get update && apt-get install -y postgresql-client && rm -rf /var/lib/apt/lists/*
+
 # Set the working directory inside the container
 WORKDIR /usr/src/app
 
@@ -12,6 +15,9 @@ RUN npm install --legacy-peer-deps
 
 # Copy the rest of the application code to the working directory
 COPY . .
+
+# Make the startup script executable
+RUN chmod +x start.sh
 
 # Set Node.js environment to production
 ENV NODE_ENV=production
@@ -27,6 +33,6 @@ USER node
 
 # Expose the port your app runs on
 EXPOSE 3005
-RUN npm run migrate
-# Command to run the server
-CMD ["node", "index.js"]
+
+# Command to run the startup script
+CMD ["./start.sh"]
