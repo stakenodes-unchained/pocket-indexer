@@ -94,7 +94,8 @@ class TransactionWorkerPool {
         workerData: {
           rpcName,
           rpcUrl,
-          batchSize: this.batchSize
+          batchSize: this.batchSize,
+          id: rpcName
         }
       });
 
