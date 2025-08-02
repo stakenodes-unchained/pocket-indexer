@@ -58,7 +58,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${PORT:-3005}:3005"
+      - "127.0.0.1:3005:3005"
     env_file:
       - .env
     environment:
