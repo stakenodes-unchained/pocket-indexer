@@ -54,6 +54,7 @@ services:
       - default
 
   api:
+    container_name: pocket_indexer_api
     build:
       context: .
       dockerfile: Dockerfile
