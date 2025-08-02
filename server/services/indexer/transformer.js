@@ -21,11 +21,12 @@ function extractTransactionDetails(txResponse, blockTimestamp) {
   const tx = txResponse.tx;
   const txResult = txResponse.tx_response || txResponse;
   
+  
   // Extract basic info
   const details = {
     hash: txResult.txhash || txResult.hash,
     height: txResult.height,
-    status: txResult.code === 0 ? 'success' : 'failed',
+    status: txResult.code === 0,
     timestamp: txResult.timestamp || blockTimestamp,
     gas_wanted: txResult.gas_wanted,
     gas_used: txResult.gas_used,
@@ -33,8 +34,6 @@ function extractTransactionDetails(txResponse, blockTimestamp) {
     memo: tx?.body?.memo || '',
     messages: tx?.body?.messages || [],
     signatures: tx?.signatures || [],
-    // Store the full transaction data as JSON
-    tx_data: JSON.stringify(txResponse)
   };
 
   // Extract sender from first signer

@@ -20,11 +20,13 @@ app.use(cors());
 app.get('/api/v1/transactions', async (req, res) => {
   try {
     const { page, limit, chain } = req.query;
+    // console.log(page, limit, chain);
     const transactions = await transactionService.getTransactions({
       page,
       limit,
       chain
     });
+    // console.log(transactions);
     res.json(transactions);
   } catch (error) {
     console.error('Error fetching transactions:', error);

@@ -97,7 +97,8 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
             timestamp: rpcDetails.timestamp || timestamp,
             messages: rpcDetails.messages || [],
             gas_wanted: rpcDetails.gas_wanted || '0',
-            gas_used: rpcDetails.gas_used || '0'
+            gas_used: rpcDetails.gas_used || '0',
+            tx_data: JSON.stringify(txResponse)
           };
           // Save transaction with classification
           await saveTransaction({

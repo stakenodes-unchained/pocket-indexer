@@ -85,7 +85,8 @@ class TransactionService {
       
       // Get transactions for the page (ordered by timestamp descending)
       const transactionsResult = await this.pgClient.query(
-        `SELECT * FROM transactions 
+        `SELECT t.id, t.hash, t.block_id, t.sender, t.recipient, t.amount, t.fee, t.memo, t.type, t.status, t.chain, t.timestamp, b.height as block_height FROM transactions as t
+         JOIN blocks as b ON t.block_id = b.id
          WHERE chain = $1 
          ORDER BY timestamp DESC 
          LIMIT $2 OFFSET $3`,

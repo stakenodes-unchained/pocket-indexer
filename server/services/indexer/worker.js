@@ -94,7 +94,6 @@ async function processBlock(blockData) {
 async function syncHistoricalBlocks() {
   log('Starting historical block sync...');
   let currentHeight = await getLastProcessedHeight();
-  currentHeight = 129970
   const latestBlock = await fetchLatestBlock(rpcUrl);
   const latestHeight = parseInt(latestBlock.block.header.height, 10);
 

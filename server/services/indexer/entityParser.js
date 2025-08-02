@@ -21,21 +21,21 @@ function classifyTransaction(tx) {
     var msgType = msg['@type'];
     
     // Pocket-specific messages
-    if (msgType?.startsWith('/pocket.supplier.')) return 'supplier';
-    if (msgType?.startsWith('/pocket.app.')) return 'application';
-    if (msgType?.startsWith('/pocket.pos.')) return 'node';
-    if (msgType?.startsWith('/pocket.relay.')) return 'relay';
-    if (msgType?.startsWith('/pocket.bank.')) return 'bank';
-    if (msgType?.startsWith('/pocket.proof.')) return 'proof';
-    if (msgType?.startsWith('/pocket.service.')) return 'service';
+    if (msgType?.startsWith('/pocket.supplier.')) return `${msgType.split('.')[2]} (supplier)`;
+    if (msgType?.startsWith('/pocket.app.')) return `${msgType.split('.')[2]} (application)`;
+    if (msgType?.startsWith('/pocket.pos.')) return `${msgType.split('.')[2]} (node)`;
+    if (msgType?.startsWith('/pocket.relay.')) return `${msgType.split('.')[2]} (relay)`;
+    if (msgType?.startsWith('/pocket.bank.')) return `${msgType.split('.')[2]} (bank)`;
+    if (msgType?.startsWith('/pocket.proof.')) return `${msgType.split('.')[2]} (proof)`;
+    if (msgType?.startsWith('/pocket.service.')) return `${msgType.split('.')[2]} (service)`;
     
     // Cosmos SDK messages
-    if (msgType?.startsWith('/cosmos.bank.')) return 'bank';
-    if (msgType?.startsWith('/cosmos.staking.')) return 'node';
-    if (msgType?.startsWith('/cosmos.distr.')) return 'rewards';
-    if (msgType?.startsWith('/cosmos.gov.')) return 'governance';
-    if (msgType?.startsWith('/cosmos.slashing.')) return 'slashing';
-    if (msgType?.startsWith('/cosmos.authz.')) return 'authz';
+    if (msgType?.startsWith('/cosmos.bank.')) return `${msgType.split('.')[2]} (bank)`;
+    if (msgType?.startsWith('/cosmos.staking.')) return `${msgType.split('.')[2]} (node)`;
+    if (msgType?.startsWith('/cosmos.distr.')) return `${msgType.split('.')[2]} (rewards)`;
+    if (msgType?.startsWith('/cosmos.gov.')) return `${msgType.split('.')[2]} (governance)`;
+    if (msgType?.startsWith('/cosmos.slashing.')) return `${msgType.split('.')[2]} (slashing)`;
+    if (msgType?.startsWith('/cosmos.authz.')) return `${msgType.split('.')[2]} (authz)`;
   }
   
   return msgType;
