@@ -220,8 +220,10 @@ class TransactionService {
         // Create a map of date to count
         const dailyCountsMap = new Map();
         dailyCountsResult.rows.forEach(row => {
-          dailyCountsMap.set(row.date, parseInt(row.count, 10));
-          console.log(`Database date: ${row.date}, count: ${row.count}`);
+          // Convert database date to YYYY-MM-DD string format
+          const dateStr = row.date.toISOString().split('T')[0];
+          dailyCountsMap.set(dateStr, parseInt(row.count, 10));
+          console.log(`Database date: ${row.date}, converted to: ${dateStr}, count: ${row.count}`);
         });
         
         console.log(`Map size: ${dailyCountsMap.size}`);
