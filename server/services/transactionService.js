@@ -217,14 +217,17 @@ class TransactionService {
         const dailyCountsMap = new Map();
         dailyCountsResult.rows.forEach(row => {
           dailyCountsMap.set(row.date, parseInt(row.count, 10));
+          console.log(`Database date: ${row.date}, count: ${row.count}`);
         });
         
         // Fill in the counts array with actual data or 0 for missing dates
         for (let i = days - 1; i >= 0; i--) {
-          const date = new Date(now);
-          date.setDate(date.getDate() - i);
-          const dateKey = date.toISOString().split('T')[0];
-          counts.push(dailyCountsMap.get(dateKey) || 0);
+          // Create date in UTC to match database timezone
+          const utcDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
+          const dateKey = utcDate.toISOString().split('T')[0];
+          const count = dailyCountsMap.get(dateKey) || 0;
+          console.log(`Generated date: ${dateKey}, count: ${count}`);
+          counts.push(count);
         }
         
         return { 
