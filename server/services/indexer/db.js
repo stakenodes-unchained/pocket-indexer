@@ -235,7 +235,8 @@ async function saveRelay(relay) {
   await connectClients();
   await pgClient.query(
     `INSERT INTO relays (supplier_address, application_address, session_id, chain, proof, timestamp)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (supplier_address, application_address, session_id, chain, timestamp) DO NOTHING`,
     [
       relay.supplier_address,
       relay.application_address,
@@ -255,7 +256,7 @@ async function saveGovernance(gov) {
   await pgClient.query(
     `INSERT INTO governance (proposer, proposal_id, proposal_type, status, timestamp)
      VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (proposal_id) DO UPDATE SET
+     ON CONFLICT (proposal_id, proposer, timestamp) DO UPDATE SET
        status=EXCLUDED.status`,
     [
       gov.proposer,

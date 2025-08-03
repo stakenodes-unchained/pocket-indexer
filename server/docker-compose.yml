@@ -87,7 +87,13 @@ services:
         compress: "true"
     networks:
       - default
+      - pocket_indexer_network
 
+
+networks:
+  default:
+  pocket_indexer_network:
+    external: true
 volumes:
   redis-data:
   pg-data: 
