@@ -180,25 +180,25 @@ class TransactionService {
       await this.connectDB();
       
       if (chain) {
-        // Get historical data for the specific chain over the last 30 days
-        const now = new Date();
-        const days = 30;
-        const labels = [];
-        const counts = [];
-        
-        // Generate the date labels
-        for (let i = days - 1; i >= 0; i--) {
-          const date = new Date(now);
-          date.setDate(date.getDate() - i);
-          labels.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
-        }
-        
-        // Get the current total count
+        // Get the current total count first
         const totalCountResult = await this.pgClient.query(
           'SELECT COUNT(*) as total FROM transactions WHERE chain = $1',
           [chain]
         );
         const totalCount = parseInt(totalCountResult.rows[0].total, 10);
+        
+        // Always show the last 30 days for consistent frontend graphing
+        const now = new Date();
+        const days = 30;
+        const labels = [];
+        const counts = [];
+        
+        // Generate the date labels for the last 30 days
+        for (let i = days - 1; i >= 0; i--) {
+          const date = new Date(now);
+          date.setDate(date.getDate() - i);
+          labels.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+        }
         
         // Get daily counts for the last 30 days
         const startDate = new Date(now);
