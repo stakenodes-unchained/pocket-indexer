@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "migrate": "node migrate.js"
+    "migrate": "node migrate.js",
+    "reset": "node reset-db.js",
+    "reset-db": "node reset-db-only.js"
   },
   "dependencies": {
     "@cosmjs/crypto": "^0.32.2",
