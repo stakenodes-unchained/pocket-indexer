@@ -204,6 +204,8 @@ class TransactionService {
         const startDate = new Date(now);
         startDate.setDate(startDate.getDate() - days);
         
+        console.log(`Querying from ${startDate.toISOString()} to ${now.toISOString()}`);
+        
         const dailyCountsResult = await this.pgClient.query(
           `SELECT DATE(timestamp) as date, COUNT(*) as count 
            FROM transactions 
@@ -213,12 +215,17 @@ class TransactionService {
           [chain, startDate.toISOString()]
         );
         
+        console.log(`Query returned ${dailyCountsResult.rows.length} rows`);
+        
         // Create a map of date to count
         const dailyCountsMap = new Map();
         dailyCountsResult.rows.forEach(row => {
           dailyCountsMap.set(row.date, parseInt(row.count, 10));
           console.log(`Database date: ${row.date}, count: ${row.count}`);
         });
+        
+        console.log(`Map size: ${dailyCountsMap.size}`);
+        console.log(`Map keys:`, Array.from(dailyCountsMap.keys()));
         
         // Fill in the counts array with actual data or 0 for missing dates
         for (let i = days - 1; i >= 0; i--) {
