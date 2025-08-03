@@ -21,13 +21,13 @@ function classifyTransaction(tx) {
     var msgType = msg['@type'];
     
     // Pocket-specific messages
-    if (msgType?.startsWith('/pocket.supplier.')) return `${msgType.split('.')[2]} (supplier)`;
-    if (msgType?.startsWith('/pocket.app.')) return `${msgType.split('.')[2]} (application)`;
-    if (msgType?.startsWith('/pocket.pos.')) return `${msgType.split('.')[2]} (node)`;
-    if (msgType?.startsWith('/pocket.relay.')) return `${msgType.split('.')[2]} (relay)`;
-    if (msgType?.startsWith('/pocket.bank.')) return `${msgType.split('.')[2]} (bank)`;
-    if (msgType?.startsWith('/pocket.proof.')) return `${msgType.split('.')[2]} (proof)`;
-    if (msgType?.startsWith('/pocket.service.')) return `${msgType.split('.')[2]} (service)`;
+    if (msgType?.startsWith('/pocket.supplier.')) return `${msgType.split('.')[msgType.split('.').length - 1]} (supplier)`;
+    if (msgType?.startsWith('/pocket.app.')) return `${msgType.split('.')[msgType.split('.').length - 1]} (application)`;
+    if (msgType?.startsWith('/pocket.pos.')) return `${msgType.split('.')[msgType.split('.').length - 1]} (node)`;
+    if (msgType?.startsWith('/pocket.relay.')) return `${msgType.split('.')[msgType.split('.').length - 1]} (relay)`;
+    if (msgType?.startsWith('/pocket.bank.')) return `${msgType.split('.')[msgType.split('.').length - 1]} (bank)`;
+    if (msgType?.startsWith('/pocket.proof.')) return `${msgType.split('.')[msgType.split('.').length - 1]} (proof)`;
+    if (msgType?.startsWith('/pocket.service.')) return `${msgType.split('.')[msgType.split('.').length - 1]} (service)`;
     
     // Cosmos SDK messages
     if (msgType?.startsWith('/cosmos.bank.')) return `${msgType.split('.')[2]} (bank)`;

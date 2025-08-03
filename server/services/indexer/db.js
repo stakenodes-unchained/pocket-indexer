@@ -44,6 +44,9 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
   const timestamp = blockData.block?.header?.time || blockData.sdk_block?.header?.time;
   const proposer = blockData.block?.header?.proposer_address || blockData.sdk_block?.header?.proposer_address;
 
+  // Create a unique block ID per chain to avoid primary key conflicts
+  const uniqueBlockId = `${chain}:${blockId}`;
+
   // Extract transactions from the block data
   const rawTxs = blockData.block?.data?.txs || blockData.sdk_block?.data?.txs || [];
 
@@ -54,7 +57,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (chain, height) DO NOTHING
        RETURNING id`,
-      [blockId, height, hash, timestamp, proposer, chain]
+      [uniqueBlockId, height, hash, timestamp, proposer, chain]
     );
 
     // If no rows were inserted, the block already exists
@@ -63,10 +66,15 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
       return null;
     }
   } catch (error) {
-    // Handle unique constraint violation on chain and height
-    if (error.code === '23505' && error.constraint === 'blocks_chain_height_key') {
-      console.log(`Block at height ${height} for chain ${chain} already exists, skipping...`);
-      return null;
+    // Handle unique constraint violations
+    if (error.code === '23505') {
+      if (error.constraint === 'blocks_pkey') {
+        console.log(`Block ${uniqueBlockId} already exists (primary key conflict), skipping...`);
+        return null;
+      } else if (error.constraint === 'blocks_chain_height_key') {
+        console.log(`Block at height ${height} for chain ${chain} already exists (height conflict), skipping...`);
+        return null;
+      }
     }
     throw error;
   }
@@ -120,7 +128,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
           await saveTransaction({
             ...tx,
             type: txType,
-            block_height: blockId,
+            block_id: uniqueBlockId,
             timestamp: blockData.block?.header?.time || blockData.timestamp,
             chain: chain
           });
@@ -128,7 +136,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
           processedTxs.push({
             ...tx,
             type: txType,
-            block_height: blockId,
+            block_id: uniqueBlockId,
             timestamp: blockData.block?.header?.time || blockData.timestamp,
             chain: chain
           });
@@ -213,7 +221,7 @@ async function saveTransaction(tx) {
     [
       tx.hash,
       tx.hash,
-      tx.block_height,
+      tx.block_id || tx.block_height, // Use block_id if available, fallback to block_height
       tx.sender,
       tx.recipient,
       tx.amount,
@@ -311,18 +319,18 @@ async function getLastProcessedHeight(chain) {
 }
 
 /**
- * Get a block by height (cache first)
+ * Get a block by height and chain (cache first)
  */
-async function getBlock(height) {
+async function getBlock(height, chain) {
   await connectClients();
   // Check Redis cache
   const cachedBlocks = await redis.lrange('recent:blocks', 0, PAGE_SIZE - 1);
   for (const b of cachedBlocks) {
     const block = JSON.parse(b);
-    if (block.height === height) return block;
+    if (block.height === height && block.chain === chain) return block;
   }
   // Fallback to DB
-  const res = await pgClient.query('SELECT * FROM blocks WHERE height = $1', [height]);
+  const res = await pgClient.query('SELECT * FROM blocks WHERE height = $1 AND chain = $2', [height, chain]);
   return res.rows[0] || null;
 }
 
