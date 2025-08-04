@@ -49,6 +49,10 @@ function classifyTransaction(tx) {
           const parts = msgType.split('.');
           return parts.length > 0 ? `${parts[parts.length - 1]} (application)` : 'application';
         }
+        if (msgType.startsWith('/pocket.application.')) {
+          const parts = msgType.split('.');
+          return parts.length > 0 ? `${parts[parts.length - 1]} (application)` : 'application';
+        }
         if (msgType.startsWith('/pocket.pos.')) {
           const parts = msgType.split('.');
           return parts.length > 0 ? `${parts[parts.length - 1]} (node)` : 'node';
@@ -68,6 +72,11 @@ function classifyTransaction(tx) {
         if (msgType.startsWith('/pocket.service.')) {
           const parts = msgType.split('.');
           return parts.length > 0 ? `${parts[parts.length - 1]} (service)` : 'service';
+        }
+        
+        if (msgType.startsWith('/pocket.gateway.')) {
+          const parts = msgType.split('.');
+          return parts.length > 0 ? `${parts[parts.length - 1]} (gateway)` : 'gateway';
         }
         
         // Cosmos SDK messages
@@ -336,6 +345,71 @@ function parseApplications(tx, block) {
             apps.push(app);
           }
         }
+        
+        // Pocket Application Messages (singular form)
+        if (msgType === '/pocket.application.MsgDelegateToGateway') {
+          const app = {
+            address: msg.application_address || msg.app_address || '',
+            public_key: null,
+            staked_amount: msg.amount?.amount || '0',
+            status: 'delegated',
+            chains: [],
+            last_seen: timestamp,
+          };
+          
+          // Validate required fields
+          if (app.address) {
+            apps.push(app);
+          }
+        }
+        
+        if (msgType === '/pocket.application.MsgUndelegateFromGateway') {
+          const app = {
+            address: msg.application_address || msg.app_address || '',
+            public_key: null,
+            staked_amount: '0',
+            status: 'undelegated',
+            chains: [],
+            last_seen: timestamp,
+          };
+          
+          // Validate required fields
+          if (app.address) {
+            apps.push(app);
+          }
+        }
+        
+        if (msgType === '/pocket.application.MsgStakeApplication') {
+          const app = {
+            address: msg.operator_address || msg.application_address || '',
+            public_key: msg.public_key || null,
+            staked_amount: msg.stake?.amount || '0',
+            status: 'staked',
+            chains: Array.isArray(msg.chains) ? msg.chains : [],
+            last_seen: timestamp,
+          };
+          
+          // Validate required fields
+          if (app.address) {
+            apps.push(app);
+          }
+        }
+        
+        if (msgType === '/pocket.application.MsgUnstakeApplication') {
+          const app = {
+            address: msg.operator_address || msg.application_address || '',
+            public_key: msg.public_key || null,
+            staked_amount: '0',
+            status: 'unstaked',
+            chains: [],
+            last_seen: timestamp,
+          };
+          
+          // Validate required fields
+          if (app.address) {
+            apps.push(app);
+          }
+        }
       } catch (msgError) {
         console.warn("Error processing individual message in parseApplications:", msgError.message);
         continue;
@@ -437,6 +511,92 @@ function parseStakingEvents(tx, block) {
           const event = {
             address: msg.operator_address || '',
             type: 'application',
+            amount: '0',
+            event: 'unstake',
+            timestamp: timestamp,
+          };
+          
+          if (event.address) {
+            events.push(event);
+          }
+        }
+        
+        // Pocket Application Events (singular form)
+        if (msgType === '/pocket.application.MsgDelegateToGateway') {
+          const event = {
+            address: msg.application_address || msg.app_address || '',
+            type: 'application',
+            amount: msg.amount?.amount || '0',
+            event: 'delegate_to_gateway',
+            timestamp: timestamp,
+          };
+          
+          if (event.address) {
+            events.push(event);
+          }
+        }
+        
+        if (msgType === '/pocket.application.MsgUndelegateFromGateway') {
+          const event = {
+            address: msg.application_address || msg.app_address || '',
+            type: 'application',
+            amount: msg.amount?.amount || '0',
+            event: 'undelegate_from_gateway',
+            timestamp: timestamp,
+          };
+          
+          if (event.address) {
+            events.push(event);
+          }
+        }
+        
+        if (msgType === '/pocket.application.MsgStakeApplication') {
+          const event = {
+            address: msg.operator_address || msg.application_address || '',
+            type: 'application',
+            amount: msg.stake?.amount || '0',
+            event: 'stake',
+            timestamp: timestamp,
+          };
+          
+          if (event.address) {
+            events.push(event);
+          }
+        }
+        
+        if (msgType === '/pocket.application.MsgUnstakeApplication') {
+          const event = {
+            address: msg.operator_address || msg.application_address || '',
+            type: 'application',
+            amount: '0',
+            event: 'unstake',
+            timestamp: timestamp,
+          };
+          
+          if (event.address) {
+            events.push(event);
+          }
+        }
+        
+        // Pocket Gateway Events
+        if (msgType === '/pocket.gateway.MsgStakeGateway') {
+          const event = {
+            address: msg.operator_address || msg.gateway_address || '',
+            type: 'gateway',
+            amount: msg.stake?.amount || '0',
+            event: 'stake',
+            timestamp: timestamp,
+          };
+          
+          if (event.address) {
+            events.push(event);
+          }
+        }
+        
+        if (msgType === '/pocket.gateway.MsgUnstakeGateway') {
+          const event = {
+            address: msg.operator_address || msg.gateway_address || '',
+            type: 'gateway',
             amount: '0',
             event: 'unstake',
             timestamp: timestamp,
@@ -738,6 +898,70 @@ function parseServices(tx, block) {
           
           if (service.supplier_address && service.chain) {
             services.push(service);
+          }
+        }
+        
+        // Pocket Gateway Service Messages
+        if (msgType === '/pocket.gateway.MsgStakeGateway' && Array.isArray(msg.services)) {
+          for (const service of msg.services) {
+            try {
+              const serviceObj = {
+                supplier_address: msg.operator_address || msg.gateway_address || '',
+                chain: service.service_id || '',
+                service_url: service.endpoints?.[0]?.url || null,
+                status: 'active',
+                last_checked: timestamp,
+              };
+              
+              if (serviceObj.supplier_address && serviceObj.chain) {
+                services.push(serviceObj);
+              }
+            } catch (serviceError) {
+              console.warn("Error processing individual gateway service:", serviceError.message);
+              continue;
+            }
+          }
+        }
+        
+        if (msgType === '/pocket.gateway.MsgEditGateway' && Array.isArray(msg.services)) {
+          for (const service of msg.services) {
+            try {
+              const serviceObj = {
+                supplier_address: msg.operator_address || msg.gateway_address || '',
+                chain: service.service_id || '',
+                service_url: service.endpoints?.[0]?.url || null,
+                status: 'edited',
+                last_checked: timestamp,
+              };
+              
+              if (serviceObj.supplier_address && serviceObj.chain) {
+                services.push(serviceObj);
+              }
+            } catch (serviceError) {
+              console.warn("Error processing individual gateway service:", serviceError.message);
+              continue;
+            }
+          }
+        }
+        
+        if (msgType === '/pocket.gateway.MsgUnstakeGateway' && Array.isArray(msg.services)) {
+          for (const service of msg.services) {
+            try {
+              const serviceObj = {
+                supplier_address: msg.operator_address || msg.gateway_address || '',
+                chain: service.service_id || '',
+                service_url: null,
+                status: 'inactive',
+                last_checked: timestamp,
+              };
+              
+              if (serviceObj.supplier_address && serviceObj.chain) {
+                services.push(serviceObj);
+              }
+            } catch (serviceError) {
+              console.warn("Error processing individual gateway service:", serviceError.message);
+              continue;
+            }
           }
         }
       } catch (msgError) {
@@ -1058,6 +1282,110 @@ function parseGovernance(tx, block) {
   }
 }
 
+/**
+ * Parse gateways from a transaction
+ * @param {any} tx
+ * @param {any} block
+ * @returns {Array}
+ */
+function parseGateways(tx, block) {
+  try {
+    const gateways = [];
+    
+    if (!tx) {
+      console.warn("No transaction provided to parseGateways");
+      return gateways;
+    }
+    
+    if (!tx.body?.messages && !tx.messages) {
+      console.warn("No messages found in transaction for parseGateways", tx);
+      return gateways;
+    }
+    
+    const messages = tx.body?.messages || tx.messages;
+    
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return gateways;
+    }
+    
+    const timestamp = block?.block?.header?.time || block?.timestamp || new Date().toISOString();
+    
+    for (const msg of messages) {
+      try {
+        if (!msg || typeof msg !== 'object') {
+          continue;
+        }
+        
+        const msgType = msg['@type'];
+        
+        if (!msgType || typeof msgType !== 'string') {
+          continue;
+        }
+        
+        // Pocket Gateway Messages
+        if (msgType === '/pocket.gateway.MsgStakeGateway') {
+          const gateway = {
+            address: msg.operator_address || msg.gateway_address || '',
+            public_key: msg.public_key || null,
+            staked_amount: msg.stake?.amount || '0',
+            status: 'staked',
+            service_url: msg.services?.[0]?.endpoints?.[0]?.url || null,
+            last_seen: timestamp,
+            geo: null,
+          };
+          
+          // Validate required fields
+          if (gateway.address) {
+            gateways.push(gateway);
+          }
+        }
+        
+        if (msgType === '/pocket.gateway.MsgUnstakeGateway') {
+          const gateway = {
+            address: msg.operator_address || msg.gateway_address || '',
+            public_key: msg.public_key || null,
+            staked_amount: '0',
+            status: 'unstaked',
+            service_url: null,
+            last_seen: timestamp,
+            geo: null,
+          };
+          
+          // Validate required fields
+          if (gateway.address) {
+            gateways.push(gateway);
+          }
+        }
+        
+        if (msgType === '/pocket.gateway.MsgEditGateway') {
+          const gateway = {
+            address: msg.operator_address || msg.gateway_address || '',
+            public_key: msg.public_key || null,
+            staked_amount: msg.stake?.amount || '0',
+            status: 'edited',
+            service_url: msg.services?.[0]?.endpoints?.[0]?.url || null,
+            last_seen: timestamp,
+            geo: null,
+          };
+          
+          // Validate required fields
+          if (gateway.address) {
+            gateways.push(gateway);
+          }
+        }
+      } catch (msgError) {
+        console.warn("Error processing individual message in parseGateways:", msgError.message);
+        continue;
+      }
+    }
+    
+    return gateways;
+  } catch (error) {
+    console.error("Error in parseGateways:", error.message);
+    return [];
+  }
+}
+
 module.exports = {
   classifyTransaction,
   parseSuppliers,
@@ -1068,4 +1396,5 @@ module.exports = {
   parseNodes,
   parseRelays,
   parseGovernance,
+  parseGateways,
 }; 

@@ -495,6 +495,33 @@ async function upsertNode(node) {
   );
 }
 
+/**
+ * Upsert a gateway
+ */
+async function upsertGateway(gateway) {
+  await connectClients();
+  await pgClient.query(
+    `INSERT INTO gateways (address, public_key, staked_amount, status, service_url, last_seen, geo)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
+     ON CONFLICT (address) DO UPDATE SET
+       public_key=EXCLUDED.public_key,
+       staked_amount=EXCLUDED.staked_amount,
+       status=EXCLUDED.status,
+       service_url=EXCLUDED.service_url,
+       last_seen=EXCLUDED.last_seen,
+       geo=EXCLUDED.geo`,
+    [
+      gateway.address,
+      gateway.public_key,
+      gateway.staked_amount,
+      gateway.status,
+      gateway.service_url,
+      gateway.last_seen,
+      gateway.geo,
+    ]
+  );
+}
+
 module.exports = {
   saveBlock,
   saveTransaction,
@@ -510,4 +537,5 @@ module.exports = {
   saveRelay,
   saveGovernance,
   saveClaim,
+  upsertGateway,
 }; 

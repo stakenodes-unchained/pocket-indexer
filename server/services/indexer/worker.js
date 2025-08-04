@@ -9,7 +9,8 @@ const {
   upsertService,
   upsertNode,
   saveRelay,
-  saveGovernance
+  saveGovernance,
+  upsertGateway
 } = require('./db');
 const { transformBlock } = require('./transformer');
 const { fetchBlockByHeight, fetchLatestBlock } = require('./rpc');
@@ -21,7 +22,8 @@ const {
   parseServices,
   parseNodes,
   parseRelays,
-  parseGovernance
+  parseGovernance,
+  parseGateways
 } = require('./entityParser');
 
 const { rpcName, rpcUrl, batchSize } = workerData;
@@ -58,6 +60,7 @@ async function processBlock(blockData) {
         const nodes = parseNodes(tx, blockData);
         const relays = parseRelays(tx, blockData);
         const governance = parseGovernance(tx, blockData);
+        const gateways = parseGateways(tx, blockData);
 
         // Save all entities with individual error handling
         // Suppliers
@@ -121,6 +124,15 @@ async function processBlock(blockData) {
           }
         } catch (govError) {
           console.error(`[Worker ${workerData.id}] Error saving governance for transaction:`, govError.message);
+        }
+
+        // Gateways
+        try {
+          for (const gateway of gateways) {
+            await upsertGateway(gateway);
+          }
+        } catch (gatewayError) {
+          console.error(`[Worker ${workerData.id}] Error saving gateways for transaction:`, gatewayError.message);
         }
       } catch (txError) {
         console.error(`[Worker ${workerData.id}] Error processing transaction:`, txError);
