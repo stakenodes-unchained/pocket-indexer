@@ -50,6 +50,7 @@ async function processBlock(blockData) {
     for (const tx of block.transactions) {
       try {
         // Parse and save entities based on transaction type
+        // Each parsing function is now robust and will return empty arrays on errors
         const suppliers = parseSuppliers(tx, blockData);
         const applications = parseApplications(tx, blockData);
         const stakingEvents = parseStakingEvents(tx, blockData);
@@ -58,37 +59,72 @@ async function processBlock(blockData) {
         const relays = parseRelays(tx, blockData);
         const governance = parseGovernance(tx, blockData);
 
-        // Save all entities
-        for (const supplier of suppliers) {
-          await upsertSupplier(supplier);
+        // Save all entities with individual error handling
+        // Suppliers
+        try {
+          for (const supplier of suppliers) {
+            await upsertSupplier(supplier);
+          }
+        } catch (supplierError) {
+          console.error(`[Worker ${workerData.id}] Error saving suppliers for transaction:`, supplierError.message);
         }
 
-        for (const app of applications) {
-          await upsertApplication(app);
+        // Applications
+        try {
+          for (const app of applications) {
+            await upsertApplication(app);
+          }
+        } catch (appError) {
+          console.error(`[Worker ${workerData.id}] Error saving applications for transaction:`, appError.message);
         }
 
-        for (const event of stakingEvents) {
-          await insertStakingEvent(event);
+        // Staking Events
+        try {
+          for (const event of stakingEvents) {
+            await insertStakingEvent(event);
+          }
+        } catch (stakingError) {
+          console.error(`[Worker ${workerData.id}] Error saving staking events for transaction:`, stakingError.message);
         }
 
-        for (const service of services) {
-          await upsertService(service);
+        // Services
+        try {
+          for (const service of services) {
+            await upsertService(service);
+          }
+        } catch (serviceError) {
+          console.error(`[Worker ${workerData.id}] Error saving services for transaction:`, serviceError.message);
         }
 
-        for (const node of nodes) {
-          await upsertNode(node);
+        // Nodes
+        try {
+          for (const node of nodes) {
+            await upsertNode(node);
+          }
+        } catch (nodeError) {
+          console.error(`[Worker ${workerData.id}] Error saving nodes for transaction:`, nodeError.message);
         }
 
-        for (const relay of relays) {
-          await saveRelay(relay);
+        // Relays
+        try {
+          for (const relay of relays) {
+            await saveRelay(relay);
+          }
+        } catch (relayError) {
+          console.error(`[Worker ${workerData.id}] Error saving relays for transaction:`, relayError.message);
         }
 
-        for (const gov of governance) {
-          await saveGovernance(gov);
+        // Governance
+        try {
+          for (const gov of governance) {
+            await saveGovernance(gov);
+          }
+        } catch (govError) {
+          console.error(`[Worker ${workerData.id}] Error saving governance for transaction:`, govError.message);
         }
       } catch (txError) {
         console.error(`[Worker ${workerData.id}] Error processing transaction:`, txError);
-        // Continue with next transaction
+        // Continue with next transaction - don't let one bad transaction stop the whole block
       }
     }
     console.log(`[Worker ${workerData.id}] Successfully processed block ${blockData.block?.header?.height || 'unknown'}`);

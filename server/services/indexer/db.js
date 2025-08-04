@@ -86,7 +86,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
       // Get transaction hash from raw transaction
       const txHash = hashTx(rawTx);
 
-      // Try to fetch full transaction details from RPC
+      // Default transaction object with basic info
       let tx = {
         hash: txHash,
         sender: '',
@@ -97,15 +97,27 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
         type: 'unknown',
         status: 'pending',
         timestamp: timestamp,
-        messages: []
+        messages: [],
+        gas_wanted: '0',
+        gas_used: '0',
+        tx_data: null
       };
+
+      let txResponse = null;
+      let txType = 'unknown';
 
       try {
         // Get RPC URL for this chain
         if (rpcUrl) {
-          const txResponse = await fetchTransactionByHash(txHash, rpcUrl);
-
-          const txType = classifyTransaction(txResponse.tx);
+          txResponse = await fetchTransactionByHash(txHash, rpcUrl);
+          
+          // Safely classify transaction with error handling
+          try {
+            txType = classifyTransaction(txResponse.tx);
+          } catch (classificationError) {
+            console.warn(`Failed to classify transaction ${txHash}:`, classificationError.message);
+            txType = 'unknown';
+          }
 
           const rpcDetails = extractTransactionDetails(txResponse, timestamp);
           // Use RPC details to populate transaction info
@@ -116,7 +128,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
             amount: rpcDetails.amount || '0',
             fee: rpcDetails.fee?.amount?.[0]?.amount || '0',
             memo: rpcDetails.memo || '',
-            type: rpcDetails.type || 'unknown',
+            type: txType,
             status: rpcDetails.status || 'pending',
             timestamp: rpcDetails.timestamp || timestamp,
             messages: rpcDetails.messages || [],
@@ -124,24 +136,32 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
             gas_used: rpcDetails.gas_used || '0',
             tx_data: JSON.stringify(txResponse)
           };
-          // Save transaction with classification
-          await saveTransaction({
-            ...tx,
-            type: txType,
-            block_id: uniqueBlockId,
-            timestamp: blockData.block?.header?.time || blockData.timestamp,
-            chain: chain
-          });
+        }
+      } catch (rpcError) {
+        console.warn(`Failed to fetch transaction details for ${txHash}:`, rpcError.message);
+        // Keep the default transaction object - it will still be saved
+      }
 
-          processedTxs.push({
-            ...tx,
-            type: txType,
-            block_id: uniqueBlockId,
-            timestamp: blockData.block?.header?.time || blockData.timestamp,
-            chain: chain
-          });
+      // ALWAYS save the transaction, even if RPC failed or classification failed
+      try {
+        await saveTransaction({
+          ...tx,
+          type: txType,
+          block_id: uniqueBlockId,
+          timestamp: blockData.block?.header?.time || blockData.timestamp,
+          chain: chain
+        });
 
-          // Cache transaction in Redis
+        processedTxs.push({
+          ...tx,
+          type: txType,
+          block_id: uniqueBlockId,
+          timestamp: blockData.block?.header?.time || blockData.timestamp,
+          chain: chain
+        });
+
+        // Cache transaction in Redis
+        try {
           await redis.hset(`tx:${chain}:${txHash}`, {
             hash: tx.hash,
             height: height.toString(),
@@ -161,23 +181,31 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
 
           // Add to sorted set for pagination
           await redis.zadd(`chain:${chain}:txs`, height, txHash);
+        } catch (cacheError) {
+          console.warn(`Failed to cache transaction ${txHash}:`, cacheError.message);
+          // Continue processing - caching failure shouldn't stop the process
+        }
 
-          // Parse and save claims if this is a proof transaction
-          if (txType === 'proof') {
+        // Parse and save claims if this is a proof transaction and we have tx data
+        if (txType === 'proof' && txResponse) {
+          try {
             const claims = parseClaims(txResponse.tx, blockData);
             for (const claim of claims) {
               await saveClaim(claim);
             }
+          } catch (claimError) {
+            console.warn(`Failed to parse claims for transaction ${txHash}:`, claimError.message);
+            // Continue processing - claim parsing failure shouldn't stop the process
           }
         }
-      } catch (error) {
-        console.log("================", error);
-        console.warn(`Failed to fetch transaction details for ${txHash}:`, error.message);
+      } catch (saveError) {
+        console.error(`Failed to save transaction ${txHash} to database:`, saveError.message);
+        // This is a critical error - log it but continue with other transactions
       }
-
 
     } catch (error) {
       console.error(`Error processing transaction in block ${height}:`, error);
+      // Continue with next transaction - don't let one bad transaction stop the whole block
     }
   }
 
