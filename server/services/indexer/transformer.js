@@ -47,21 +47,82 @@ function extractTransactionDetails(txResponse, blockTimestamp) {
     }
   }
 
+  // Helper: sum coin arrays (string amounts)
+  function sumCoins(coinArray) {
+    try {
+      if (!Array.isArray(coinArray)) return '0';
+      let total = 0n;
+      for (const c of coinArray) {
+        const amt = BigInt((c && c.amount) ? String(c.amount) : '0');
+        total += amt;
+      }
+      return total.toString();
+    } catch {
+      return '0';
+    }
+  }
+  function coinDenomSummary(coinArray) {
+    if (!Array.isArray(coinArray) || coinArray.length === 0) return null;
+    const denoms = Array.from(new Set(coinArray.map(c => c && c.denom).filter(Boolean)));
+    if (denoms.length === 1) return denoms[0];
+    return 'MULTI';
+  }
+
   // Extract message types and amounts
   if (details.messages && details.messages.length > 0) {
-    details.type = details.messages[0]['@type'] || 'unknown';
+    const rawType = details.messages[0]['@type'] || 'unknown';
+    details.type = typeof rawType === 'string' ? rawType.replace(/^\//, '') : rawType;
     
-    // Extract amount from first message if available
+    // Extract amount from first message (type-aware)
     const firstMsg = details.messages[0];
-    if (firstMsg.amount && firstMsg.amount.length > 0) {
-      details.amount = firstMsg.amount[0].amount || '0';
-    } else if (firstMsg.stake?.amount) {
-      details.amount = firstMsg.stake.amount;
-    } else if (firstMsg.value?.amount) {
-      details.amount = firstMsg.value.amount;
+    const msgType = details.type;
+    let amount = '0';
+    if (msgType === 'cosmos.bank.v1beta1.MsgSend' || msgType === 'cosmos.bank.MsgSend') {
+      amount = sumCoins(firstMsg.amount);
+      details.amount_denom = coinDenomSummary(firstMsg.amount);
+    } else if (msgType === 'cosmos.bank.v1beta1.MsgMultiSend' || msgType === 'cosmos.bank.MsgMultiSend') {
+      amount = sumCoins(firstMsg.outputs?.flatMap(o => o.coins) || []);
+      details.amount_denom = coinDenomSummary(firstMsg.outputs?.flatMap(o => o.coins) || []);
+    } else if (
+      msgType === 'cosmos.staking.v1beta1.MsgDelegate' || msgType === 'cosmos.staking.MsgDelegate' ||
+      msgType === 'cosmos.staking.v1beta1.MsgUndelegate' || msgType === 'cosmos.staking.MsgUndelegate' ||
+      msgType === 'cosmos.staking.v1beta1.MsgBeginRedelegate' || msgType === 'cosmos.staking.MsgBeginRedelegate'
+    ) {
+      amount = String(firstMsg.amount?.amount || '0');
+      details.amount_denom = firstMsg.amount?.denom || null;
+    } else if (
+      msgType === 'pocket.application.MsgStakeApplication' ||
+      msgType === 'pocket.supplier.MsgStakeSupplier' ||
+      msgType === 'pocket.gateway.MsgStakeGateway' ||
+      msgType === 'pocket.app.MsgStakeApp'
+    ) {
+      amount = String(firstMsg.stake?.amount || '0');
+      details.amount_denom = firstMsg.stake?.denom || null;
+    } else if (
+      msgType === 'pocket.application.MsgUnstakeApplication' ||
+      msgType === 'pocket.supplier.MsgUnstakeSupplier' ||
+      msgType === 'pocket.gateway.MsgUnstakeGateway' ||
+      msgType === 'pocket.app.MsgUnstakeApp'
+    ) {
+      amount = '0';
+      details.amount_denom = null;
     } else {
-      details.amount = '0';
+      // Fallbacks
+      if (Array.isArray(firstMsg.amount) && firstMsg.amount.length > 0) {
+        amount = String(firstMsg.amount[0]?.amount || '0');
+        details.amount_denom = firstMsg.amount[0]?.denom || coinDenomSummary(firstMsg.amount) || null;
+      } else if (firstMsg.value?.amount) {
+        amount = String(firstMsg.value.amount);
+        details.amount_denom = firstMsg.value?.denom || null;
+      } else if (firstMsg.stake?.amount) {
+        amount = String(firstMsg.stake.amount);
+        details.amount_denom = firstMsg.stake?.denom || null;
+      } else {
+        amount = '0';
+        details.amount_denom = null;
+      }
     }
+    details.amount = amount;
 
     // Extract recipient if available
     if (firstMsg.to_address) {
@@ -74,10 +135,25 @@ function extractTransactionDetails(txResponse, blockTimestamp) {
       details.recipient = firstMsg.operator_address;
     } else if (firstMsg.delegator_address) {
       details.recipient = firstMsg.delegator_address;
+    } else if (firstMsg.application_address) {
+      details.recipient = firstMsg.application_address;
+    } else if (firstMsg.address) {
+      details.recipient = firstMsg.address;
     } else {
       details.recipient = '';
     }
   }
+
+  // Compute numeric fee amount (sum of coins)
+  const feeCoins = tx?.auth_info?.fee?.amount;
+  details.fee_amount = Array.isArray(feeCoins) ? feeCoins.reduce((acc, c) => {
+    try {
+      return (BigInt(acc) + BigInt((c && c.amount) ? String(c.amount) : '0')).toString();
+    } catch {
+      return acc;
+    }
+  }, '0') : '0';
+  details.fee_denom = Array.isArray(feeCoins) ? coinDenomSummary(feeCoins) : null;
 
   return details;
 }

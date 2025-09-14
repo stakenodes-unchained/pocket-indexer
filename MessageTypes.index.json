@@ -1,0 +1,397 @@
+{
+  "source": "MessageTypes.md",
+  "generated_at": "2025-09-11T00:00:00Z",
+  "detection_prefixes": {
+    "application": "pocket.application.",
+    "supplier": "pocket.supplier.",
+    "gateway": "pocket.gateway.",
+    "service": "pocket.service.",
+    "proof": "pocket.proof.",
+    "session": "pocket.session.",
+    "tokenomics": "pocket.tokenomics.",
+    "shared": "pocket.shared.",
+    "migration": "pocket.migration.",
+    "cosmos": "cosmos."
+  },
+  "processing_priority": {
+    "high": ["stake", "unstake", "delegate", "undelegate"],
+    "medium": ["claim", "proof", "session"],
+    "low": ["governance", "parameter updates"]
+  },
+  "pipeline": [
+    "Message Parsing",
+    "Validation",
+    "State Update",
+    "Relationship Update",
+    "Event Recording",
+    "Metrics Update"
+  ],
+  "db_operations": ["Insert", "Update", "Delete(soft)", "Upsert"],
+  "messages": [
+    {
+      "module": "application",
+      "name": "MsgStakeApplication",
+      "type_url": "pocket.application.MsgStakeApplication",
+      "purpose": "Allows an application to stake POKT tokens and configure services",
+      "fields": ["address", "stake.denom", "stake.amount", "services[*].service_id", "services[*].endpoints", "services[*].config_options"],
+      "indexer_processing": [
+        "upsert applications (stake_amount, stake_denom, created_block, updated_block, is_active=true)",
+        "insert application_service_configs",
+        "record state change: CREATE/UPDATE application"
+      ],
+      "state_changes": ["application created/updated", "stake recorded", "service configs stored", "application active"]
+    },
+    {
+      "module": "application",
+      "name": "MsgUnstakeApplication",
+      "type_url": "pocket.application.MsgUnstakeApplication",
+      "purpose": "Initiates unstaking process for an application",
+      "fields": ["address"],
+      "indexer_processing": [
+        "update applications.unstake_session_end_height",
+        "set is_active=false after unbonding",
+        "record state change: UPDATE application"
+      ],
+      "state_changes": ["application marked for unstaking", "unstake session end height recorded", "application inactive after unbonding"]
+    },
+    {
+      "module": "application",
+      "name": "MsgDelegateToGateway",
+      "type_url": "pocket.application.MsgDelegateToGateway",
+      "purpose": "Establishes delegation relationship between application and gateway",
+      "fields": ["app_address", "gateway_address"],
+      "indexer_processing": [
+        "insert delegations (from_entity_type=application, to_entity_type=gateway, relationship_type=delegation, action=create)",
+        "update applications.delegatee_gateway_addresses",
+        "record relationship change: CREATE delegation"
+      ],
+      "state_changes": ["delegation relationship created", "application gateway list updated", "relationship tracking established"]
+    },
+    {
+      "module": "application",
+      "name": "MsgUndelegateFromGateway",
+      "type_url": "pocket.application.MsgUndelegateFromGateway",
+      "purpose": "Removes delegation relationship between application and gateway",
+      "fields": ["app_address", "gateway_address"],
+      "indexer_processing": [
+        "update delegations.is_active=false",
+        "add gateway to applications.pending_undelegations",
+        "record relationship change: DELETE delegation"
+      ],
+      "state_changes": ["delegation marked inactive", "gateway pending undelegations updated", "relationship tracking updated"]
+    },
+    {
+      "module": "application",
+      "name": "MsgTransferApplication",
+      "type_url": "pocket.application.MsgTransferApplication",
+      "purpose": "Transfers application ownership to a new address",
+      "fields": ["source_address", "destination_address"],
+      "indexer_processing": [
+        "update applications.address to new owner",
+        "create pending_transfer with session end height",
+        "record state change: UPDATE application"
+      ],
+      "state_changes": ["ownership transferred", "transfer pending until session end", "ownership change tracked"]
+    },
+    {
+      "module": "application",
+      "name": "MsgUpdateParam",
+      "type_url": "pocket.application.MsgUpdateParam",
+      "purpose": "Updates single application module parameter",
+      "fields": ["authority", "name", "as_uint64"],
+      "indexer_processing": [
+        "update network_parameters (module=application)",
+        "record parameter change in state_changes",
+        "update last_updated_block/timestamp"
+      ],
+      "state_changes": ["parameter updated", "change tracked", "governance recorded"]
+    },
+    {
+      "module": "supplier",
+      "name": "MsgStakeSupplier",
+      "type_url": "pocket.supplier.MsgStakeSupplier",
+      "purpose": "Allows a supplier to stake POKT tokens and offer services",
+      "fields": [
+        "signer",
+        "owner_address",
+        "operator_address",
+        "stake.denom",
+        "stake.amount",
+        "services[*].service_id",
+        "services[*].endpoints",
+        "services[*].config_options"
+      ],
+      "indexer_processing": [
+        "upsert suppliers (operator_address, owner_address, stake_amount, stake_denom, is_active=true)",
+        "insert supplier_service_configs",
+        "record state change: CREATE/UPDATE supplier"
+      ],
+      "state_changes": ["supplier created/updated", "stake recorded", "service configs stored", "supplier active"]
+    },
+    {
+      "module": "supplier",
+      "name": "MsgUnstakeSupplier",
+      "type_url": "pocket.supplier.MsgUnstakeSupplier",
+      "purpose": "Initiates unstaking process for a supplier",
+      "fields": ["signer", "operator_address"],
+      "indexer_processing": [
+        "update suppliers.unstake_session_end_height",
+        "set is_active=false after unbonding",
+        "record state change: UPDATE supplier"
+      ],
+      "state_changes": ["supplier marked for unstaking", "unstake session end height recorded", "supplier inactive after unbonding"]
+    },
+    {
+      "module": "supplier",
+      "name": "MsgUpdateParam",
+      "type_url": "pocket.supplier.MsgUpdateParam",
+      "purpose": "Updates single supplier module parameter",
+      "fields": ["authority", "name", "as_coin.denom", "as_coin.amount"],
+      "indexer_processing": [
+        "update network_parameters (module=supplier)",
+        "record parameter change in state_changes",
+        "update last_updated_block/timestamp"
+      ],
+      "state_changes": ["parameter updated", "change tracked", "governance recorded"]
+    },
+    {
+      "module": "gateway",
+      "name": "MsgStakeGateway",
+      "type_url": "pocket.gateway.MsgStakeGateway",
+      "purpose": "Allows a gateway to stake POKT tokens",
+      "fields": ["address", "stake.denom", "stake.amount"],
+      "indexer_processing": [
+        "upsert gateways (address, stake_amount, stake_denom, is_active=true)",
+        "record state change: CREATE/UPDATE gateway"
+      ],
+      "state_changes": ["gateway created/updated", "stake recorded", "gateway active"]
+    },
+    {
+      "module": "gateway",
+      "name": "MsgUnstakeGateway",
+      "type_url": "pocket.gateway.MsgUnstakeGateway",
+      "purpose": "Initiates unstaking process for a gateway",
+      "fields": ["address"],
+      "indexer_processing": [
+        "update gateways.unstake_session_end_height",
+        "set is_active=false after unbonding",
+        "record state change: UPDATE gateway"
+      ],
+      "state_changes": ["gateway marked for unstaking", "unstake session end height recorded", "gateway inactive after unbonding"]
+    },
+    {
+      "module": "gateway",
+      "name": "MsgUpdateParam",
+      "type_url": "pocket.gateway.MsgUpdateParam",
+      "purpose": "Updates single gateway module parameter",
+      "fields": ["authority", "name", "as_coin.denom", "as_coin.amount"],
+      "indexer_processing": [
+        "update network_parameters (module=gateway)",
+        "record parameter change in state_changes",
+        "update last_updated_block/timestamp"
+      ],
+      "state_changes": ["parameter updated", "change tracked", "governance recorded"]
+    },
+    {
+      "module": "service",
+      "name": "MsgAddService",
+      "type_url": "pocket.service.MsgAddService",
+      "purpose": "Adds a new service to the network",
+      "fields": [
+        "owner_address",
+        "service.id",
+        "service.name",
+        "service.description",
+        "service.compute_units_per_relay",
+        "service.endpoints",
+        "service.config_options"
+      ],
+      "indexer_processing": [
+        "insert services (id, name, description, compute_units_per_relay, owner_address, created_block, created_timestamp)",
+        "record state change: CREATE service"
+      ],
+      "state_changes": ["service created", "service configuration stored", "service available"]
+    },
+    {
+      "module": "service",
+      "name": "MsgUpdateParam",
+      "type_url": "pocket.service.MsgUpdateParam",
+      "purpose": "Updates single service module parameter",
+      "fields": ["authority", "name", "as_coin.denom", "as_coin.amount"],
+      "indexer_processing": [
+        "update network_parameters (module=service)",
+        "record parameter change in state_changes",
+        "update last_updated_block/timestamp"
+      ],
+      "state_changes": ["parameter updated", "change tracked", "governance recorded"]
+    },
+    {
+      "module": "proof",
+      "name": "MsgCreateClaim",
+      "type_url": "pocket.proof.MsgCreateClaim",
+      "purpose": "Supplier submits claim for relays served in a session",
+      "fields": [
+        "supplier_operator_address",
+        "session_header.application_address",
+        "session_header.service_id",
+        "session_header.session_start_block_height",
+        "session_header.session_end_block_height",
+        "root_hash"
+      ],
+      "indexer_processing": [
+        "insert claims (session_id, supplier_address, root_hash, session_start_block, session_end_block, created_block, created_timestamp)",
+        "record state change: CREATE claim"
+      ],
+      "state_changes": ["claim created", "session relay data recorded", "proof window opened"]
+    },
+    {
+      "module": "proof",
+      "name": "MsgSubmitProof",
+      "type_url": "pocket.proof.MsgSubmitProof",
+      "purpose": "Supplier submits proof for claim verification",
+      "fields": [
+        "supplier_operator_address",
+        "session_header.application_address",
+        "session_header.service_id",
+        "session_header.session_start_block_height",
+        "session_header.session_end_block_height",
+        "proof"
+      ],
+      "indexer_processing": [
+        "insert proofs (session_id, supplier_address, proof_data, session_start_block, session_end_block, created_block, created_timestamp)",
+        "record state change: CREATE proof"
+      ],
+      "state_changes": ["proof created", "verification data recorded", "claim settlement initiated"]
+    },
+    {
+      "module": "proof",
+      "name": "MsgUpdateParam",
+      "type_url": "pocket.proof.MsgUpdateParam",
+      "purpose": "Updates single proof module parameter",
+      "fields": ["authority", "name", "as_bytes"],
+      "indexer_processing": [
+        "update network_parameters (module=proof)",
+        "record parameter change in state_changes",
+        "update last_updated_block/timestamp"
+      ],
+      "state_changes": ["parameter updated", "change tracked", "governance recorded"]
+    },
+    {
+      "module": "session",
+      "name": "MsgUpdateParam",
+      "type_url": "pocket.session.MsgUpdateParam",
+      "purpose": "Updates single session module parameter",
+      "fields": ["authority", "name", "as_uint64"],
+      "indexer_processing": [
+        "update network_parameters (module=session)",
+        "record parameter change in state_changes",
+        "update last_updated_block/timestamp"
+      ],
+      "state_changes": ["parameter updated", "change tracked", "governance recorded"]
+    },
+    {
+      "module": "tokenomics",
+      "name": "MsgUpdateParam",
+      "type_url": "pocket.tokenomics.MsgUpdateParam",
+      "purpose": "Updates single tokenomics module parameter",
+      "fields": [
+        "authority",
+        "name",
+        "as_mint_allocation_percentages.applications",
+        "as_mint_allocation_percentages.suppliers",
+        "as_mint_allocation_percentages.gateways",
+        "as_mint_allocation_percentages.validators",
+        "as_mint_allocation_percentages.dao"
+      ],
+      "indexer_processing": [
+        "update network_parameters (module=tokenomics)",
+        "record parameter change in state_changes",
+        "update last_updated_block/timestamp"
+      ],
+      "state_changes": ["parameter updated", "change tracked", "governance recorded"]
+    },
+    {
+      "module": "shared",
+      "name": "MsgUpdateParam",
+      "type_url": "pocket.shared.MsgUpdateParam",
+      "purpose": "Updates single shared module parameter",
+      "fields": ["authority", "name", "as_uint64"],
+      "indexer_processing": [
+        "update network_parameters (module=shared)",
+        "record parameter change in state_changes",
+        "update last_updated_block/timestamp"
+      ],
+      "state_changes": ["parameter updated", "change tracked", "governance recorded"]
+    },
+    {
+      "module": "migration",
+      "name": "MsgClaimMorseAccount",
+      "type_url": "pocket.migration.MsgClaimMorseAccount",
+      "purpose": "Claims Morse account during migration",
+      "fields": ["authority", "morse_address", "pocket_address"],
+      "indexer_processing": [
+        "insert migration claim record",
+        "record account recovery action",
+        "track migration progress"
+      ],
+      "state_changes": ["migration claim recorded", "account recovery initiated", "migration state updated"]
+    },
+    {
+      "module": "migration",
+      "name": "MsgClaimMorseApplication",
+      "type_url": "pocket.migration.MsgClaimMorseApplication",
+      "purpose": "Claims Morse application during migration",
+      "fields": ["authority", "morse_address", "pocket_address"],
+      "indexer_processing": [
+        "insert application migration record",
+        "record application recovery action",
+        "track migration progress"
+      ],
+      "state_changes": ["application migration recorded", "application recovery initiated", "migration state updated"]
+    },
+    {
+      "module": "migration",
+      "name": "MsgClaimMorseSupplier",
+      "type_url": "pocket.migration.MsgClaimMorseSupplier",
+      "purpose": "Claims Morse supplier during migration",
+      "fields": ["authority", "morse_address", "pocket_address"],
+      "indexer_processing": [
+        "insert supplier migration record",
+        "record supplier recovery action",
+        "track migration progress"
+      ],
+      "state_changes": ["supplier migration recorded", "supplier recovery initiated", "migration state updated"]
+    },
+    {
+      "module": "governance",
+      "name": "MsgUpdateParams (All Modules)",
+      "type_url": "pocket.{module}.MsgUpdateParams",
+      "purpose": "Updates all parameters for a module at once",
+      "fields": ["authority", "params{...}"]
+    },
+    {
+      "module": "cosmos.bank",
+      "name": "MsgSend / MsgMultiSend",
+      "type_url": "cosmos.bank.v1beta1.{MsgSend,MsgMultiSend}",
+      "purpose": "Standard Cosmos SDK bank transfers",
+      "indexer_processing": [
+        "insert token_transfers",
+        "update account balances",
+        "track economic impact"
+      ],
+      "state_changes": ["token balances updated", "transfer history recorded", "economic activity tracked"]
+    },
+    {
+      "module": "cosmos.staking",
+      "name": "MsgDelegate / MsgUndelegate",
+      "type_url": "cosmos.staking.v1beta1.{MsgDelegate,MsgUndelegate}",
+      "purpose": "Standard Cosmos SDK staking operations",
+      "indexer_processing": [
+        "record staking changes",
+        "track validator participation",
+        "update staking metrics"
+      ],
+      "state_changes": ["staking positions updated", "validator power changed", "staking metrics updated"]
+    }
+  ]
+}

@@ -53,14 +53,14 @@ async function processBlock(blockData) {
       try {
         // Parse and save entities based on transaction type
         // Each parsing function is now robust and will return empty arrays on errors
-        const suppliers = parseSuppliers(tx, blockData);
-        const applications = parseApplications(tx, blockData);
-        const stakingEvents = parseStakingEvents(tx, blockData);
-        const services = parseServices(tx, blockData);
-        const nodes = parseNodes(tx, blockData);
-        const relays = parseRelays(tx, blockData);
-        const governance = parseGovernance(tx, blockData);
-        const gateways = parseGateways(tx, blockData);
+        const suppliers = parseSuppliers(tx, blockData, rpcName);
+        const applications = parseApplications(tx, blockData, rpcName);
+        const stakingEvents = parseStakingEvents(tx, blockData, rpcName);
+        const services = parseServices(tx, blockData, rpcName);
+        const nodes = parseNodes(tx, blockData, rpcName);
+        const relays = parseRelays(tx, blockData, rpcName);
+        const governance = parseGovernance(tx, blockData, rpcName);
+        const gateways = parseGateways(tx, blockData, rpcName);
 
         // Save all entities with individual error handling
         // Suppliers

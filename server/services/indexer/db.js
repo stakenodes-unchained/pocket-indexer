@@ -126,7 +126,9 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
             sender: rpcDetails.sender || '',
             recipient: rpcDetails.recipient || '',
             amount: rpcDetails.amount || '0',
-            fee: rpcDetails.fee?.amount?.[0]?.amount || '0',
+            fee: rpcDetails.fee_amount || rpcDetails.fee?.amount?.[0]?.amount || '0',
+            amount_denom: rpcDetails.amount_denom || null,
+            fee_denom: rpcDetails.fee_denom || null,
             memo: rpcDetails.memo || '',
             type: txType,
             status: rpcDetails.status || 'pending',
@@ -239,13 +241,17 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
 async function saveTransaction(tx) {
   await connectClients();
   await pgClient.query(
-    `INSERT INTO transactions (id, hash, block_id, sender, recipient, amount, fee, memo, type, status, timestamp, tx_data, chain)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    `INSERT INTO transactions (id, hash, block_id, sender, recipient, amount, fee, memo, type, status, timestamp, tx_data, chain, amount_denom, fee_denom)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      ON CONFLICT (id) DO UPDATE SET
        type=EXCLUDED.type,
        status=EXCLUDED.status,
        tx_data=EXCLUDED.tx_data,
-       chain=EXCLUDED.chain`,
+       chain=EXCLUDED.chain,
+       amount=EXCLUDED.amount,
+       fee=EXCLUDED.fee,
+       amount_denom=EXCLUDED.amount_denom,
+       fee_denom=EXCLUDED.fee_denom`,
     [
       tx.hash,
       tx.hash,
@@ -259,7 +265,9 @@ async function saveTransaction(tx) {
       tx.status,
       tx.timestamp,
       tx.tx_data || null,
-      tx.chain || null
+      tx.chain || null,
+      tx.amount_denom || null,
+      tx.fee_denom || null
     ]
   );
 }
@@ -383,26 +391,58 @@ async function getTransaction(hash) {
  */
 async function upsertSupplier(supplier) {
   await connectClients();
-  await pgClient.query(
-    `INSERT INTO suppliers (address, public_key, staked_amount, status, service_url, last_seen, geo)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
-     ON CONFLICT (address) DO UPDATE SET
-       public_key=EXCLUDED.public_key,
-       staked_amount=EXCLUDED.staked_amount,
-       status=EXCLUDED.status,
-       service_url=EXCLUDED.service_url,
-       last_seen=EXCLUDED.last_seen,
-       geo=EXCLUDED.geo`,
-    [
-      supplier.address,
-      supplier.public_key,
-      supplier.staked_amount,
-      supplier.status,
-      supplier.service_url,
-      supplier.last_seen,
-      supplier.geo,
-    ]
-  );
+  
+  // Handle incremental staking/unstaking
+  if (supplier.stake_change) {
+    await pgClient.query(
+      `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (address, chain) DO UPDATE SET
+         public_key=EXCLUDED.public_key,
+         staked_amount=GREATEST(0, suppliers.staked_amount + $9),
+         status=CASE 
+           WHEN suppliers.staked_amount + $9 <= 0 THEN 'unstaked'
+           ELSE COALESCE(EXCLUDED.status, suppliers.status)
+         END,
+         service_url=COALESCE(EXCLUDED.service_url, suppliers.service_url),
+         last_seen=EXCLUDED.last_seen,
+         geo=COALESCE(EXCLUDED.geo, suppliers.geo)`,
+      [
+        supplier.address,
+        supplier.chain,
+        supplier.public_key,
+        supplier.staked_amount,
+        supplier.status,
+        supplier.service_url,
+        supplier.last_seen,
+        supplier.geo,
+        supplier.stake_change, // This is the incremental change
+      ]
+    );
+  } else {
+    // Original behavior for non-staking operations
+    await pgClient.query(
+      `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (address, chain) DO UPDATE SET
+         public_key=EXCLUDED.public_key,
+         staked_amount=EXCLUDED.staked_amount,
+         status=EXCLUDED.status,
+         service_url=EXCLUDED.service_url,
+         last_seen=EXCLUDED.last_seen,
+         geo=EXCLUDED.geo`,
+      [
+        supplier.address,
+        supplier.chain,
+        supplier.public_key,
+        supplier.staked_amount,
+        supplier.status,
+        supplier.service_url,
+        supplier.last_seen,
+        supplier.geo,
+      ]
+    );
+  }
 }
 
 /**
@@ -410,24 +450,54 @@ async function upsertSupplier(supplier) {
  */
 async function upsertApplication(app) {
   await connectClients();
-  await pgClient.query(
-    `INSERT INTO applications (address, public_key, staked_amount, status, chains, last_seen)
-     VALUES ($1,$2,$3,$4,$5,$6)
-     ON CONFLICT (address) DO UPDATE SET
-       public_key=EXCLUDED.public_key,
-       staked_amount=EXCLUDED.staked_amount,
-       status=EXCLUDED.status,
-       chains=EXCLUDED.chains,
-       last_seen=EXCLUDED.last_seen`,
-    [
-      app.address,
-      app.public_key,
-      app.staked_amount,
-      app.status,
-      app.chains,
-      app.last_seen,
-    ]
-  );
+  
+  // Handle incremental staking/unstaking
+  if (app.stake_change) {
+    await pgClient.query(
+      `INSERT INTO applications (address, chain, public_key, staked_amount, status, chains, last_seen)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (address, chain) DO UPDATE SET
+         public_key=EXCLUDED.public_key,
+         staked_amount=GREATEST(0, applications.staked_amount + $8),
+         status=CASE 
+           WHEN applications.staked_amount + $8 <= 0 THEN 'unstaked'
+           ELSE COALESCE(EXCLUDED.status, applications.status)
+         END,
+         chains=COALESCE(EXCLUDED.chains, applications.chains),
+         last_seen=EXCLUDED.last_seen`,
+      [
+        app.address,
+        app.chain,
+        app.public_key,
+        app.staked_amount,
+        app.status,
+        app.chains,
+        app.last_seen,
+        app.stake_change, // This is the incremental change
+      ]
+    );
+  } else {
+    // Original behavior for non-staking operations
+    await pgClient.query(
+      `INSERT INTO applications (address, chain, public_key, staked_amount, status, chains, last_seen)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (address, chain) DO UPDATE SET
+         public_key=EXCLUDED.public_key,
+         staked_amount=EXCLUDED.staked_amount,
+         status=EXCLUDED.status,
+         chains=EXCLUDED.chains,
+         last_seen=EXCLUDED.last_seen`,
+      [
+        app.address,
+        app.chain,
+        app.public_key,
+        app.staked_amount,
+        app.status,
+        app.chains,
+        app.last_seen,
+      ]
+    );
+  }
 }
 
 /**
@@ -456,8 +526,7 @@ async function upsertService(service) {
   await pgClient.query(
     `INSERT INTO services (supplier_address, chain, service_url, status, last_checked)
      VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (supplier_address, chain) DO UPDATE SET
-       service_url=EXCLUDED.service_url,
+     ON CONFLICT (supplier_address, chain, service_url) DO UPDATE SET
        status=EXCLUDED.status,
        last_checked=EXCLUDED.last_checked`,
     [
@@ -475,24 +544,58 @@ async function upsertService(service) {
  */
 async function upsertNode(node) {
   await connectClients();
-  await pgClient.query(
-    `INSERT INTO nodes (address, public_key, status, geo, last_seen, service_url)
-     VALUES ($1,$2,$3,$4,$5,$6)
-     ON CONFLICT (address) DO UPDATE SET
-       public_key=EXCLUDED.public_key,
-       status=EXCLUDED.status,
-       geo=EXCLUDED.geo,
-       last_seen=EXCLUDED.last_seen,
-       service_url=EXCLUDED.service_url`,
-    [
-      node.address,
-      node.public_key,
-      node.status,
-      node.geo,
-      node.last_seen,
-      node.service_url,
-    ]
-  );
+  
+  // Handle incremental staking/unstaking
+  if (node.stake_change) {
+    await pgClient.query(
+      `INSERT INTO nodes (address, chain, public_key, staked_amount, status, geo, last_seen, service_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (address, chain) DO UPDATE SET
+         public_key=EXCLUDED.public_key,
+         staked_amount=GREATEST(0, nodes.staked_amount + $9),
+         status=CASE 
+           WHEN nodes.staked_amount + $9 <= 0 THEN 'unstaked'
+           ELSE COALESCE(EXCLUDED.status, nodes.status)
+         END,
+         geo=COALESCE(EXCLUDED.geo, nodes.geo),
+         last_seen=EXCLUDED.last_seen,
+         service_url=COALESCE(EXCLUDED.service_url, nodes.service_url)`,
+      [
+        node.address,
+        node.chain,
+        node.public_key,
+        node.staked_amount,
+        node.status,
+        node.geo,
+        node.last_seen,
+        node.service_url,
+        node.stake_change, // This is the incremental change
+      ]
+    );
+  } else {
+    // Original behavior for non-staking operations
+    await pgClient.query(
+      `INSERT INTO nodes (address, chain, public_key, staked_amount, status, geo, last_seen, service_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (address, chain) DO UPDATE SET
+         public_key=EXCLUDED.public_key,
+         staked_amount=EXCLUDED.staked_amount,
+         status=EXCLUDED.status,
+         geo=EXCLUDED.geo,
+         last_seen=EXCLUDED.last_seen,
+         service_url=EXCLUDED.service_url`,
+      [
+        node.address,
+        node.chain,
+        node.public_key,
+        node.staked_amount,
+        node.status,
+        node.geo,
+        node.last_seen,
+        node.service_url,
+      ]
+    );
+  }
 }
 
 /**
@@ -500,26 +603,58 @@ async function upsertNode(node) {
  */
 async function upsertGateway(gateway) {
   await connectClients();
-  await pgClient.query(
-    `INSERT INTO gateways (address, public_key, staked_amount, status, service_url, last_seen, geo)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
-     ON CONFLICT (address) DO UPDATE SET
-       public_key=EXCLUDED.public_key,
-       staked_amount=EXCLUDED.staked_amount,
-       status=EXCLUDED.status,
-       service_url=EXCLUDED.service_url,
-       last_seen=EXCLUDED.last_seen,
-       geo=EXCLUDED.geo`,
-    [
-      gateway.address,
-      gateway.public_key,
-      gateway.staked_amount,
-      gateway.status,
-      gateway.service_url,
-      gateway.last_seen,
-      gateway.geo,
-    ]
-  );
+  
+  // Handle incremental staking/unstaking
+  if (gateway.stake_change) {
+    await pgClient.query(
+      `INSERT INTO gateways (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (address, chain) DO UPDATE SET
+         public_key=EXCLUDED.public_key,
+         staked_amount=GREATEST(0, gateways.staked_amount + $9),
+         status=CASE 
+           WHEN gateways.staked_amount + $9 <= 0 THEN 'unstaked'
+           ELSE COALESCE(EXCLUDED.status, gateways.status)
+         END,
+         service_url=COALESCE(EXCLUDED.service_url, gateways.service_url),
+         last_seen=EXCLUDED.last_seen,
+         geo=COALESCE(EXCLUDED.geo, gateways.geo)`,
+      [
+        gateway.address,
+        gateway.chain,
+        gateway.public_key,
+        gateway.staked_amount,
+        gateway.status,
+        gateway.service_url,
+        gateway.last_seen,
+        gateway.geo,
+        gateway.stake_change, // This is the incremental change
+      ]
+    );
+  } else {
+    // Original behavior for non-staking operations
+    await pgClient.query(
+      `INSERT INTO gateways (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (address, chain) DO UPDATE SET
+         public_key=EXCLUDED.public_key,
+         staked_amount=EXCLUDED.staked_amount,
+         status=EXCLUDED.status,
+         service_url=EXCLUDED.service_url,
+         last_seen=EXCLUDED.last_seen,
+         geo=EXCLUDED.geo`,
+      [
+        gateway.address,
+        gateway.chain,
+        gateway.public_key,
+        gateway.staked_amount,
+        gateway.status,
+        gateway.service_url,
+        gateway.last_seen,
+        gateway.geo,
+      ]
+    );
+  }
 }
 
 module.exports = {

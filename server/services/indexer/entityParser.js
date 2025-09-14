@@ -34,75 +34,78 @@ function classifyTransaction(tx) {
           continue;
         }
         
-        const msgType = msg['@type'];
+        const rawType = msg['@type'];
+        const msgType = typeof rawType === 'string' ? rawType.replace(/^\//, '') : rawType;
         
         if (!msgType || typeof msgType !== 'string') {
           continue;
         }
         
         // Pocket-specific messages
-        if (msgType.startsWith('/pocket.supplier.')) {
+        if (msgType.startsWith('pocket.supplier.')) {
           const parts = msgType.split('.');
           return parts.length > 0 ? `${parts[parts.length - 1]} (supplier)` : 'supplier';
         }
-        if (msgType.startsWith('/pocket.app.')) {
+        if (msgType.startsWith('pocket.app.')) {
           const parts = msgType.split('.');
           return parts.length > 0 ? `${parts[parts.length - 1]} (application)` : 'application';
         }
-        if (msgType.startsWith('/pocket.application.')) {
+        if (msgType.startsWith('pocket.application.')) {
           const parts = msgType.split('.');
           return parts.length > 0 ? `${parts[parts.length - 1]} (application)` : 'application';
         }
-        if (msgType.startsWith('/pocket.pos.')) {
+        if (msgType.startsWith('pocket.pos.')) {
           const parts = msgType.split('.');
           return parts.length > 0 ? `${parts[parts.length - 1]} (node)` : 'node';
         }
-        if (msgType.startsWith('/pocket.relay.')) {
+        if (msgType.startsWith('pocket.relay.')) {
           const parts = msgType.split('.');
           return parts.length > 0 ? `${parts[parts.length - 1]} (relay)` : 'relay';
         }
-        if (msgType.startsWith('/pocket.bank.')) {
+        if (msgType.startsWith('pocket.bank.')) {
           const parts = msgType.split('.');
           return parts.length > 0 ? `${parts[parts.length - 1]} (bank)` : 'bank';
         }
-        if (msgType.startsWith('/pocket.proof.')) {
+        if (msgType.startsWith('pocket.proof.')) {
           const parts = msgType.split('.');
           return parts.length > 0 ? `${parts[parts.length - 1]} (proof)` : 'proof';
         }
-        if (msgType.startsWith('/pocket.service.')) {
+        if (msgType.startsWith('pocket.service.')) {
           const parts = msgType.split('.');
           return parts.length > 0 ? `${parts[parts.length - 1]} (service)` : 'service';
         }
         
-        if (msgType.startsWith('/pocket.gateway.')) {
+        if (msgType.startsWith('pocket.gateway.')) {
           const parts = msgType.split('.');
           return parts.length > 0 ? `${parts[parts.length - 1]} (gateway)` : 'gateway';
         }
         
         // Cosmos SDK messages
-        if (msgType.startsWith('/cosmos.bank.')) {
+        if (msgType.startsWith('cosmos.bank.')) {
           const parts = msgType.split('.');
-          return parts.length > 2 ? `${parts[2]} (bank)` : 'bank';
+          // e.g. cosmos.bank.v1beta1.MsgSend
+          return parts.length > 3 ? `${parts[3]} (bank)` : 'bank';
         }
-        if (msgType.startsWith('/cosmos.staking.')) {
+        if (msgType.startsWith('cosmos.staking.')) {
           const parts = msgType.split('.');
-          return parts.length > 2 ? `${parts[2]} (node)` : 'node';
+          // e.g. cosmos.staking.v1beta1.MsgDelegate
+          return parts.length > 3 ? `${parts[3]} (node)` : 'node';
         }
-        if (msgType.startsWith('/cosmos.distr.')) {
+        if (msgType.startsWith('cosmos.distr.')) {
           const parts = msgType.split('.');
-          return parts.length > 2 ? `${parts[2]} (rewards)` : 'rewards';
+          return parts.length > 3 ? `${parts[3]} (rewards)` : 'rewards';
         }
-        if (msgType.startsWith('/cosmos.gov.')) {
+        if (msgType.startsWith('cosmos.gov.')) {
           const parts = msgType.split('.');
-          return parts.length > 2 ? `${parts[2]} (governance)` : 'governance';
+          return parts.length > 3 ? `${parts[3]} (governance)` : 'governance';
         }
-        if (msgType.startsWith('/cosmos.slashing.')) {
+        if (msgType.startsWith('cosmos.slashing.')) {
           const parts = msgType.split('.');
-          return parts.length > 2 ? `${parts[2]} (slashing)` : 'slashing';
+          return parts.length > 3 ? `${parts[3]} (slashing)` : 'slashing';
         }
-        if (msgType.startsWith('/cosmos.authz.')) {
+        if (msgType.startsWith('cosmos.authz.')) {
           const parts = msgType.split('.');
-          return parts.length > 2 ? `${parts[2]} (authz)` : 'authz';
+          return parts.length > 3 ? `${parts[3]} (authz)` : 'authz';
         }
       } catch (msgError) {
         console.warn("Error processing individual message:", msgError.message);
@@ -124,7 +127,7 @@ function classifyTransaction(tx) {
  * @param {any} block
  * @returns {Array}
  */
-function parseSuppliers(tx, block) {
+function parseSuppliers(tx, block, chain) {
   try {
     const suppliers = [];
     
@@ -152,18 +155,21 @@ function parseSuppliers(tx, block) {
           continue;
         }
         
-        const msgType = msg['@type'];
+        const rawType = msg['@type'];
+        const msgType = typeof rawType === 'string' ? rawType.replace(/^\//, '') : rawType;
         
         if (!msgType || typeof msgType !== 'string') {
           continue;
         }
         
         // Pocket Supplier Messages
-        if (msgType === '/pocket.supplier.MsgStakeSupplier') {
+        if (msgType === 'pocket.supplier.MsgStakeSupplier') {
           const supplier = {
-            address: msg.operator_address || '',
+            address: msg.operator_address || msg.signer || '',
+            chain: chain || 'unknown',
             public_key: msg.public_key || null,
             staked_amount: msg.stake?.amount || '0',
+            stake_change: msg.stake?.amount || '0', // Track the incremental change
             status: 'staked',
             service_url: msg.services?.[0]?.endpoints?.[0]?.url || null,
             last_seen: timestamp,
@@ -176,11 +182,33 @@ function parseSuppliers(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.supplier.MsgUnstakeSupplier') {
+        if (msgType === 'pocket.supplier.MsgUnstakeSupplier') {
+          // Extract current stake amount from transaction events
+          let currentStakeAmount = '0';
+          if (tx.tx_response?.events) {
+            for (const event of tx.tx_response.events) {
+              if (event.type === 'pocket.supplier.EventSupplierUnbondingBegin') {
+                for (const attr of event.attributes) {
+                  if (attr.key === 'supplier' && attr.value) {
+                    try {
+                      const supplierData = JSON.parse(attr.value);
+                      currentStakeAmount = supplierData.stake?.amount || '0';
+                      break;
+                    } catch (e) {
+                      console.warn('Failed to parse supplier data from event:', e.message);
+                    }
+                  }
+                }
+                break;
+              }
+            }
+          }
+          
           const supplier = {
             address: msg.operator_address || '',
             public_key: msg.public_key || null,
             staked_amount: '0',
+            stake_change: `-${currentStakeAmount}`, // Negative change for unstaking
             status: 'unstaked',
             service_url: null,
             last_seen: timestamp,
@@ -193,7 +221,7 @@ function parseSuppliers(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.supplier.MsgEditSupplier') {
+        if (msgType === 'pocket.supplier.MsgEditSupplier') {
           const supplier = {
             address: msg.operator_address || '',
             public_key: msg.public_key || null,
@@ -211,7 +239,7 @@ function parseSuppliers(tx, block) {
         }
         
         // Cosmos Staking Messages (for validators/suppliers)
-        if (msgType === '/cosmos.staking.MsgCreateValidator') {
+        if (msgType === 'cosmos.staking.v1beta1.MsgCreateValidator' || msgType === 'cosmos.staking.MsgCreateValidator') {
           const supplier = {
             address: msg.validator_address || '',
             public_key: msg.pubkey?.key || null,
@@ -228,7 +256,7 @@ function parseSuppliers(tx, block) {
           }
         }
         
-        if (msgType === '/cosmos.staking.MsgDelegate') {
+        if (msgType === 'cosmos.staking.v1beta1.MsgDelegate' || msgType === 'cosmos.staking.MsgDelegate') {
           const supplier = {
             address: msg.delegator_address || '',
             public_key: null,
@@ -263,7 +291,7 @@ function parseSuppliers(tx, block) {
  * @param {any} block
  * @returns {Array}
  */
-function parseApplications(tx, block) {
+function parseApplications(tx, block, chain) {
   try {
     const apps = [];
     
@@ -291,16 +319,17 @@ function parseApplications(tx, block) {
           continue;
         }
         
-        const msgType = msg['@type'];
+        const rawType = msg['@type'];
+        const msgType = typeof rawType === 'string' ? rawType.replace(/^\//, '') : rawType;
         
         if (!msgType || typeof msgType !== 'string') {
           continue;
         }
         
         // Pocket App Messages
-        if (msgType === '/pocket.app.MsgStakeApp') {
+        if (msgType === 'pocket.app.MsgStakeApp') {
           const app = {
-            address: msg.operator_address || '',
+            address: msg.operator_address || msg.address || '',
             public_key: msg.public_key || null,
             staked_amount: msg.stake?.amount || '0',
             status: 'staked',
@@ -314,9 +343,9 @@ function parseApplications(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.app.MsgUnstakeApp') {
+        if (msgType === 'pocket.app.MsgUnstakeApp') {
           const app = {
-            address: msg.operator_address || '',
+            address: msg.operator_address || msg.address || '',
             public_key: msg.public_key || null,
             staked_amount: '0',
             status: 'unstaked',
@@ -330,7 +359,7 @@ function parseApplications(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.app.MsgEditApp') {
+        if (msgType === 'pocket.app.MsgEditApp') {
           const app = {
             address: msg.operator_address || '',
             public_key: msg.public_key || null,
@@ -347,9 +376,10 @@ function parseApplications(tx, block) {
         }
         
         // Pocket Application Messages (singular form)
-        if (msgType === '/pocket.application.MsgDelegateToGateway') {
+        if (msgType === 'pocket.application.MsgDelegateToGateway') {
           const app = {
             address: msg.application_address || msg.app_address || '',
+            chain: chain || 'unknown',
             public_key: null,
             staked_amount: msg.amount?.amount || '0',
             status: 'delegated',
@@ -363,9 +393,10 @@ function parseApplications(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.application.MsgUndelegateFromGateway') {
+        if (msgType === 'pocket.application.MsgUndelegateFromGateway') {
           const app = {
             address: msg.application_address || msg.app_address || '',
+            chain: chain || 'unknown',
             public_key: null,
             staked_amount: '0',
             status: 'undelegated',
@@ -379,11 +410,13 @@ function parseApplications(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.application.MsgStakeApplication') {
+        if (msgType === 'pocket.application.MsgStakeApplication') {
           const app = {
-            address: msg.operator_address || msg.application_address || '',
+            address: msg.application_address || msg.address || '',
+            chain: chain || 'unknown',
             public_key: msg.public_key || null,
             staked_amount: msg.stake?.amount || '0',
+            stake_change: msg.stake?.amount || '0', // Track the incremental change
             status: 'staked',
             chains: Array.isArray(msg.chains) ? msg.chains : [],
             last_seen: timestamp,
@@ -395,17 +428,55 @@ function parseApplications(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.application.MsgUnstakeApplication') {
+        if (msgType === 'pocket.application.MsgUnstakeApplication') {
+          // Extract current stake amount from transaction events
+          let currentStakeAmount = '0';
+          if (tx.tx_response?.events) {
+            for (const event of tx.tx_response.events) {
+              if (event.type === 'pocket.application.EventApplicationUnbondingBegin') {
+                for (const attr of event.attributes) {
+                  if (attr.key === 'application' && attr.value) {
+                    try {
+                      const appData = JSON.parse(attr.value);
+                      currentStakeAmount = appData.stake?.amount || '0';
+                      break;
+                    } catch (e) {
+                      console.warn('Failed to parse application data from event:', e.message);
+                    }
+                  }
+                }
+                break;
+              }
+            }
+          }
+          
           const app = {
-            address: msg.operator_address || msg.application_address || '',
+            address: msg.application_address || msg.address || '',
+            chain: chain || 'unknown',
             public_key: msg.public_key || null,
             staked_amount: '0',
+            stake_change: `-${currentStakeAmount}`, // Negative change for unstaking
             status: 'unstaked',
             chains: [],
             last_seen: timestamp,
           };
           
           // Validate required fields
+          if (app.address) {
+            apps.push(app);
+          }
+        }
+
+        // Ownership transfer (track as application update)
+        if (msgType === 'pocket.application.MsgTransferApplication') {
+          const app = {
+            address: msg.destination_address || '',
+            public_key: null,
+            staked_amount: '0',
+            status: 'transferred',
+            chains: [],
+            last_seen: timestamp,
+          };
           if (app.address) {
             apps.push(app);
           }
@@ -429,7 +500,7 @@ function parseApplications(tx, block) {
  * @param {any} block
  * @returns {Array}
  */
-function parseStakingEvents(tx, block) {
+function parseStakingEvents(tx, block, chain) {
   try {
     const events = [];
     
@@ -457,16 +528,18 @@ function parseStakingEvents(tx, block) {
           continue;
         }
         
-        const msgType = msg['@type'];
+        const rawType = msg['@type'];
+        const msgType = typeof rawType === 'string' ? rawType.replace(/^\//, '') : rawType;
         
         if (!msgType || typeof msgType !== 'string') {
           continue;
         }
         
         // Pocket Supplier Events
-        if (msgType === '/pocket.supplier.MsgStakeSupplier') {
+        if (msgType === 'pocket.supplier.MsgStakeSupplier') {
           const event = {
-            address: msg.operator_address || '',
+            address: msg.operator_address || msg.signer || '',
+            chain: chain || 'unknown',
             type: 'supplier',
             amount: msg.stake?.amount || '0',
             event: 'stake',
@@ -478,9 +551,10 @@ function parseStakingEvents(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.supplier.MsgUnstakeSupplier') {
+        if (msgType === 'pocket.supplier.MsgUnstakeSupplier') {
           const event = {
             address: msg.operator_address || '',
+            chain: chain || 'unknown',
             type: 'supplier',
             amount: '0',
             event: 'unstake',
@@ -493,9 +567,10 @@ function parseStakingEvents(tx, block) {
         }
         
         // Pocket App Events
-        if (msgType === '/pocket.app.MsgStakeApp') {
+        if (msgType === 'pocket.app.MsgStakeApp') {
           const event = {
-            address: msg.operator_address || '',
+            address: msg.operator_address || msg.address || '',
+            chain: chain || 'unknown',
             type: 'application',
             amount: msg.stake?.amount || '0',
             event: 'stake',
@@ -507,9 +582,10 @@ function parseStakingEvents(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.app.MsgUnstakeApp') {
+        if (msgType === 'pocket.app.MsgUnstakeApp') {
           const event = {
-            address: msg.operator_address || '',
+            address: msg.operator_address || msg.address || '',
+            chain: chain || 'unknown',
             type: 'application',
             amount: '0',
             event: 'unstake',
@@ -522,7 +598,7 @@ function parseStakingEvents(tx, block) {
         }
         
         // Pocket Application Events (singular form)
-        if (msgType === '/pocket.application.MsgDelegateToGateway') {
+        if (msgType === 'pocket.application.MsgDelegateToGateway') {
           const event = {
             address: msg.application_address || msg.app_address || '',
             type: 'application',
@@ -536,7 +612,7 @@ function parseStakingEvents(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.application.MsgUndelegateFromGateway') {
+        if (msgType === 'pocket.application.MsgUndelegateFromGateway') {
           const event = {
             address: msg.application_address || msg.app_address || '',
             type: 'application',
@@ -550,9 +626,9 @@ function parseStakingEvents(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.application.MsgStakeApplication') {
+        if (msgType === 'pocket.application.MsgStakeApplication') {
           const event = {
-            address: msg.operator_address || msg.application_address || '',
+            address: msg.application_address || msg.address || '',
             type: 'application',
             amount: msg.stake?.amount || '0',
             event: 'stake',
@@ -564,9 +640,9 @@ function parseStakingEvents(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.application.MsgUnstakeApplication') {
+        if (msgType === 'pocket.application.MsgUnstakeApplication') {
           const event = {
-            address: msg.operator_address || msg.application_address || '',
+            address: msg.application_address || msg.address || '',
             type: 'application',
             amount: '0',
             event: 'unstake',
@@ -579,9 +655,10 @@ function parseStakingEvents(tx, block) {
         }
         
         // Pocket Gateway Events
-        if (msgType === '/pocket.gateway.MsgStakeGateway') {
+        if (msgType === 'pocket.gateway.MsgStakeGateway') {
           const event = {
-            address: msg.operator_address || msg.gateway_address || '',
+            address: msg.address || msg.operator_address || msg.gateway_address || '',
+            chain: chain || 'unknown',
             type: 'gateway',
             amount: msg.stake?.amount || '0',
             event: 'stake',
@@ -593,9 +670,10 @@ function parseStakingEvents(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.gateway.MsgUnstakeGateway') {
+        if (msgType === 'pocket.gateway.MsgUnstakeGateway') {
           const event = {
-            address: msg.operator_address || msg.gateway_address || '',
+            address: msg.address || msg.operator_address || msg.gateway_address || '',
+            chain: chain || 'unknown',
             type: 'gateway',
             amount: '0',
             event: 'unstake',
@@ -608,7 +686,7 @@ function parseStakingEvents(tx, block) {
         }
         
         // Cosmos Staking Events
-        if (msgType === '/cosmos.staking.MsgDelegate') {
+        if (msgType === 'cosmos.staking.v1beta1.MsgDelegate' || msgType === 'cosmos.staking.MsgDelegate') {
           const event = {
             address: msg.delegator_address || '',
             type: 'delegator',
@@ -622,7 +700,7 @@ function parseStakingEvents(tx, block) {
           }
         }
         
-        if (msgType === '/cosmos.staking.MsgUndelegate') {
+        if (msgType === 'cosmos.staking.v1beta1.MsgUndelegate' || msgType === 'cosmos.staking.MsgUndelegate') {
           const event = {
             address: msg.delegator_address || '',
             type: 'delegator',
@@ -636,7 +714,7 @@ function parseStakingEvents(tx, block) {
           }
         }
         
-        if (msgType === '/cosmos.staking.MsgBeginRedelegate') {
+        if (msgType === 'cosmos.staking.v1beta1.MsgBeginRedelegate' || msgType === 'cosmos.staking.MsgBeginRedelegate') {
           const event = {
             address: msg.delegator_address || '',
             type: 'delegator',
@@ -651,7 +729,7 @@ function parseStakingEvents(tx, block) {
         }
         
         // Cosmos Distribution Events
-        if (msgType === '/cosmos.distr.MsgWithdrawDelegatorReward') {
+        if (msgType === 'cosmos.distr.v1beta1.MsgWithdrawDelegatorReward' || msgType === 'cosmos.distr.MsgWithdrawDelegatorReward') {
           const event = {
             address: msg.delegator_address || '',
             type: 'delegator',
@@ -711,14 +789,15 @@ function parseClaims(tx, block) {
           continue;
         }
         
-        const msgType = msg['@type'];
+        const rawType = msg['@type'];
+        const msgType = typeof rawType === 'string' ? rawType.replace(/^\//, '') : rawType;
         
         if (!msgType || typeof msgType !== 'string') {
           continue;
         }
         
         // Pocket Proof Messages
-        if (msgType === '/pocket.proof.MsgCreateClaim') {
+        if (msgType === 'pocket.proof.MsgCreateClaim') {
           const claim = {
             supplier_operator_address: msg.supplier_operator_address || '',
             application_address: msg.session_header?.application_address || '',
@@ -737,7 +816,7 @@ function parseClaims(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.proof.MsgSubmitProof') {
+        if (msgType === 'pocket.proof.MsgSubmitProof') {
           const claim = {
             supplier_operator_address: msg.supplier_operator_address || '',
             application_address: msg.session_header?.application_address || '',
@@ -774,7 +853,7 @@ function parseClaims(tx, block) {
  * @param {any} block
  * @returns {Array}
  */
-function parseServices(tx, block) {
+function parseServices(tx, block, chain) {
   try {
     const services = [];
     
@@ -802,18 +881,19 @@ function parseServices(tx, block) {
           continue;
         }
         
-        const msgType = msg['@type'];
+        const rawType = msg['@type'];
+        const msgType = typeof rawType === 'string' ? rawType.replace(/^\//, '') : rawType;
         
         if (!msgType || typeof msgType !== 'string') {
           continue;
         }
         
         // Pocket Supplier Services
-        if (msgType === '/pocket.supplier.MsgStakeSupplier' && Array.isArray(msg.services)) {
+        if (msgType === 'pocket.supplier.MsgStakeSupplier' && Array.isArray(msg.services)) {
           for (const service of msg.services) {
             try {
               const serviceObj = {
-                supplier_address: msg.operator_address || '',
+                supplier_address: msg.operator_address || msg.signer || '',
                 chain: service.service_id || '',
                 service_url: service.endpoints?.[0]?.url || null,
                 status: 'active',
@@ -830,7 +910,7 @@ function parseServices(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.supplier.MsgEditSupplier' && Array.isArray(msg.services)) {
+        if (msgType === 'pocket.supplier.MsgEditSupplier' && Array.isArray(msg.services)) {
           for (const service of msg.services) {
             try {
               const serviceObj = {
@@ -851,7 +931,7 @@ function parseServices(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.supplier.MsgUnstakeSupplier' && Array.isArray(msg.services)) {
+        if (msgType === 'pocket.supplier.MsgUnstakeSupplier' && Array.isArray(msg.services)) {
           for (const service of msg.services) {
             try {
               const serviceObj = {
@@ -873,7 +953,22 @@ function parseServices(tx, block) {
         }
         
         // Pocket Service Messages
-        if (msgType === '/pocket.service.MsgAddServiceResponse') {
+        // Pocket Service Messages
+        if (msgType === 'pocket.service.MsgAddService') {
+          const service = {
+            supplier_address: msg.owner_address || '',
+            chain: msg.service?.id || '',
+            service_url: null, // MsgAddService doesn't have service_url
+            status: 'active',
+            last_checked: timestamp,
+          };
+          
+          if (service.supplier_address && service.chain) {
+            services.push(service);
+          }
+        }
+        
+        if (msgType === 'pocket.service.MsgAddServiceResponse') {
           const service = {
             supplier_address: msg.supplier_operator_address || '',
             chain: msg.service_id || '',
@@ -887,7 +982,7 @@ function parseServices(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.service.MsgUpdateServiceResponse') {
+        if (msgType === 'pocket.service.MsgUpdateServiceResponse') {
           const service = {
             supplier_address: msg.supplier_operator_address || '',
             chain: msg.service_id || '',
@@ -902,11 +997,11 @@ function parseServices(tx, block) {
         }
         
         // Pocket Gateway Service Messages
-        if (msgType === '/pocket.gateway.MsgStakeGateway' && Array.isArray(msg.services)) {
+        if (msgType === 'pocket.gateway.MsgStakeGateway' && Array.isArray(msg.services)) {
           for (const service of msg.services) {
             try {
               const serviceObj = {
-                supplier_address: msg.operator_address || msg.gateway_address || '',
+                supplier_address: msg.address || msg.operator_address || msg.gateway_address || '',
                 chain: service.service_id || '',
                 service_url: service.endpoints?.[0]?.url || null,
                 status: 'active',
@@ -923,11 +1018,11 @@ function parseServices(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.gateway.MsgEditGateway' && Array.isArray(msg.services)) {
+        if (msgType === 'pocket.gateway.MsgEditGateway' && Array.isArray(msg.services)) {
           for (const service of msg.services) {
             try {
               const serviceObj = {
-                supplier_address: msg.operator_address || msg.gateway_address || '',
+                supplier_address: msg.address || msg.operator_address || msg.gateway_address || '',
                 chain: service.service_id || '',
                 service_url: service.endpoints?.[0]?.url || null,
                 status: 'edited',
@@ -944,11 +1039,11 @@ function parseServices(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.gateway.MsgUnstakeGateway' && Array.isArray(msg.services)) {
+        if (msgType === 'pocket.gateway.MsgUnstakeGateway' && Array.isArray(msg.services)) {
           for (const service of msg.services) {
             try {
               const serviceObj = {
-                supplier_address: msg.operator_address || msg.gateway_address || '',
+                supplier_address: msg.address || msg.operator_address || msg.gateway_address || '',
                 chain: service.service_id || '',
                 service_url: null,
                 status: 'inactive',
@@ -983,7 +1078,7 @@ function parseServices(tx, block) {
  * @param {any} block
  * @returns {Array}
  */
-function parseNodes(tx, block) {
+function parseNodes(tx, block, chain) {
   try {
     const nodes = [];
     
@@ -1011,17 +1106,21 @@ function parseNodes(tx, block) {
           continue;
         }
         
-        const msgType = msg['@type'];
+        const rawType = msg['@type'];
+        const msgType = typeof rawType === 'string' ? rawType.replace(/^\//, '') : rawType;
         
         if (!msgType || typeof msgType !== 'string') {
           continue;
         }
         
         // Pocket POS Messages
-        if (msgType === '/pocket.pos.MsgStake') {
+        if (msgType === 'pocket.pos.MsgStake') {
           const node = {
             address: msg.operator_address || '',
+            chain: chain || 'unknown',
             public_key: msg.public_key || null,
+            staked_amount: msg.stake?.amount || '0',
+            stake_change: msg.stake?.amount || '0', // Track the incremental change
             status: 'staked',
             geo: msg.geo || null,
             last_seen: timestamp,
@@ -1033,9 +1132,10 @@ function parseNodes(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.pos.MsgUnstake') {
+        if (msgType === 'pocket.pos.MsgUnstake') {
           const node = {
             address: msg.operator_address || '',
+            chain: chain || 'unknown',
             public_key: msg.public_key || null,
             status: 'unstaked',
             geo: null,
@@ -1048,9 +1148,10 @@ function parseNodes(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.pos.MsgEditValidator') {
+        if (msgType === 'pocket.pos.MsgEditValidator') {
           const node = {
             address: msg.operator_address || '',
+            chain: chain || 'unknown',
             public_key: msg.public_key || null,
             status: 'edited',
             geo: msg.geo || null,
@@ -1064,10 +1165,13 @@ function parseNodes(tx, block) {
         }
         
         // Cosmos Staking Messages
-        if (msgType === '/cosmos.staking.MsgCreateValidator') {
+        if (msgType === 'cosmos.staking.v1beta1.MsgCreateValidator' || msgType === 'cosmos.staking.MsgCreateValidator') {
           const node = {
             address: msg.validator_address || '',
+            chain: chain || 'unknown',
             public_key: msg.pubkey?.key || null,
+            staked_amount: msg.value?.amount || '0',
+            stake_change: msg.value?.amount || '0', // Track the incremental change
             status: 'active',
             geo: null,
             last_seen: timestamp,
@@ -1079,7 +1183,7 @@ function parseNodes(tx, block) {
           }
         }
         
-        if (msgType === '/cosmos.staking.MsgEditValidator') {
+        if (msgType === 'cosmos.staking.v1beta1.MsgEditValidator' || msgType === 'cosmos.staking.MsgEditValidator') {
           const node = {
             address: msg.validator_address || '',
             public_key: null,
@@ -1095,7 +1199,7 @@ function parseNodes(tx, block) {
         }
         
         // Cosmos Slashing Messages
-        if (msgType === '/cosmos.slashing.MsgUnjail') {
+        if (msgType === 'cosmos.slashing.v1beta1.MsgUnjail' || msgType === 'cosmos.slashing.MsgUnjail') {
           const node = {
             address: msg.validator_addr || '',
             public_key: null,
@@ -1128,7 +1232,7 @@ function parseNodes(tx, block) {
  * @param {any} block
  * @returns {Array}
  */
-function parseRelays(tx, block) {
+function parseRelays(tx, block, chain) {
   try {
     const relays = [];
     
@@ -1156,18 +1260,36 @@ function parseRelays(tx, block) {
           continue;
         }
         
-        const msgType = msg['@type'];
+        const rawType = msg['@type'];
+        const msgType = typeof rawType === 'string' ? rawType.replace(/^\//, '') : rawType;
         
         if (!msgType || typeof msgType !== 'string') {
           continue;
         }
         
-        if (msgType === '/pocket.relay.MsgRelayProof') {
+        if (msgType === 'pocket.relay.MsgRelayProof') {
           const relay = {
             supplier_address: msg.supplier_address || '',
             application_address: msg.application_address || '',
             session_id: msg.session_id || '',
-            chain: msg.chain || '',
+            chain: chain || 'unknown',
+            proof: msg.proof || '',
+            timestamp: timestamp,
+          };
+          
+          // Validate required fields
+          if (relay.supplier_address && relay.application_address && relay.session_id) {
+            relays.push(relay);
+          }
+        }
+        
+        // Handle MsgSubmitProof as relay records
+        if (msgType === 'pocket.proof.MsgSubmitProof') {
+          const relay = {
+            supplier_address: msg.supplier_operator_address || '',
+            application_address: msg.session_header?.application_address || '',
+            session_id: msg.session_header?.session_id || '',
+            chain: chain || 'unknown',
             proof: msg.proof || '',
             timestamp: timestamp,
           };
@@ -1196,7 +1318,7 @@ function parseRelays(tx, block) {
  * @param {any} block
  * @returns {Array}
  */
-function parseGovernance(tx, block) {
+function parseGovernance(tx, block, chain) {
   try {
     const governance = [];
     
@@ -1288,7 +1410,7 @@ function parseGovernance(tx, block) {
  * @param {any} block
  * @returns {Array}
  */
-function parseGateways(tx, block) {
+function parseGateways(tx, block, chain) {
   try {
     const gateways = [];
     
@@ -1316,18 +1438,21 @@ function parseGateways(tx, block) {
           continue;
         }
         
-        const msgType = msg['@type'];
+        const rawType = msg['@type'];
+        const msgType = typeof rawType === 'string' ? rawType.replace(/^\//, '') : rawType;
         
         if (!msgType || typeof msgType !== 'string') {
           continue;
         }
         
         // Pocket Gateway Messages
-        if (msgType === '/pocket.gateway.MsgStakeGateway') {
+        if (msgType === 'pocket.gateway.MsgStakeGateway') {
           const gateway = {
-            address: msg.operator_address || msg.gateway_address || '',
+            address: msg.address || msg.operator_address || msg.gateway_address || '',
+            chain: chain || 'unknown',
             public_key: msg.public_key || null,
             staked_amount: msg.stake?.amount || '0',
+            stake_change: msg.stake?.amount || '0', // Track the incremental change
             status: 'staked',
             service_url: msg.services?.[0]?.endpoints?.[0]?.url || null,
             last_seen: timestamp,
@@ -1340,11 +1465,34 @@ function parseGateways(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.gateway.MsgUnstakeGateway') {
+        if (msgType === 'pocket.gateway.MsgUnstakeGateway') {
+          // Extract current stake amount from transaction events
+          let currentStakeAmount = '0';
+          if (tx.tx_response?.events) {
+            for (const event of tx.tx_response.events) {
+              if (event.type === 'pocket.gateway.EventGatewayUnbondingBegin') {
+                for (const attr of event.attributes) {
+                  if (attr.key === 'gateway' && attr.value) {
+                    try {
+                      const gatewayData = JSON.parse(attr.value);
+                      currentStakeAmount = gatewayData.stake?.amount || '0';
+                      break;
+                    } catch (e) {
+                      console.warn('Failed to parse gateway data from event:', e.message);
+                    }
+                  }
+                }
+                break;
+              }
+            }
+          }
+          
           const gateway = {
-            address: msg.operator_address || msg.gateway_address || '',
+            address: msg.address || msg.operator_address || msg.gateway_address || '',
+            chain: chain || 'unknown',
             public_key: msg.public_key || null,
             staked_amount: '0',
+            stake_change: `-${currentStakeAmount}`, // Negative change for unstaking
             status: 'unstaked',
             service_url: null,
             last_seen: timestamp,
@@ -1357,9 +1505,10 @@ function parseGateways(tx, block) {
           }
         }
         
-        if (msgType === '/pocket.gateway.MsgEditGateway') {
+        if (msgType === 'pocket.gateway.MsgEditGateway') {
           const gateway = {
-            address: msg.operator_address || msg.gateway_address || '',
+            address: msg.address || msg.operator_address || msg.gateway_address || '',
+            chain: chain || 'unknown',
             public_key: msg.public_key || null,
             staked_amount: msg.stake?.amount || '0',
             status: 'edited',

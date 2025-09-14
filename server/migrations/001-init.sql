@@ -3,7 +3,8 @@ CREATE TABLE IF NOT EXISTS blocks (
   height INTEGER UNIQUE,
   hash TEXT,
   timestamp TIMESTAMP,
-  proposer TEXT
+  proposer TEXT,
+  chain TEXT
 );
 
 CREATE TABLE IF NOT EXISTS transactions (
@@ -18,5 +19,6 @@ CREATE TABLE IF NOT EXISTS transactions (
   type TEXT,
   status TEXT,
   chain TEXT,
+  tx_data JSONB,
   timestamp TIMESTAMP
 ); 
