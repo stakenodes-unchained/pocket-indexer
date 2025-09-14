@@ -223,7 +223,7 @@ class ProductionDataProcessor {
   async processTransaction(tx) {
     try {
       // Check if transaction was successful
-      if (tx.status !== 'success' && tx.status !== '1') {
+      if (!tx.status) {
         this.stats.skippedTransactions++;
         if (this.verbose) {
           console.log(`⏭️  Skipping failed transaction ${tx.hash} (status: ${tx.status})`);
