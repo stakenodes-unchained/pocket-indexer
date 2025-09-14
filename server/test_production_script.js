@@ -15,7 +15,7 @@ async function testProductionScript() {
     const processor = new ProductionDataProcessor({
       chain: 'pocket-testnet-beta',
       batchSize: 100,
-      limit: 100000, // Process only 50 transactions for testing
+      limit: 5000, 
       verbose: true,
       saveResults: true
     });

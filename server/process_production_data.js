@@ -204,7 +204,14 @@ class ProductionDataProcessor {
     const query = `
       SELECT hash, chain, tx_data, timestamp, status
       FROM transactions 
-      WHERE chain = $1 
+      WHERE chain = $1
+      AND (type ILIKE '%application%'
+      OR type ILIKE '%supplier%'
+      OR type ILIKE '%gateway%'
+      OR type ILIKE '%node%'
+      OR type ILIKE '%service%'
+      OR type ILIKE '%claim%'
+      OR type ILIKE '%relay%')
       ORDER BY timestamp ASC
       LIMIT $2 OFFSET $3
     `;
