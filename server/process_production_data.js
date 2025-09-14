@@ -160,21 +160,21 @@ class ProductionDataProcessor {
         break;
       }
       
-      console.log(`\n📦 Processing batch ${Math.floor(offset / this.batchSize) + 1}: ${transactions.length} transactions`);
-      
       // Process each transaction in the batch
       for (const tx of transactions) {
         try {
           await this.processTransaction(tx);
           processedCount++;
           
-          if (this.verbose && processedCount % 100 === 0) {
-            console.log(`  📈 Processed ${processedCount} transactions...`);
+          // Update progress in place every 10 transactions
+          if (processedCount % 10 === 0) {
+            const progress = ((processedCount / this.stats.totalTransactions) * 100).toFixed(1);
+            process.stdout.write(`\r📊 Processing: ${processedCount}/${this.stats.totalTransactions} (${progress}%) | Batch ${Math.floor(offset / this.batchSize) + 1} | Errors: ${this.stats.errors}`);
           }
           
         } catch (error) {
           this.stats.errors++;
-          console.error(`❌ Error processing transaction ${tx.hash}:`, error.message);
+          console.error(`\n❌ Error processing transaction ${tx.hash}:`, error.message);
           
           if (this.verbose) {
             console.error('Transaction data:', JSON.stringify(tx, null, 2));
@@ -184,15 +184,17 @@ class ProductionDataProcessor {
       
       offset += transactions.length;
       
-      // Show progress
+      // Final progress update for the batch
       const progress = ((processedCount / this.stats.totalTransactions) * 100).toFixed(1);
-      console.log(`📊 Progress: ${processedCount}/${this.stats.totalTransactions} (${progress}%)`);
+      process.stdout.write(`\r📊 Processing: ${processedCount}/${this.stats.totalTransactions} (${progress}%) | Batch ${Math.floor(offset / this.batchSize)} | Errors: ${this.stats.errors}`);
     }
     
     this.stats.endTime = new Date();
     this.stats.processedTransactions = processedCount;
     
-    console.log('\n🎉 Processing completed!');
+    // Clear the progress line and show completion
+    process.stdout.write('\r' + ' '.repeat(100) + '\r');
+    console.log('🎉 Processing completed!');
     this.printSummary();
     
     if (this.saveResults) {
@@ -298,6 +300,8 @@ class ProductionDataProcessor {
       
       // Verbose output for first few transactions
       if (this.verbose && this.stats.processedTransactions < 5) {
+        // Clear progress line before showing verbose output
+        process.stdout.write('\r' + ' '.repeat(100) + '\r');
         console.log(`\n🔍 Transaction ${tx.hash}:`);
         console.log(`  Suppliers: ${suppliers.length}`);
         console.log(`  Applications: ${applications.length}`);
