@@ -137,7 +137,7 @@ function parseSuppliers(tx, block, chain) {
     }
     
     if (!tx.body?.messages && !tx.messages) {
-      console.warn("No messages found in transaction for parseSuppliers", tx);
+      console.warn("No messages found in transaction for parseSuppliers", Object.keys(tx));
       return suppliers;
     }
     
@@ -301,7 +301,7 @@ function parseApplications(tx, block, chain) {
     }
     
     if (!tx.body?.messages && !tx.messages) {
-      console.warn("No messages found in transaction for parseApplications", tx);
+      console.warn("No messages found in transaction for parseApplications", Object.keys(tx));
       return apps;
     }
     
@@ -510,7 +510,7 @@ function parseStakingEvents(tx, block, chain) {
     }
     
     if (!tx.body?.messages && !tx.messages) {
-      console.warn("No messages found in transaction for parseStakingEvents", tx);
+      console.warn("No messages found in transaction for parseStakingEvents", Object.keys(tx));
       return events;
     }
     
@@ -771,7 +771,7 @@ function parseClaims(tx, block) {
     }
     
     if (!tx.body?.messages && !tx.messages) {
-      console.warn("No messages found in transaction for parseClaims", tx);
+      console.warn("No messages found in transaction for parseClaims", Object.keys(tx));
       return claims;
     }
     
@@ -863,7 +863,7 @@ function parseServices(tx, block, chain) {
     }
     
     if (!tx.body?.messages && !tx.messages) {
-      console.warn("No messages found in transaction for parseServices", tx);
+      console.warn("No messages found in transaction for parseServices", Object.keys(tx));
       return services;
     }
     
@@ -1088,7 +1088,7 @@ function parseNodes(tx, block, chain) {
     }
     
     if (!tx.body?.messages && !tx.messages) {
-      console.warn("No messages found in transaction for parseNodes", tx);
+      console.warn("No messages found in transaction for parseNodes", Object.keys(tx));
       return nodes;
     }
     
@@ -1242,7 +1242,7 @@ function parseRelays(tx, block, chain) {
     }
     
     if (!tx.body?.messages && !tx.messages) {
-      console.warn("No messages found in transaction for parseRelays", tx);
+      console.warn("No messages found in transaction for parseRelays", Object.keys(tx));
       return relays;
     }
     
@@ -1328,7 +1328,7 @@ function parseGovernance(tx, block, chain) {
     }
     
     if (!tx.body?.messages && !tx.messages) {
-      console.warn("No messages found in transaction for parseGovernance", tx);
+      console.warn("No messages found in transaction for parseGovernance", Object.keys(tx));
       return governance;
     }
     
@@ -1420,7 +1420,7 @@ function parseGateways(tx, block, chain) {
     }
     
     if (!tx.body?.messages && !tx.messages) {
-      console.warn("No messages found in transaction for parseGateways", tx);
+      console.warn("No messages found in transaction for parseGateways", Object.keys(tx));
       return gateways;
     }
     

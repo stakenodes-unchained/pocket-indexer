@@ -222,12 +222,39 @@ class ProductionDataProcessor {
 
   async processTransaction(tx) {
     try {
-      // Parse the transaction JSON
+      // Check if transaction was successful
+      if (tx.status !== 'success' && tx.status !== '1') {
+        this.stats.skippedTransactions++;
+        if (this.verbose) {
+          console.log(`⏭️  Skipping failed transaction ${tx.hash} (status: ${tx.status})`);
+        }
+        return;
+      }
+      
+      // Parse the transaction JSON from tx_data
       const txData = typeof tx.tx_data === 'string' ? 
         JSON.parse(tx.tx_data) : 
         tx.tx_data;
       
-      // Create block data structure
+      // Check if tx_data exists and has the expected structure
+      if (!txData || !txData.tx || !txData.tx_response) {
+        this.stats.skippedTransactions++;
+        if (this.verbose) {
+          console.log(`⏭️  Skipping transaction ${tx.hash} - missing tx_data or invalid structure`);
+        }
+        return;
+      }
+      
+      // Check if the transaction response was successful
+      if (txData.tx_response.code !== 0) {
+        this.stats.skippedTransactions++;
+        if (this.verbose) {
+          console.log(`⏭️  Skipping failed transaction ${tx.hash} (response code: ${txData.tx_response.code})`);
+        }
+        return;
+      }
+      
+      // Create block data structure (same as worker.js)
       const blockData = {
         block: {
           header: {
@@ -236,15 +263,16 @@ class ProductionDataProcessor {
         }
       };
       
-      // Parse all entity types
-      const suppliers = parseSuppliers(txData, blockData, tx.chain);
-      const applications = parseApplications(txData, blockData, tx.chain);
-      const gateways = parseGateways(txData, blockData, tx.chain);
-      const nodes = parseNodes(txData, blockData, tx.chain);
-      const services = parseServices(txData, blockData, tx.chain);
-      const claims = parseClaims(txData, blockData, tx.chain);
-      const relays = parseRelays(txData, blockData, tx.chain);
-      const stakingEvents = parseStakingEvents(txData, blockData, tx.chain);
+      // Parse all entity types using the inner transaction object (txData.tx)
+      // The parsing functions expect tx.body.messages, which is in txData.tx.body.messages
+      const suppliers = parseSuppliers(txData.tx, blockData, tx.chain);
+      const applications = parseApplications(txData.tx, blockData, tx.chain);
+      const gateways = parseGateways(txData.tx, blockData, tx.chain);
+      const nodes = parseNodes(txData.tx, blockData, tx.chain);
+      const services = parseServices(txData.tx, blockData, tx.chain);
+      const claims = parseClaims(txData.tx, blockData, tx.chain);
+      const relays = parseRelays(txData.tx, blockData, tx.chain);
+      const stakingEvents = parseStakingEvents(txData.tx, blockData, tx.chain);
       
       // Update statistics
       this.stats.entities.suppliers += suppliers.length;
