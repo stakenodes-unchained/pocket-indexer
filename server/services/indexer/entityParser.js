@@ -336,16 +336,17 @@ function extractApplicationFromEvents(tx) {
   }
 }
 
-function parseApplications(tx, block, chain) {
+function parseApplications(txEnvelope, block, chain) {
   try {
     const apps = [];
+    const tx = txEnvelope?.tx || txEnvelope; // accept full envelope or inner tx
     
     if (!tx) {
       console.warn("No transaction provided to parseApplications");
       return apps;
     }
     
-    if (!tx.body?.messages && !tx.messages) {
+    if (!tx?.body?.messages && !tx?.messages) {
       console.warn("No messages found in transaction for parseApplications", Object.keys(tx));
       return apps;
     }

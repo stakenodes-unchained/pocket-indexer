@@ -67,6 +67,14 @@ class ProductionDataProcessor {
     // In-memory application state accumulator
     this.applicationState = new Map(); // key: application address, value: state object
     this.applicationAddresses = new Set();
+
+    // Debug counters to analyze parity issues
+    this.debug = {
+      delegationEventsWithStakeAmount: 0,
+      stakeEventsFromTxEvents: 0,
+      stakeEventsFromMsgBody: 0,
+      stakeEventsMissingAmount: 0,
+    };
   }
 
   async connect() {
@@ -191,7 +199,6 @@ class ProductionDataProcessor {
       SELECT hash, chain, tx_data, timestamp, status
       FROM transactions 
       WHERE chain = $1
-      AND (type ILIKE '%application%' OR type ILIKE '%app%')
       ORDER BY timestamp ASC
       LIMIT $2 OFFSET $3
     `;
@@ -243,9 +250,8 @@ class ProductionDataProcessor {
         }
       };
       
-      // Parse only applications using the inner transaction object (txData.tx)
-      // The parsing functions expect tx.body.messages, which is in txData.tx.body.messages
-      const applications = parseApplications(txData.tx, blockData, tx.chain);
+      // Parse only applications, passing the full tx envelope (includes tx_response events)
+      const applications = parseApplications(txData, blockData, tx.chain);
       
       // Update statistics
       this.stats.entities.applicationEvents += applications.length;
@@ -257,6 +263,10 @@ class ProductionDataProcessor {
 
       // Update in-memory application state
       for (const appEvent of applications) {
+        // Debug: detect if delegation events mistakenly carry stake
+        if (appEvent.status === 'delegated' && appEvent.staked_amount) {
+          this.debug.delegationEventsWithStakeAmount++;
+        }
         this.updateApplicationState(appEvent);
         if (appEvent.address) this.applicationAddresses.add(appEvent.address);
       }
@@ -392,6 +402,24 @@ class ProductionDataProcessor {
         console.log(`  - ${s.address} | status=${s.status} | staked=${s.staked_amount} | delegated=${s.delegated ? 'yes' : 'no'}${s.gateway_address ? ' | gateway=' + s.gateway_address : ''}`);
       }
     }
+
+    // Diagnostics: simple histogram and anomaly checks
+    const histogram = new Map();
+    let count100000003 = 0;
+    for (const s of this.applicationState.values()) {
+      const key = s.staked_amount || 'undefined';
+      histogram.set(key, (histogram.get(key) || 0) + 1);
+      if (key === '100000003') count100000003++;
+    }
+    const topBuckets = Array.from(histogram.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([k, v]) => `${k}:${v}`)
+      .join(', ');
+    console.log(`\n🧪 Diagnostics:`);
+    console.log(`  - Stake value top buckets: ${topBuckets}`);
+    console.log(`  - Stake == 100000003 count: ${count100000003}`);
+    console.log(`  - Delegation events with stake present (should be 0): ${this.debug.delegationEventsWithStakeAmount}`);
   }
 
   async saveResultsToFile() {
