@@ -294,9 +294,10 @@ class ProductionDataProcessor {
       // Status-specific updates
       switch (appEvent.status) {
         case 'staked': {
-          // Prefer explicit staked_amount; fallback to stake_change when present
-          const amount = appEvent.staked_amount || appEvent.stake_change || existing.staked_amount || '0';
-          existing.staked_amount = amount;
+          // On stake, set stake to provided staked_amount, else keep existing
+          if (appEvent.staked_amount) {
+            existing.staked_amount = appEvent.staked_amount;
+          }
           existing.status = 'staked';
           break;
         }
@@ -304,6 +305,7 @@ class ProductionDataProcessor {
           if (appEvent.staked_amount) {
             existing.staked_amount = appEvent.staked_amount;
           }
+          // Merge chains already handled above
           existing.status = 'edited';
           break;
         }

@@ -394,9 +394,11 @@ function parseApplications(tx, block, chain) {
             address: msg.application_address || msg.app_address || '',
             chain: chain || 'unknown',
             public_key: null,
-            staked_amount: msg.amount?.amount || '0',
+            // delegation should NOT modify stake; leave undefined
             status: 'delegated',
-            chains: [],
+            chains: Array.isArray(msg.services)
+              ? msg.services.map(s => s.service_id).filter(Boolean)
+              : [],
             last_seen: timestamp,
             gateway_address: msg.gateway_address || msg.gateway || null,
           };
@@ -412,9 +414,11 @@ function parseApplications(tx, block, chain) {
             address: msg.application_address || msg.app_address || '',
             chain: chain || 'unknown',
             public_key: null,
-            staked_amount: '0',
+            // undelegation should NOT modify stake; leave undefined
             status: 'undelegated',
-            chains: [],
+            chains: Array.isArray(msg.services)
+              ? msg.services.map(s => s.service_id).filter(Boolean)
+              : [],
             last_seen: timestamp,
             gateway_address: msg.gateway_address || msg.gateway || null,
           };
