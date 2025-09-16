@@ -53,7 +53,8 @@ class ProductionDataProcessor {
       skippedTransactions: 0,
       errors: 0,
       entities: {
-        applications: 0
+        applicationsUnique: 0,
+        applicationEvents: 0
       },
       startTime: null,
       endTime: null
@@ -65,6 +66,7 @@ class ProductionDataProcessor {
 
     // In-memory application state accumulator
     this.applicationState = new Map(); // key: application address, value: state object
+    this.applicationAddresses = new Set();
   }
 
   async connect() {
@@ -246,7 +248,7 @@ class ProductionDataProcessor {
       const applications = parseApplications(txData.tx, blockData, tx.chain);
       
       // Update statistics
-      this.stats.entities.applications += applications.length;
+      this.stats.entities.applicationEvents += applications.length;
       
       // Store results if requested
       if (this.saveResults) {
@@ -256,7 +258,9 @@ class ProductionDataProcessor {
       // Update in-memory application state
       for (const appEvent of applications) {
         this.updateApplicationState(appEvent);
+        if (appEvent.address) this.applicationAddresses.add(appEvent.address);
       }
+      this.stats.entities.applicationsUnique = this.applicationAddresses.size;
       
       // Verbose output for first few transactions
       if (this.verbose && this.stats.processedTransactions < 5) {
@@ -360,9 +364,10 @@ class ProductionDataProcessor {
     
     console.log('\n📈 ENTITIES EXTRACTED');
     console.log('-'.repeat(30));
-    console.log(`Applications: ${this.stats.entities.applications}`);
+    console.log(`Applications (unique): ${this.stats.entities.applicationsUnique}`);
+    console.log(`Application events: ${this.stats.entities.applicationEvents}`);
     
-    const totalEntities = this.stats.entities.applications;
+    const totalEntities = this.stats.entities.applicationEvents;
     console.log(`\nTotal Entities: ${totalEntities}`);
     
     // Show a snapshot of final application states (top 10 by address)
