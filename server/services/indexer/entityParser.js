@@ -304,6 +304,38 @@ function normalizePocketMsgType(msgType) {
   }
 }
 
+function extractApplicationFromEvents(tx) {
+  try {
+    const result = { address: '', staked_amount: undefined, chains: [] };
+    const events = tx?.tx_response?.events;
+    if (!Array.isArray(events)) return result;
+    for (const ev of events) {
+      if (!ev || typeof ev !== 'object' || typeof ev.type !== 'string') continue;
+      if (!ev.type.startsWith('pocket.application.')) continue;
+      const attrs = ev.attributes || [];
+      for (const attr of attrs) {
+        if (!attr || attr.key !== 'application' || !attr.value) continue;
+        try {
+          const appObj = JSON.parse(attr.value);
+          if (appObj?.address && !result.address) result.address = appObj.address;
+          if (appObj?.stake?.amount) result.staked_amount = appObj.stake.amount;
+          if (Array.isArray(appObj?.services)) {
+            const serviceIds = appObj.services
+              .map(s => s?.service_id)
+              .filter(Boolean);
+            if (serviceIds.length > 0) result.chains = serviceIds;
+          }
+        } catch (_) {
+          // ignore JSON parse errors on non-JSON application attribute
+        }
+      }
+    }
+    return result;
+  } catch (_) {
+    return { address: '', staked_amount: undefined, chains: [] };
+  }
+}
+
 function parseApplications(tx, block, chain) {
   try {
     const apps = [];
@@ -339,54 +371,7 @@ function parseApplications(tx, block, chain) {
           continue;
         }
         
-        // Pocket App Messages (plural namespace)
-        if (msgType === 'pocket.app.MsgStakeApp') {
-          const app = {
-            address: msg.operator_address || msg.address || '',
-            public_key: msg.public_key || null,
-            staked_amount: msg.stake?.amount || '0',
-            status: 'staked',
-            chains: Array.isArray(msg.chains) ? msg.chains : [],
-            last_seen: timestamp,
-          };
-          
-          // Validate required fields
-          if (app.address) {
-            apps.push(app);
-          }
-        }
-        
-        if (msgType === 'pocket.app.MsgUnstakeApp') {
-          const app = {
-            address: msg.operator_address || msg.address || '',
-            public_key: msg.public_key || null,
-            staked_amount: '0',
-            status: 'unstaked',
-            chains: [],
-            last_seen: timestamp,
-          };
-          
-          // Validate required fields
-          if (app.address) {
-            apps.push(app);
-          }
-        }
-        
-        if (msgType === 'pocket.app.MsgEditApp') {
-          const app = {
-            address: msg.operator_address || '',
-            public_key: msg.public_key || null,
-            staked_amount: msg.stake?.amount || '0',
-            status: 'edited',
-            chains: Array.isArray(msg.chains) ? msg.chains : [],
-            last_seen: timestamp,
-          };
-          
-          // Validate required fields
-          if (app.address) {
-            apps.push(app);
-          }
-        }
+        // NOTE: Per docs, ignore legacy/unknown 'pocket.app.*' variants
         
         // Pocket Application Messages (singular namespace)
         if (msgType === 'pocket.application.MsgDelegateToGateway') {
@@ -430,57 +415,49 @@ function parseApplications(tx, block, chain) {
         }
         
         if (msgType === 'pocket.application.MsgStakeApplication') {
+          const ev = extractApplicationFromEvents(tx);
+          const servicesFromMsg = Array.isArray(msg.services)
+            ? msg.services.map(s => s?.service_id).filter(Boolean)
+            : [];
           const app = {
-            address: msg.application_address || msg.address || '',
+            address: ev.address || msg.address || '',
             chain: chain || 'unknown',
-            public_key: msg.public_key || null,
-            staked_amount: msg.stake?.amount || '0',
-            stake_change: msg.stake?.amount || '0', // Track the incremental change
+            public_key: null,
+            staked_amount: ev.staked_amount || msg.stake?.amount || '0',
             status: 'staked',
-            chains: Array.isArray(msg.chains) ? msg.chains : [],
+            chains: ev.chains.length > 0 ? ev.chains : servicesFromMsg,
             last_seen: timestamp,
           };
-          
-          // Validate required fields
           if (app.address) {
             apps.push(app);
           }
         }
         
         if (msgType === 'pocket.application.MsgUnstakeApplication') {
-          // Extract current stake amount from transaction events
-          let currentStakeAmount = '0';
-          if (tx.tx_response?.events) {
-            for (const event of tx.tx_response.events) {
-              if (event.type === 'pocket.application.EventApplicationUnbondingBegin') {
-                for (const attr of event.attributes) {
-                  if (attr.key === 'application' && attr.value) {
-                    try {
-                      const appData = JSON.parse(attr.value);
-                      currentStakeAmount = appData.stake?.amount || '0';
-                      break;
-                    } catch (e) {
-                      console.warn('Failed to parse application data from event:', e.message);
-                    }
-                  }
+          const ev = extractApplicationFromEvents(tx);
+          // Try to find an unstake session end height if present in events
+          let unstakeSessionEndHeight = undefined;
+          const events = tx?.tx_response?.events;
+          if (Array.isArray(events)) {
+            for (const e of events) {
+              if (!e || typeof e !== 'object') continue;
+              if (!e.type || !e.type.startsWith('pocket.application.')) continue;
+              for (const a of e.attributes || []) {
+                if (a.key === 'unstake_session_end_height' && a.value) {
+                  unstakeSessionEndHeight = a.value;
                 }
-                break;
               }
             }
           }
-          
           const app = {
-            address: msg.application_address || msg.address || '',
+            address: ev.address || msg.address || '',
             chain: chain || 'unknown',
-            public_key: msg.public_key || null,
-            staked_amount: '0',
-            stake_change: `-${currentStakeAmount}`, // Negative change for unstaking
-            status: 'unstaked',
+            public_key: null,
+            status: 'unstake_requested',
+            unstake_session_end_height: unstakeSessionEndHeight,
             chains: [],
             last_seen: timestamp,
           };
-          
-          // Validate required fields
           if (app.address) {
             apps.push(app);
           }
@@ -490,9 +467,23 @@ function parseApplications(tx, block, chain) {
         if (msgType === 'pocket.application.MsgTransferApplication') {
           const app = {
             address: msg.destination_address || '',
+            source_address: msg.source_address || msg.from_address || undefined,
             public_key: null,
-            staked_amount: '0',
-            status: 'transferred',
+            status: 'transfer_pending',
+            chains: [],
+            last_seen: timestamp,
+          };
+          if (app.address) {
+            apps.push(app);
+          }
+        }
+
+        // Migration claim can introduce applications
+        if (msgType === 'pocket.migration.MsgClaimMorseApplication') {
+          const app = {
+            address: msg.pocket_address || msg.shannon_address || '',
+            public_key: null,
+            status: 'migrated',
             chains: [],
             last_seen: timestamp,
           };

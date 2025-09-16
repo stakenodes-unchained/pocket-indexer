@@ -286,6 +286,7 @@ class ProductionDataProcessor {
         delegated: false,
         gateway_address: null,
         status: 'unknown',
+        unstake_session_end_height: undefined,
         last_seen: null
       };
 
@@ -313,9 +314,12 @@ class ProductionDataProcessor {
           existing.status = 'edited';
           break;
         }
-        case 'unstaked': {
-          existing.staked_amount = '0';
-          existing.status = 'unstaked';
+        case 'unstake_requested': {
+          // Do not zero stake immediately; record session end height if provided
+          if (appEvent.unstake_session_end_height) {
+            existing.unstake_session_end_height = appEvent.unstake_session_end_height;
+          }
+          existing.status = 'unstake_requested';
           break;
         }
         case 'delegated': {
@@ -333,6 +337,14 @@ class ProductionDataProcessor {
         case 'transferred': {
           // No direct state changes except status visibility
           existing.status = 'transferred';
+          break;
+        }
+        case 'transfer_pending': {
+          existing.status = 'transfer_pending';
+          break;
+        }
+        case 'migrated': {
+          existing.status = 'migrated';
           break;
         }
         default:
