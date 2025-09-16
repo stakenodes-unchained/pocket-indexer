@@ -15,14 +15,7 @@
 
 const { Client } = require('pg');
 const { 
-  parseSuppliers, 
-  parseApplications, 
-  parseGateways, 
-  parseNodes, 
-  parseServices, 
-  parseClaims, 
-  parseRelays, 
-  parseStakingEvents 
+  parseApplications
 } = require('./services/indexer/entityParser');
 require('dotenv').config();
 
@@ -60,29 +53,18 @@ class ProductionDataProcessor {
       skippedTransactions: 0,
       errors: 0,
       entities: {
-        suppliers: 0,
-        applications: 0,
-        gateways: 0,
-        nodes: 0,
-        services: 0,
-        claims: 0,
-        relays: 0,
-        stakingEvents: 0
+        applications: 0
       },
       startTime: null,
       endTime: null
     };
     
     this.results = {
-      suppliers: [],
-      applications: [],
-      gateways: [],
-      nodes: [],
-      services: [],
-      claims: [],
-      relays: [],
-      stakingEvents: []
+      applications: []
     };
+
+    // In-memory application state accumulator
+    this.applicationState = new Map(); // key: application address, value: state object
   }
 
   async connect() {
@@ -207,13 +189,7 @@ class ProductionDataProcessor {
       SELECT hash, chain, tx_data, timestamp, status
       FROM transactions 
       WHERE chain = $1
-      AND (type ILIKE '%application%'
-      OR type ILIKE '%supplier%'
-      OR type ILIKE '%gateway%'
-      OR type ILIKE '%node%'
-      OR type ILIKE '%service%'
-      OR type ILIKE '%claim%'
-      OR type ILIKE '%relay%')
+      AND (type ILIKE '%application%' OR type ILIKE '%app%')
       ORDER BY timestamp ASC
       LIMIT $2 OFFSET $3
     `;
@@ -265,37 +241,21 @@ class ProductionDataProcessor {
         }
       };
       
-      // Parse all entity types using the inner transaction object (txData.tx)
+      // Parse only applications using the inner transaction object (txData.tx)
       // The parsing functions expect tx.body.messages, which is in txData.tx.body.messages
-      const suppliers = parseSuppliers(txData.tx, blockData, tx.chain);
       const applications = parseApplications(txData.tx, blockData, tx.chain);
-      const gateways = parseGateways(txData.tx, blockData, tx.chain);
-      const nodes = parseNodes(txData.tx, blockData, tx.chain);
-      const services = parseServices(txData.tx, blockData, tx.chain);
-      const claims = parseClaims(txData.tx, blockData, tx.chain);
-      const relays = parseRelays(txData.tx, blockData, tx.chain);
-      const stakingEvents = parseStakingEvents(txData.tx, blockData, tx.chain);
       
       // Update statistics
-      this.stats.entities.suppliers += suppliers.length;
       this.stats.entities.applications += applications.length;
-      this.stats.entities.gateways += gateways.length;
-      this.stats.entities.nodes += nodes.length;
-      this.stats.entities.services += services.length;
-      this.stats.entities.claims += claims.length;
-      this.stats.entities.relays += relays.length;
-      this.stats.entities.stakingEvents += stakingEvents.length;
       
       // Store results if requested
       if (this.saveResults) {
-        this.results.suppliers.push(...suppliers);
         this.results.applications.push(...applications);
-        this.results.gateways.push(...gateways);
-        this.results.nodes.push(...nodes);
-        this.results.services.push(...services);
-        this.results.claims.push(...claims);
-        this.results.relays.push(...relays);
-        this.results.stakingEvents.push(...stakingEvents);
+      }
+
+      // Update in-memory application state
+      for (const appEvent of applications) {
+        this.updateApplicationState(appEvent);
       }
       
       // Verbose output for first few transactions
@@ -303,18 +263,82 @@ class ProductionDataProcessor {
         // Clear progress line before showing verbose output
         process.stdout.write('\r' + ' '.repeat(100) + '\r');
         console.log(`\n🔍 Transaction ${tx.hash}:`);
-        console.log(`  Suppliers: ${suppliers.length}`);
         console.log(`  Applications: ${applications.length}`);
-        console.log(`  Gateways: ${gateways.length}`);
-        console.log(`  Nodes: ${nodes.length}`);
-        console.log(`  Services: ${services.length}`);
-        console.log(`  Claims: ${claims.length}`);
-        console.log(`  Relays: ${relays.length}`);
-        console.log(`  Staking Events: ${stakingEvents.length}`);
       }
       
     } catch (error) {
       throw new Error(`Failed to process transaction: ${error.message}`);
+    }
+  }
+
+  updateApplicationState(appEvent) {
+    try {
+      if (!appEvent || !appEvent.address) return;
+
+      const existing = this.applicationState.get(appEvent.address) || {
+        address: appEvent.address,
+        staked_amount: '0',
+        chains: [],
+        delegated: false,
+        gateway_address: null,
+        status: 'unknown',
+        last_seen: null
+      };
+
+      // Merge chains
+      if (Array.isArray(appEvent.chains) && appEvent.chains.length > 0) {
+        const merged = new Set([...(existing.chains || []), ...appEvent.chains]);
+        existing.chains = Array.from(merged);
+      }
+
+      // Status-specific updates
+      switch (appEvent.status) {
+        case 'staked': {
+          // Prefer explicit staked_amount; fallback to stake_change when present
+          const amount = appEvent.staked_amount || appEvent.stake_change || existing.staked_amount || '0';
+          existing.staked_amount = amount;
+          existing.status = 'staked';
+          break;
+        }
+        case 'edited': {
+          if (appEvent.staked_amount) {
+            existing.staked_amount = appEvent.staked_amount;
+          }
+          existing.status = 'edited';
+          break;
+        }
+        case 'unstaked': {
+          existing.staked_amount = '0';
+          existing.status = 'unstaked';
+          break;
+        }
+        case 'delegated': {
+          existing.delegated = true;
+          if (appEvent.gateway_address) existing.gateway_address = appEvent.gateway_address;
+          existing.status = 'delegated';
+          break;
+        }
+        case 'undelegated': {
+          existing.delegated = false;
+          existing.gateway_address = null;
+          existing.status = 'undelegated';
+          break;
+        }
+        case 'transferred': {
+          // No direct state changes except status visibility
+          existing.status = 'transferred';
+          break;
+        }
+        default:
+          break;
+      }
+
+      // Always update last_seen
+      if (appEvent.last_seen) existing.last_seen = appEvent.last_seen;
+
+      this.applicationState.set(appEvent.address, existing);
+    } catch (e) {
+      console.warn('Failed to update application state:', e.message);
     }
   }
 
@@ -334,17 +358,21 @@ class ProductionDataProcessor {
     
     console.log('\n📈 ENTITIES EXTRACTED');
     console.log('-'.repeat(30));
-    console.log(`Suppliers: ${this.stats.entities.suppliers}`);
     console.log(`Applications: ${this.stats.entities.applications}`);
-    console.log(`Gateways: ${this.stats.entities.gateways}`);
-    console.log(`Nodes: ${this.stats.entities.nodes}`);
-    console.log(`Services: ${this.stats.entities.services}`);
-    console.log(`Claims: ${this.stats.entities.claims}`);
-    console.log(`Relays: ${this.stats.entities.relays}`);
-    console.log(`Staking Events: ${this.stats.entities.stakingEvents}`);
     
-    const totalEntities = Object.values(this.stats.entities).reduce((sum, count) => sum + count, 0);
+    const totalEntities = this.stats.entities.applications;
     console.log(`\nTotal Entities: ${totalEntities}`);
+    
+    // Show a snapshot of final application states (top 10 by address)
+    if (this.applicationState.size > 0) {
+      const sample = Array.from(this.applicationState.values())
+        .sort((a, b) => a.address.localeCompare(b.address))
+        .slice(0, 10);
+      console.log('\n🗂️ Application State Sample (up to 10):');
+      for (const s of sample) {
+        console.log(`  - ${s.address} | status=${s.status} | staked=${s.staked_amount} | delegated=${s.delegated ? 'yes' : 'no'}${s.gateway_address ? ' | gateway=' + s.gateway_address : ''}`);
+      }
+    }
   }
 
   async saveResultsToFile() {

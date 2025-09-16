@@ -291,6 +291,19 @@ function parseSuppliers(tx, block, chain) {
  * @param {any} block
  * @returns {Array}
  */
+function normalizePocketMsgType(msgType) {
+  try {
+    if (!msgType || typeof msgType !== 'string') return '';
+    const noPrefix = msgType.replace(/^\//, '');
+    const parts = noPrefix.split('.');
+    // Remove version-like segments such as v1, v1beta1, v2alpha
+    const filtered = parts.filter(p => !/^v\d+(alpha\d+|beta\d+)?$/i.test(p));
+    return filtered.join('.');
+  } catch (_) {
+    return msgType;
+  }
+}
+
 function parseApplications(tx, block, chain) {
   try {
     const apps = [];
@@ -320,13 +333,13 @@ function parseApplications(tx, block, chain) {
         }
         
         const rawType = msg['@type'];
-        const msgType = typeof rawType === 'string' ? rawType.replace(/^\//, '') : rawType;
+        const msgType = normalizePocketMsgType(typeof rawType === 'string' ? rawType : '');
         
         if (!msgType || typeof msgType !== 'string') {
           continue;
         }
         
-        // Pocket App Messages
+        // Pocket App Messages (plural namespace)
         if (msgType === 'pocket.app.MsgStakeApp') {
           const app = {
             address: msg.operator_address || msg.address || '',
@@ -375,7 +388,7 @@ function parseApplications(tx, block, chain) {
           }
         }
         
-        // Pocket Application Messages (singular form)
+        // Pocket Application Messages (singular namespace)
         if (msgType === 'pocket.application.MsgDelegateToGateway') {
           const app = {
             address: msg.application_address || msg.app_address || '',
@@ -385,6 +398,7 @@ function parseApplications(tx, block, chain) {
             status: 'delegated',
             chains: [],
             last_seen: timestamp,
+            gateway_address: msg.gateway_address || msg.gateway || null,
           };
           
           // Validate required fields
@@ -402,6 +416,7 @@ function parseApplications(tx, block, chain) {
             status: 'undelegated',
             chains: [],
             last_seen: timestamp,
+            gateway_address: msg.gateway_address || msg.gateway || null,
           };
           
           // Validate required fields
