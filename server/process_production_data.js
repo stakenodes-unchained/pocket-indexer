@@ -15,7 +15,14 @@
 
 const { Client } = require('pg');
 const { 
-  parseApplications
+  parseSuppliers,
+  parseApplications,
+  parseGateways,
+  parseNodes,
+  parseServices,
+  parseClaims,
+  parseRelays,
+  parseStakingEvents
 } = require('./services/indexer/entityParser');
 require('dotenv').config();
 
@@ -54,14 +61,28 @@ class ProductionDataProcessor {
       errors: 0,
       entities: {
         applicationsUnique: 0,
-        applicationEvents: 0
+        applicationEvents: 0,
+        suppliers: 0,
+        gateways: 0,
+        nodes: 0,
+        services: 0,
+        claims: 0,
+        relays: 0,
+        stakingEvents: 0
       },
       startTime: null,
       endTime: null
     };
     
     this.results = {
-      applications: []
+      applications: [],
+      suppliers: [],
+      gateways: [],
+      nodes: [],
+      services: [],
+      claims: [],
+      relays: [],
+      stakingEvents: []
     };
 
     // In-memory application state accumulator
@@ -251,15 +272,36 @@ class ProductionDataProcessor {
         }
       };
       
-      // Parse only applications, passing the full tx envelope (includes tx_response events)
+      // Parse all entities, passing the full tx envelope (includes tx_response events)
       const applications = parseApplications(txData, blockData, tx.chain);
+      const suppliers = parseSuppliers(txData, blockData, tx.chain);
+      const gateways = parseGateways(txData, blockData, tx.chain);
+      const nodes = parseNodes(txData, blockData, tx.chain);
+      const services = parseServices(txData, blockData, tx.chain);
+      const claims = parseClaims(txData, blockData, tx.chain);
+      const relays = parseRelays(txData, blockData, tx.chain);
+      const stakingEvents = parseStakingEvents(txData, blockData, tx.chain);
       
       // Update statistics
       this.stats.entities.applicationEvents += applications.length;
+      this.stats.entities.suppliers += suppliers.length;
+      this.stats.entities.gateways += gateways.length;
+      this.stats.entities.nodes += nodes.length;
+      this.stats.entities.services += services.length;
+      this.stats.entities.claims += claims.length;
+      this.stats.entities.relays += relays.length;
+      this.stats.entities.stakingEvents += stakingEvents.length;
       
       // Store results if requested
       if (this.saveResults) {
         this.results.applications.push(...applications);
+        this.results.suppliers.push(...suppliers);
+        this.results.gateways.push(...gateways);
+        this.results.nodes.push(...nodes);
+        this.results.services.push(...services);
+        this.results.claims.push(...claims);
+        this.results.relays.push(...relays);
+        this.results.stakingEvents.push(...stakingEvents);
       }
 
       // Update in-memory application state
@@ -389,6 +431,13 @@ class ProductionDataProcessor {
     console.log('-'.repeat(30));
     console.log(`Applications (unique): ${this.stats.entities.applicationsUnique}`);
     console.log(`Application events: ${this.stats.entities.applicationEvents}`);
+    console.log(`Suppliers: ${this.stats.entities.suppliers}`);
+    console.log(`Gateways: ${this.stats.entities.gateways}`);
+    console.log(`Nodes: ${this.stats.entities.nodes}`);
+    console.log(`Services: ${this.stats.entities.services}`);
+    console.log(`Claims: ${this.stats.entities.claims}`);
+    console.log(`Relays: ${this.stats.entities.relays}`);
+    console.log(`Staking Events: ${this.stats.entities.stakingEvents}`);
     
     const totalEntities = this.stats.entities.applicationEvents;
     console.log(`\nTotal Entities: ${totalEntities}`);
@@ -404,7 +453,7 @@ class ProductionDataProcessor {
       }
     }
 
-    // Diagnostics: simple histogram and anomaly checks
+      // Diagnostics: simple histogram and anomaly checks
     const histogram = new Map();
     let count100000003 = 0;
     for (const s of this.applicationState.values()) {

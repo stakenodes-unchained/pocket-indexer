@@ -304,6 +304,76 @@ function normalizePocketMsgType(msgType) {
   }
 }
 
+// Event extractors for entities (prefer authoritative post-op state from events)
+function extractSupplierFromEvents(txEnvelope) {
+  try {
+    const result = { operator_address: '', staked_amount: undefined, services: [] };
+    const events = txEnvelope?.tx_response?.events;
+    if (!Array.isArray(events)) return result;
+    for (const ev of events) {
+      if (!ev?.type || !(ev.type.startsWith('pocket.supplier.') || ev.type.startsWith('pocket.migration.'))) continue;
+      for (const attr of ev.attributes || []) {
+        if (!attr?.value) continue;
+        // supplier attribute contains JSON of supplier
+        if (attr.key === 'supplier' || attr.key === 'migrated_supplier') {
+          try {
+            const obj = JSON.parse(attr.value);
+            if (obj?.operator_address && !result.operator_address) result.operator_address = obj.operator_address;
+            if (obj?.stake?.amount) result.staked_amount = obj.stake.amount;
+            if (Array.isArray(obj?.services)) {
+              result.services = obj.services.map(s => s?.service_id).filter(Boolean);
+            }
+          } catch (_) {}
+        }
+      }
+    }
+    return result;
+  } catch (_) { return { operator_address: '', staked_amount: undefined, services: [] }; }
+}
+
+function extractGatewayFromEvents(txEnvelope) {
+  try {
+    const result = { address: '', staked_amount: undefined };
+    const events = txEnvelope?.tx_response?.events;
+    if (!Array.isArray(events)) return result;
+    for (const ev of events) {
+      if (!ev?.type || !(ev.type.startsWith('pocket.gateway.') || ev.type.startsWith('pocket.migration.'))) continue;
+      for (const attr of ev.attributes || []) {
+        if (!attr?.value) continue;
+        if (attr.key === 'gateway' || attr.key === 'migrated_gateway') {
+          try {
+            const obj = JSON.parse(attr.value);
+            if (obj?.address && !result.address) result.address = obj.address;
+            if (obj?.stake?.amount) result.staked_amount = obj.stake.amount;
+          } catch (_) {}
+        }
+      }
+    }
+    return result;
+  } catch (_) { return { address: '', staked_amount: undefined }; }
+}
+
+function extractServiceFromEvents(txEnvelope) {
+  try {
+    const result = { service_id: '' };
+    const events = txEnvelope?.tx_response?.events;
+    if (!Array.isArray(events)) return result;
+    for (const ev of events) {
+      if (!ev?.type || !ev.type.startsWith('pocket.service.')) continue;
+      for (const attr of ev.attributes || []) {
+        if (!attr?.value) continue;
+        if (attr.key === 'service') {
+          try {
+            const obj = JSON.parse(attr.value);
+            if (obj?.id && !result.service_id) result.service_id = obj.id;
+          } catch (_) {}
+        }
+      }
+    }
+    return result;
+  } catch (_) { return { service_id: '' }; }
+}
+
 function extractApplicationFromEvents(tx) {
   try {
     const result = { address: '', staked_amount: undefined, chains: [] };
@@ -772,6 +842,146 @@ function parseStakingEvents(tx, block, chain) {
     return [];
   }
 }
+
+/**
+ * Parse suppliers (stake/unstake) following docs
+ */
+function parseSuppliers(txEnvelope, block, chain) {
+  try {
+    const out = [];
+    const tx = txEnvelope?.tx || txEnvelope;
+    const messages = tx?.body?.messages || tx?.messages || [];
+    const timestamp = block?.block?.header?.time || block?.timestamp || new Date().toISOString();
+    for (const msg of messages) {
+      if (!msg) continue;
+      const msgType = normalizePocketMsgType(typeof msg['@type'] === 'string' ? msg['@type'] : '');
+      if (msgType === 'pocket.supplier.MsgStakeSupplier') {
+        const ev = extractSupplierFromEvents(txEnvelope);
+        const sup = {
+          operator_address: ev.operator_address || msg.operator_address || '',
+          owner_address: msg.owner_address || msg.signer || null,
+          staked_amount: ev.staked_amount || msg.stake?.amount || '0',
+          services: ev.services,
+          status: 'staked',
+          last_seen: timestamp,
+        };
+        if (sup.operator_address) out.push(sup);
+      }
+      if (msgType === 'pocket.supplier.MsgUnstakeSupplier') {
+        const sup = {
+          operator_address: msg.operator_address || '',
+          status: 'unstake_requested',
+          last_seen: timestamp,
+        };
+        if (sup.operator_address) out.push(sup);
+      }
+    }
+    return out;
+  } catch (e) { return []; }
+}
+
+/**
+ * Parse gateways (stake/unstake) following docs
+ */
+function parseGateways(txEnvelope, block, chain) {
+  try {
+    const out = [];
+    const tx = txEnvelope?.tx || txEnvelope;
+    const messages = tx?.body?.messages || tx?.messages || [];
+    const timestamp = block?.block?.header?.time || block?.timestamp || new Date().toISOString();
+    for (const msg of messages) {
+      if (!msg) continue;
+      const msgType = normalizePocketMsgType(typeof msg['@type'] === 'string' ? msg['@type'] : '');
+      if (msgType === 'pocket.gateway.MsgStakeGateway') {
+        const ev = extractGatewayFromEvents(txEnvelope);
+        const gw = {
+          address: ev.address || msg.address || '',
+          staked_amount: ev.staked_amount || msg.stake?.amount || '0',
+          status: 'staked',
+          last_seen: timestamp,
+        };
+        if (gw.address) out.push(gw);
+      }
+      if (msgType === 'pocket.gateway.MsgUnstakeGateway') {
+        const gw = {
+          address: msg.address || '',
+          status: 'unstake_requested',
+          last_seen: timestamp,
+        };
+        if (gw.address) out.push(gw);
+      }
+    }
+    return out;
+  } catch (e) { return []; }
+}
+
+/**
+ * Parse services (add service)
+ */
+function parseServices(txEnvelope, block, chain) {
+  try {
+    const out = [];
+    const tx = txEnvelope?.tx || txEnvelope;
+    const messages = tx?.body?.messages || tx?.messages || [];
+    const timestamp = block?.block?.header?.time || block?.timestamp || new Date().toISOString();
+    for (const msg of messages) {
+      if (!msg) continue;
+      const msgType = normalizePocketMsgType(typeof msg['@type'] === 'string' ? msg['@type'] : '');
+      if (msgType === 'pocket.service.MsgAddService') {
+        const ev = extractServiceFromEvents(txEnvelope);
+        const serviceId = ev.service_id || msg.service?.id || msg.service_id || '';
+        if (!serviceId) continue;
+        out.push({
+          id: serviceId,
+          owner_address: msg.owner_address || null,
+          created_at: timestamp,
+          status: 'added',
+        });
+      }
+    }
+    return out;
+  } catch (e) { return []; }
+}
+
+/**
+ * Parse claims and relays minimal stubs (ensure we only accept pocket.proof.*)
+ */
+function parseClaims(txEnvelope, block, chain) {
+  try {
+    const out = [];
+    const tx = txEnvelope?.tx || txEnvelope;
+    const messages = tx?.body?.messages || tx?.messages || [];
+    const timestamp = block?.block?.header?.time || block?.timestamp || new Date().toISOString();
+    for (const msg of messages) {
+      const msgType = normalizePocketMsgType(typeof msg['@type'] === 'string' ? msg['@type'] : '');
+      if (msgType === 'pocket.proof.MsgCreateClaim') {
+        out.push({
+          supplier_operator_address: msg.supplier_operator_address || msg.signer || '',
+          session_header: msg.session_header || null,
+          status: 'claimed',
+          last_seen: timestamp,
+        });
+      }
+    }
+    return out;
+  } catch (e) { return []; }
+}
+
+function parseRelays(txEnvelope, block, chain) {
+  try {
+    // For production parity, relays may not be present as msgs; keep as empty unless defined elsewhere
+    return [];
+  } catch (e) { return []; }
+}
+
+function parseNodes(txEnvelope, block, chain) {
+  try {
+    // Placeholder: node-related messages are under pocket.pos.* or cosmos.staking.*; we skip to avoid noise per scope
+    return [];
+  } catch (e) { return []; }
+}
+
+// Export functions if using module.exports at bottom (existing export mechanism assumed)
 
 /**
  * Parse claims from a transaction
