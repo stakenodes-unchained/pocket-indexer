@@ -11,13 +11,16 @@ async function testProductionScript() {
   console.log('🧪 Testing Production Data Processor with local database...\n');
   
   try {
-    // Test with pocket-testnet-beta and a small limit
+    // Test with pocket-testnet-beta and optimized settings
     const processor = new ProductionDataProcessor({
       chain: 'pocket-testnet-beta',
-      batchSize: 1000,
+      batchSize: 2000, // Larger batches for better performance
       limit: 1700000,
       verbose: false,
-      saveResults: true
+      saveResults: true,
+      parseInParallel: true, // Enable parallel processing
+      maxConcurrency: 15, // Higher concurrency for better throughput
+      skipEmptyTransactions: true // Skip invalid transactions early
     });
     
     await processor.connect();

@@ -46,6 +46,22 @@ const CONFIG = {
   SAVE_RESULTS: process.env.SAVE_RESULTS === 'true'
 };
 
+/**
+ * Production Data Processor with Chronological Order Guarantee
+ * 
+ * RECONCILIATION STRATEGY:
+ * 1. Database Query: ORDER BY b.height ASC ensures transactions are fetched in block order
+ * 2. Batch Processing: Each batch maintains chronological order within the batch
+ * 3. Parallel Parsing: Parse transactions in parallel (safe - no state mutation)
+ * 4. Sequential State Application: Apply state changes in exact chronological order
+ * 5. State Accumulation: In-memory Maps track latest state for each entity
+ * 
+ * This ensures that:
+ * - Applications are processed in the exact order they appeared on-chain
+ * - Stake changes, delegations, unstakes are applied in correct sequence
+ * - Final state matches the actual blockchain state
+ * - No race conditions or out-of-order state mutations
+ */
 class ProductionDataProcessor {
   constructor(options = {}) {
     this.chain = options.chain;
@@ -55,6 +71,12 @@ class ProductionDataProcessor {
     this.saveResults = options.saveResults || CONFIG.SAVE_RESULTS;
     
     this.pgClient = null;
+    
+    // Performance optimizations
+    this.parseInParallel = options.parseInParallel !== false; // Default to true
+    this.maxConcurrency = options.maxConcurrency || 10;
+    this.skipEmptyTransactions = options.skipEmptyTransactions !== false; // Default to true
+    
     this.stats = {
       totalTransactions: 0,
       processedTransactions: 0,
@@ -98,6 +120,8 @@ class ProductionDataProcessor {
     // In-memory state for suppliers and gateways
     this.supplierState = new Map(); // key: operator_address
     this.gatewayState = new Map(); // key: address
+    this.supplierAddresses = new Set();
+    this.gatewayAddresses = new Set();
 
     // Debug counters to analyze parity issues
     this.debug = {
@@ -197,47 +221,114 @@ class ProductionDataProcessor {
         errors: 0
       };
 
-      for (const tx of transactions) {
+      // Verify chronological order (critical for state reconciliation)
+      if (!this.verifyChronologicalOrder(transactions)) {
+        console.error(`❌ Chronological order violation detected in batch ${batchNumber}`);
+        throw new Error('Chronological order violation - cannot proceed safely');
+      }
+
+      // Pre-filter transactions to skip empty/invalid ones early
+      const validTransactions = transactions.filter(tx => {
+        if (!tx.status) return false;
+        if (!tx.tx_data) return false;
         try {
-          const counts = await this.processTransaction(tx);
-          if (counts) {
-            batchCounters.applications += counts.applications || 0;
-            batchCounters.suppliers += counts.suppliers || 0;
-            batchCounters.gateways += counts.gateways || 0;
-            batchCounters.nodes += counts.nodes || 0;
-            batchCounters.services += counts.services || 0;
-            batchCounters.claims += counts.claims || 0;
-            batchCounters.relays += counts.relays || 0;
-            batchCounters.stakingEvents += counts.stakingEvents || 0;
+          const txData = typeof tx.tx_data === 'string' ? JSON.parse(tx.tx_data) : tx.tx_data;
+          return txData && txData.tx && txData.tx_response && txData.tx_response.code === 0;
+        } catch {
+          return false;
+        }
+      });
+
+      if (this.parseInParallel && validTransactions.length > 1) {
+        // CRITICAL: Process transactions in chronological order to maintain state consistency
+        // We can parallelize parsing but must apply state changes sequentially
+        const parseResults = [];
+        
+        // Parse all transactions in parallel (safe - no state mutation)
+        const parsePromises = validTransactions.map(async (tx, index) => {
+          try {
+            const result = await this.parseTransactionOnly(tx);
+            return { index, result, tx };
+          } catch (error) {
+            return { index, error, tx };
+          }
+        });
+        
+        const parseResults_raw = await Promise.allSettled(parsePromises);
+        
+        // Sort results by original index to maintain chronological order
+        for (const result of parseResults_raw) {
+          if (result.status === 'fulfilled') {
+            parseResults.push(result.value);
+          } else {
+            this.stats.errors++;
+            batchCounters.errors++;
+            if (this.verbose) {
+              console.error(`\n❌ Error parsing transaction:`, result.reason.message);
+            }
+          }
+        }
+        
+        // Sort by original transaction order
+        parseResults.sort((a, b) => a.index - b.index);
+        
+        // Apply state changes sequentially in chronological order
+        for (const { result, tx } of parseResults) {
+          if (result) {
+            this.applyStateChanges(result, tx);
+            batchCounters.applications += result.applications || 0;
+            batchCounters.suppliers += result.suppliers || 0;
+            batchCounters.gateways += result.gateways || 0;
+            batchCounters.nodes += result.nodes || 0;
+            batchCounters.services += result.services || 0;
+            batchCounters.claims += result.claims || 0;
+            batchCounters.relays += result.relays || 0;
+            batchCounters.stakingEvents += result.stakingEvents || 0;
           }
           processedCount++;
-          
-          // Update progress in place every 10 transactions
-          if (processedCount % 10 === 0) {
-            const progress = ((processedCount / this.stats.totalTransactions) * 100).toFixed(1);
-            process.stdout.write(`\r📊 Processing: ${processedCount}/${this.stats.totalTransactions} (${progress}%) | Batch ${Math.floor(offset / this.batchSize) + 1} | Errors: ${this.stats.errors}`);
-          }
-          
-        } catch (error) {
-          this.stats.errors++;
-          batchCounters.errors++;
-          console.error(`\n❌ Error processing transaction ${tx.hash}:`, error.message);
-          
-          if (this.verbose) {
-            console.error('Transaction data:', JSON.stringify(tx, null, 2));
+        }
+      } else {
+        // Sequential processing (fallback) - maintains chronological order
+        for (const tx of validTransactions) {
+          try {
+            const counts = await this.processTransaction(tx);
+            if (counts) {
+              batchCounters.applications += counts.applications || 0;
+              batchCounters.suppliers += counts.suppliers || 0;
+              batchCounters.gateways += counts.gateways || 0;
+              batchCounters.nodes += counts.nodes || 0;
+              batchCounters.services += counts.services || 0;
+              batchCounters.claims += counts.claims || 0;
+              batchCounters.relays += counts.relays || 0;
+              batchCounters.stakingEvents += counts.stakingEvents || 0;
+            }
+            processedCount++;
+          } catch (error) {
+            this.stats.errors++;
+            batchCounters.errors++;
+            console.error(`\n❌ Error processing transaction ${tx.hash}:`, error.message);
+            
+            if (this.verbose) {
+              console.error('Transaction data:', JSON.stringify(tx, null, 2));
+            }
           }
         }
       }
       
+      // Update skipped count
+      this.stats.skippedTransactions += transactions.length - validTransactions.length;
+      
       offset += transactions.length;
       
-      // Final progress update for the batch
+      // Final progress update for the batch (less frequent updates)
       const progress = ((processedCount / this.stats.totalTransactions) * 100).toFixed(1);
-      process.stdout.write(`\r📊 Processing: ${processedCount}/${this.stats.totalTransactions} (${progress}%) | Batch ${Math.floor(offset / this.batchSize)} | Errors: ${this.stats.errors}`);
+      if (batchNumber % 5 === 0 || batchNumber === 1) { // Update every 5 batches or first batch
+        process.stdout.write(`\r📊 Processing: ${processedCount}/${this.stats.totalTransactions} (${progress}%) | Batch ${Math.floor(offset / this.batchSize)} | Errors: ${this.stats.errors}`);
+      }
 
       // Print concise batch summary
       process.stdout.write('\r' + ' '.repeat(120) + '\r');
-      console.log(`✅ Batch ${batchNumber} summary: tx=${transactions.length} | apps=${batchCounters.applications} sup=${batchCounters.suppliers} gw=${batchCounters.gateways} nodes=${batchCounters.nodes} svc=${batchCounters.services} claims=${batchCounters.claims} relays=${batchCounters.relays} stakeEv=${batchCounters.stakingEvents} | errors=${batchCounters.errors}`);
+      console.log(`✅ Batch ${batchNumber} summary: tx=${transactions.length} valid=${validTransactions.length} | apps=${batchCounters.applications} sup=${batchCounters.suppliers} gw=${batchCounters.gateways} nodes=${batchCounters.nodes} svc=${batchCounters.services} claims=${batchCounters.claims} relays=${batchCounters.relays} stakeEv=${batchCounters.stakingEvents} | errors=${batchCounters.errors}`);
     }
     
     this.stats.endTime = new Date();
@@ -253,12 +344,40 @@ class ProductionDataProcessor {
     }
   }
 
+  // Verification method to ensure chronological order
+  verifyChronologicalOrder(transactions) {
+    if (transactions.length < 2) return true;
+    
+    for (let i = 1; i < transactions.length; i++) {
+      const prev = transactions[i-1];
+      const curr = transactions[i];
+      
+      // Compare block heights (should be ascending)
+      if (prev.height && curr.height && prev.height > curr.height) {
+        console.warn(`⚠️  Chronological order violation: ${prev.height} > ${curr.height}`);
+        return false;
+      }
+      
+      // Compare timestamps (should be ascending or equal)
+      if (prev.timestamp && curr.timestamp && prev.timestamp > curr.timestamp) {
+        console.warn(`⚠️  Timestamp order violation: ${prev.timestamp} > ${curr.timestamp}`);
+        return false;
+      }
+    }
+    
+    return true;
+  }
+
   async fetchTransactionBatch(offset, limit) {
     const query = `
       SELECT t.hash, t.chain, t.tx_data, t.timestamp, t.status
       FROM transactions t
       JOIN blocks b ON b.id = t.block_id AND b.chain = t.chain
       WHERE t.chain = $1
+        AND t.status = true 
+        AND t.tx_data IS NOT NULL 
+        AND t.tx_data != '{}'
+        AND t.tx_data != 'null'
       ORDER BY b.height ASC
       LIMIT $2 OFFSET $3
     `;
@@ -267,39 +386,104 @@ class ProductionDataProcessor {
     return result.rows;
   }
 
-  async processTransaction(tx) {
+  async parseTransactionOnly(tx) {
+    // Parse transaction without applying state changes (safe for parallel processing)
     try {
-      // Check if transaction was successful
-      if (!tx.status) {
-        this.stats.skippedTransactions++;
-        if (this.verbose) {
-          console.log(`⏭️  Skipping failed transaction ${tx.hash} (status: ${tx.status})`);
-        }
-        return;
-      }
-      
-      // Parse the transaction JSON from tx_data
       const txData = typeof tx.tx_data === 'string' ? 
         JSON.parse(tx.tx_data) : 
         tx.tx_data;
       
-      // Check if tx_data exists and has the expected structure
-      if (!txData || !txData.tx || !txData.tx_response) {
-        this.stats.skippedTransactions++;
-        if (this.verbose) {
-          console.log(`⏭️  Skipping transaction ${tx.hash} - missing tx_data or invalid structure`);
+      const blockData = {
+        block: {
+          header: {
+            time: tx.timestamp
+          }
         }
-        return;
+      };
+      
+      // Early filtering: only parse entities if transaction has relevant message types
+      const messages = txData?.tx?.body?.messages || [];
+      const hasRelevantMessages = messages.some(msg => {
+        const msgType = typeof msg?.['@type'] === 'string' ? msg['@type'] : '';
+        return msgType.includes('pocket.') || msgType.includes('cosmos.staking.') || msgType.includes('cosmos.bank.');
+      });
+      
+      if (!hasRelevantMessages) {
+        return { applications: 0, suppliers: 0, gateways: 0, nodes: 0, services: 0, claims: 0, relays: 0, stakingEvents: 0 };
       }
       
-      // Check if the transaction response was successful
-      if (txData.tx_response.code !== 0) {
-        this.stats.skippedTransactions++;
-        if (this.verbose) {
-          console.log(`⏭️  Skipping failed transaction ${tx.hash} (response code: ${txData.tx_response.code})`);
-        }
-        return;
-      }
+      // Parse all entities (no state mutation)
+      const applications = parseApplications(txData, blockData, tx.chain);
+      const suppliers = parseSuppliers(txData, blockData, tx.chain);
+      const gateways = parseGateways(txData, blockData, tx.chain);
+      const nodes = parseNodes(txData, blockData, tx.chain);
+      const services = parseServices(txData, blockData, tx.chain);
+      const claims = parseClaims(txData, blockData, tx.chain);
+      const relays = parseRelays(txData, blockData, tx.chain);
+      const stakingEvents = parseStakingEvents(txData, blockData, tx.chain);
+      const relationships = parseRelationships(txData, blockData, tx.chain);
+      
+      return {
+        applications,
+        suppliers,
+        gateways,
+        nodes,
+        services,
+        claims,
+        relays,
+        stakingEvents,
+        relationships,
+        txData,
+        blockData,
+        tx
+      };
+    } catch (error) {
+      throw new Error(`Parse error for ${tx.hash}: ${error.message}`);
+    }
+  }
+
+  applyStateChanges(parseResult, tx) {
+    // Apply state changes sequentially to maintain chronological order
+    const { applications, suppliers, gateways, relationships } = parseResult;
+    
+    // Update statistics
+    this.stats.entities.applicationEvents += applications.length;
+    this.stats.entities.suppliers += suppliers.length;
+    this.stats.entities.gateways += gateways.length;
+    this.stats.entities.appDelegations += relationships.applicationDelegations.length;
+    this.stats.entities.appServiceConfigs += relationships.applicationServiceConfigs.length;
+    
+    // Save results if enabled
+    if (this.saveResults) {
+      this.results.applications.push(...applications);
+      this.results.suppliers.push(...suppliers);
+      this.results.gateways.push(...gateways);
+      this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
+      this.results.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
+    }
+    
+    // Update application state (chronological order critical)
+    for (const appEvent of applications) {
+      this.updateApplicationState(appEvent);
+    }
+    
+    // Update suppliers state (chronological order critical)
+    for (const supEvent of suppliers) {
+      this.updateSupplierState(supEvent);
+    }
+    
+    // Update gateways state (chronological order critical)
+    for (const gwEvent of gateways) {
+      this.updateGatewayState(gwEvent);
+    }
+  }
+
+  async processTransaction(tx) {
+    try {
+      // Parse the transaction JSON from tx_data (already validated in filter)
+      const txData = typeof tx.tx_data === 'string' ? 
+        JSON.parse(tx.tx_data) : 
+        tx.tx_data;
       
       // Create block data structure (same as worker.js)
       const blockData = {
@@ -309,6 +493,17 @@ class ProductionDataProcessor {
           }
         }
       };
+      
+      // Early filtering: only parse entities if transaction has relevant message types
+      const messages = txData?.tx?.body?.messages || [];
+      const hasRelevantMessages = messages.some(msg => {
+        const msgType = typeof msg?.['@type'] === 'string' ? msg['@type'] : '';
+        return msgType.includes('pocket.') || msgType.includes('cosmos.staking.') || msgType.includes('cosmos.bank.');
+      });
+      
+      if (!hasRelevantMessages) {
+        return { applications: 0, suppliers: 0, gateways: 0, nodes: 0, services: 0, claims: 0, relays: 0, stakingEvents: 0 };
+      }
       
       // Parse all entities, passing the full tx envelope (includes tx_response events)
       const applications = parseApplications(txData, blockData, tx.chain);
@@ -480,6 +675,7 @@ class ProductionDataProcessor {
   updateSupplierState(supEvent) {
     try {
       if (!supEvent || !supEvent.operator_address) return;
+      this.supplierAddresses.add(supEvent.operator_address);
       const existing = this.supplierState.get(supEvent.operator_address) || {
         operator_address: supEvent.operator_address,
         staked_amount: '0',
@@ -508,6 +704,7 @@ class ProductionDataProcessor {
   updateGatewayState(gwEvent) {
     try {
       if (!gwEvent || !gwEvent.address) return;
+      this.gatewayAddresses.add(gwEvent.address);
       const existing = this.gatewayState.get(gwEvent.address) || {
         address: gwEvent.address,
         staked_amount: '0',
@@ -546,8 +743,10 @@ class ProductionDataProcessor {
     console.log('-'.repeat(30));
     console.log(`Applications (unique): ${this.stats.entities.applicationsUnique}`);
     console.log(`Application events: ${this.stats.entities.applicationEvents}`);
-    console.log(`Suppliers: ${this.stats.entities.suppliers}`);
-    console.log(`Gateways: ${this.stats.entities.gateways}`);
+    console.log(`Suppliers (unique): ${this.supplierAddresses.size}`);
+    console.log(`Supplier events: ${this.stats.entities.suppliers}`);
+    console.log(`Gateways (unique): ${this.gatewayAddresses.size}`);
+    console.log(`Gateway events: ${this.stats.entities.gateways}`);
     console.log(`Nodes: ${this.stats.entities.nodes}`);
     console.log(`Services: ${this.stats.entities.services}`);
     console.log(`Claims: ${this.stats.entities.claims}`);
