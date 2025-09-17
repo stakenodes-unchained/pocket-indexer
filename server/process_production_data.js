@@ -22,8 +22,9 @@ const {
   parseServices,
   parseClaims,
   parseRelays,
-  parseStakingEvents
-} = require('./services/indexer/entityParser');
+  parseStakingEvents,
+  parseRelationships
+} = require('./services/indexer/entityParser.v2');
 require('dotenv').config();
 
 // Configuration
@@ -68,7 +69,9 @@ class ProductionDataProcessor {
         services: 0,
         claims: 0,
         relays: 0,
-        stakingEvents: 0
+        stakingEvents: 0,
+        appDelegations: 0,
+        appServiceConfigs: 0
       },
       startTime: null,
       endTime: null
@@ -82,12 +85,19 @@ class ProductionDataProcessor {
       services: [],
       claims: [],
       relays: [],
-      stakingEvents: []
+      stakingEvents: [],
+      relationships: {
+        applicationDelegations: [],
+        applicationServiceConfigs: []
+      }
     };
 
     // In-memory application state accumulator
     this.applicationState = new Map(); // key: application address, value: state object
     this.applicationAddresses = new Set();
+    // In-memory state for suppliers and gateways
+    this.supplierState = new Map(); // key: operator_address
+    this.gatewayState = new Map(); // key: address
 
     // Debug counters to analyze parity issues
     this.debug = {
@@ -309,6 +319,7 @@ class ProductionDataProcessor {
       const claims = parseClaims(txData, blockData, tx.chain);
       const relays = parseRelays(txData, blockData, tx.chain);
       const stakingEvents = parseStakingEvents(txData, blockData, tx.chain);
+      const relationships = parseRelationships(txData, blockData, tx.chain);
       
       // Update statistics
       this.stats.entities.applicationEvents += applications.length;
@@ -319,6 +330,8 @@ class ProductionDataProcessor {
       this.stats.entities.claims += claims.length;
       this.stats.entities.relays += relays.length;
       this.stats.entities.stakingEvents += stakingEvents.length;
+      this.stats.entities.appDelegations += relationships.applicationDelegations.length;
+      this.stats.entities.appServiceConfigs += relationships.applicationServiceConfigs.length;
       
       // Store results if requested
       if (this.saveResults) {
@@ -330,6 +343,8 @@ class ProductionDataProcessor {
         this.results.claims.push(...claims);
         this.results.relays.push(...relays);
         this.results.stakingEvents.push(...stakingEvents);
+        this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
+        this.results.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
       }
 
       // Update in-memory application state
@@ -342,6 +357,15 @@ class ProductionDataProcessor {
         if (appEvent.address) this.applicationAddresses.add(appEvent.address);
       }
       this.stats.entities.applicationsUnique = this.applicationAddresses.size;
+
+      // Update suppliers state
+      for (const supEvent of suppliers) {
+        this.updateSupplierState(supEvent);
+      }
+      // Update gateways state
+      for (const gwEvent of gateways) {
+        this.updateGatewayState(gwEvent);
+      }
       
       // Verbose output for first few transactions
       if (false && this.verbose && this.stats.processedTransactions < 5) {
@@ -453,6 +477,57 @@ class ProductionDataProcessor {
     }
   }
 
+  updateSupplierState(supEvent) {
+    try {
+      if (!supEvent || !supEvent.operator_address) return;
+      const existing = this.supplierState.get(supEvent.operator_address) || {
+        operator_address: supEvent.operator_address,
+        staked_amount: '0',
+        services: [],
+        status: 'unknown',
+        unstake_session_end_height: undefined,
+        last_seen: null,
+      };
+      if (Array.isArray(supEvent.services) && supEvent.services.length > 0) {
+        const merged = new Set([...(existing.services || []), ...supEvent.services]);
+        existing.services = Array.from(merged);
+      }
+      if (supEvent.status === 'staked' && supEvent.staked_amount) {
+        existing.staked_amount = supEvent.staked_amount;
+        existing.status = 'staked';
+      }
+      if (supEvent.status === 'unstake_requested') {
+        existing.status = 'unstake_requested';
+        if (supEvent.unstake_session_end_height) existing.unstake_session_end_height = supEvent.unstake_session_end_height;
+      }
+      if (supEvent.last_seen) existing.last_seen = supEvent.last_seen;
+      this.supplierState.set(supEvent.operator_address, existing);
+    } catch (_) {}
+  }
+
+  updateGatewayState(gwEvent) {
+    try {
+      if (!gwEvent || !gwEvent.address) return;
+      const existing = this.gatewayState.get(gwEvent.address) || {
+        address: gwEvent.address,
+        staked_amount: '0',
+        status: 'unknown',
+        unstake_session_end_height: undefined,
+        last_seen: null,
+      };
+      if (gwEvent.status === 'staked' && gwEvent.staked_amount) {
+        existing.staked_amount = gwEvent.staked_amount;
+        existing.status = 'staked';
+      }
+      if (gwEvent.status === 'unstake_requested') {
+        existing.status = 'unstake_requested';
+        if (gwEvent.unstake_session_end_height) existing.unstake_session_end_height = gwEvent.unstake_session_end_height;
+      }
+      if (gwEvent.last_seen) existing.last_seen = gwEvent.last_seen;
+      this.gatewayState.set(gwEvent.address, existing);
+    } catch (_) {}
+  }
+
   printSummary() {
     const duration = this.stats.endTime - this.stats.startTime;
     const durationSeconds = (duration / 1000).toFixed(2);
@@ -478,6 +553,8 @@ class ProductionDataProcessor {
     console.log(`Claims: ${this.stats.entities.claims}`);
     console.log(`Relays: ${this.stats.entities.relays}`);
     console.log(`Staking Events: ${this.stats.entities.stakingEvents}`);
+    console.log(`App Delegations: ${this.stats.entities.appDelegations}`);
+    console.log(`App Service Configs: ${this.stats.entities.appServiceConfigs}`);
     
     const totalEntities = this.stats.entities.applicationEvents;
     console.log(`\nTotal Entities: ${totalEntities}`);
@@ -510,6 +587,26 @@ class ProductionDataProcessor {
     console.log(`  - Stake value top buckets: ${topBuckets}`);
     console.log(`  - Stake == 100000003 count: ${count100000003}`);
     console.log(`  - Delegation events with stake present (should be 0): ${this.debug.delegationEventsWithStakeAmount}`);
+
+    // Show samples for suppliers and gateways
+    if (this.supplierState.size > 0) {
+      const sampleSup = Array.from(this.supplierState.values())
+        .sort((a, b) => a.operator_address.localeCompare(b.operator_address))
+        .slice(0, 10);
+      console.log('\n🗂️ Supplier State Sample (up to 10):');
+      for (const s of sampleSup) {
+        console.log(`  - ${s.operator_address} | status=${s.status} | staked=${s.staked_amount}${s.unstake_session_end_height ? ' | unstake_height=' + s.unstake_session_end_height : ''}`);
+      }
+    }
+    if (this.gatewayState.size > 0) {
+      const sampleGw = Array.from(this.gatewayState.values())
+        .sort((a, b) => a.address.localeCompare(b.address))
+        .slice(0, 10);
+      console.log('\n🗂️ Gateway State Sample (up to 10):');
+      for (const g of sampleGw) {
+        console.log(`  - ${g.address} | status=${g.status} | staked=${g.staked_amount}${g.unstake_session_end_height ? ' | unstake_height=' + g.unstake_session_end_height : ''}`);
+      }
+    }
   }
 
   async saveResultsToFile() {
