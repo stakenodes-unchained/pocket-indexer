@@ -329,6 +329,15 @@ class ProductionDataProcessor {
       // Print concise batch summary
       process.stdout.write('\r' + ' '.repeat(120) + '\r');
       console.log(`✅ Batch ${batchNumber} summary: tx=${transactions.length} valid=${validTransactions.length} | apps=${batchCounters.applications} sup=${batchCounters.suppliers} gw=${batchCounters.gateways} nodes=${batchCounters.nodes} svc=${batchCounters.services} claims=${batchCounters.claims} relays=${batchCounters.relays} stakeEv=${batchCounters.stakingEvents} | errors=${batchCounters.errors}`);
+      
+      // Debug: Show sample transaction if no entities found
+      if (batchCounters.applications === 0 && batchCounters.suppliers === 0 && batchCounters.gateways === 0 && batchNumber <= 3) {
+        console.log(`🔍 Debug: No entities found in batch ${batchNumber}. Sample transaction:`, {
+          hash: validTransactions[0]?.hash,
+          hasTxData: !!validTransactions[0]?.tx_data,
+          txDataType: typeof validTransactions[0]?.tx_data
+        });
+      }
     }
     
     this.stats.endTime = new Date();
@@ -402,12 +411,21 @@ class ProductionDataProcessor {
       const messages = txData?.tx?.body?.messages || [];
       const hasRelevantMessages = messages.some(msg => {
         const msgType = typeof msg?.['@type'] === 'string' ? msg['@type'] : '';
-        return msgType.includes('pocket.') || msgType.includes('cosmos.staking.') || msgType.includes('cosmos.bank.');
+        // Handle both "/pocket.*" and "pocket.*" formats
+        return msgType.includes('/pocket.') || msgType.includes('pocket.') || 
+               msgType.includes('/cosmos.staking.') || msgType.includes('cosmos.staking.') || 
+               msgType.includes('/cosmos.bank.') || msgType.includes('cosmos.bank.');
       });
       
       if (!hasRelevantMessages) {
         return { applications: 0, suppliers: 0, gateways: 0, nodes: 0, services: 0, claims: 0, relays: 0, stakingEvents: 0 };
       }
+      
+      // Debug: Log message types for first few transactions (temporarily disabled)
+      // if (messages.length > 0) {
+      //   const msgTypes = messages.map(msg => msg?.['@type']).filter(Boolean);
+      //   console.log(`🔍 Debug: Transaction ${tx.hash} has messages:`, msgTypes.slice(0, 3));
+      // }
       
       // Parse all entities (no state mutation)
       const applications = parseApplications(txData, blockData, tx.chain);
@@ -495,7 +513,10 @@ class ProductionDataProcessor {
       const messages = txData?.tx?.body?.messages || [];
       const hasRelevantMessages = messages.some(msg => {
         const msgType = typeof msg?.['@type'] === 'string' ? msg['@type'] : '';
-        return msgType.includes('pocket.') || msgType.includes('cosmos.staking.') || msgType.includes('cosmos.bank.');
+        // Handle both "/pocket.*" and "pocket.*" formats
+        return msgType.includes('/pocket.') || msgType.includes('pocket.') || 
+               msgType.includes('/cosmos.staking.') || msgType.includes('cosmos.staking.') || 
+               msgType.includes('/cosmos.bank.') || msgType.includes('cosmos.bank.');
       });
       
       if (!hasRelevantMessages) {
