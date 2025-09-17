@@ -196,10 +196,11 @@ class ProductionDataProcessor {
 
   async fetchTransactionBatch(offset, limit) {
     const query = `
-      SELECT hash, chain, tx_data, timestamp, status
-      FROM transactions 
-      WHERE chain = $1
-      ORDER BY timestamp ASC
+      SELECT t.hash, t.chain, t.tx_data, t.timestamp, t.status
+      FROM transactions t
+      JOIN blocks b ON b.id = t.block_id AND b.chain = t.chain
+      WHERE t.chain = $1
+      ORDER BY b.height ASC
       LIMIT $2 OFFSET $3
     `;
     

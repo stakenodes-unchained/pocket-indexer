@@ -311,10 +311,15 @@ function extractApplicationFromEvents(tx) {
     if (!Array.isArray(events)) return result;
     for (const ev of events) {
       if (!ev || typeof ev !== 'object' || typeof ev.type !== 'string') continue;
-      if (!ev.type.startsWith('pocket.application.')) continue;
+      // Accept application-related events from both application and migration modules
+      if (!(
+        ev.type.startsWith('pocket.application.') ||
+        ev.type.startsWith('pocket.migration.')
+      )) continue;
       const attrs = ev.attributes || [];
       for (const attr of attrs) {
-        if (!attr || attr.key !== 'application' || !attr.value) continue;
+        if (!attr || !attr.value) continue;
+        if (attr.key !== 'application' && attr.key !== 'migrated_application') continue;
         try {
           const appObj = JSON.parse(attr.value);
           if (appObj?.address && !result.address) result.address = appObj.address;
@@ -481,11 +486,13 @@ function parseApplications(txEnvelope, block, chain) {
 
         // Migration claim can introduce applications
         if (msgType === 'pocket.migration.MsgClaimMorseApplication') {
+          const ev = extractApplicationFromEvents(txEnvelope);
           const app = {
-            address: msg.pocket_address || msg.shannon_address || '',
+            address: ev.address || msg.pocket_address || msg.shannon_address || '',
             public_key: null,
+            staked_amount: ev.staked_amount, // prefer event-derived stake
             status: 'migrated',
-            chains: [],
+            chains: ev.chains,
             last_seen: timestamp,
           };
           if (app.address) {
