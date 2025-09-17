@@ -374,10 +374,7 @@ class ProductionDataProcessor {
       FROM transactions t
       JOIN blocks b ON b.id = t.block_id AND b.chain = t.chain
       WHERE t.chain = $1
-        AND t.status = 'true' 
-        AND t.tx_data IS NOT NULL 
-        AND t.tx_data != '{}'
-        AND t.tx_data != 'null'
+        AND t.status = 'true'
       ORDER BY b.height ASC
       LIMIT $2 OFFSET $3
     `;
