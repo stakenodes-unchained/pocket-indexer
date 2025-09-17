@@ -16,7 +16,7 @@ async function testProductionScript() {
       chain: 'pocket-testnet-beta',
       batchSize: 1000,
       limit: 1700000,
-      verbose: true,
+      verbose: false,
       saveResults: true
     });
     
