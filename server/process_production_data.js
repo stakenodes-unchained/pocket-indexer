@@ -229,7 +229,7 @@ class ProductionDataProcessor {
 
       // Pre-filter transactions to skip empty/invalid ones early
       const validTransactions = transactions.filter(tx => {
-        if (!tx.status) return false;
+        if (!tx.status || tx.status !== 'true') return false;
         if (!tx.tx_data) return false;
         try {
           const txData = typeof tx.tx_data === 'string' ? JSON.parse(tx.tx_data) : tx.tx_data;
@@ -374,7 +374,7 @@ class ProductionDataProcessor {
       FROM transactions t
       JOIN blocks b ON b.id = t.block_id AND b.chain = t.chain
       WHERE t.chain = $1
-        AND t.status = true 
+        AND t.status = 'true' 
         AND t.tx_data IS NOT NULL 
         AND t.tx_data != '{}'
         AND t.tx_data != 'null'
