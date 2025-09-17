@@ -174,9 +174,32 @@ class ProductionDataProcessor {
       }
       
       // Process each transaction in the batch
+      const batchNumber = Math.floor(offset / this.batchSize) + 1;
+      const batchCounters = {
+        applications: 0,
+        suppliers: 0,
+        gateways: 0,
+        nodes: 0,
+        services: 0,
+        claims: 0,
+        relays: 0,
+        stakingEvents: 0,
+        errors: 0
+      };
+
       for (const tx of transactions) {
         try {
-          await this.processTransaction(tx);
+          const counts = await this.processTransaction(tx);
+          if (counts) {
+            batchCounters.applications += counts.applications || 0;
+            batchCounters.suppliers += counts.suppliers || 0;
+            batchCounters.gateways += counts.gateways || 0;
+            batchCounters.nodes += counts.nodes || 0;
+            batchCounters.services += counts.services || 0;
+            batchCounters.claims += counts.claims || 0;
+            batchCounters.relays += counts.relays || 0;
+            batchCounters.stakingEvents += counts.stakingEvents || 0;
+          }
           processedCount++;
           
           // Update progress in place every 10 transactions
@@ -187,6 +210,7 @@ class ProductionDataProcessor {
           
         } catch (error) {
           this.stats.errors++;
+          batchCounters.errors++;
           console.error(`\n❌ Error processing transaction ${tx.hash}:`, error.message);
           
           if (this.verbose) {
@@ -200,6 +224,10 @@ class ProductionDataProcessor {
       // Final progress update for the batch
       const progress = ((processedCount / this.stats.totalTransactions) * 100).toFixed(1);
       process.stdout.write(`\r📊 Processing: ${processedCount}/${this.stats.totalTransactions} (${progress}%) | Batch ${Math.floor(offset / this.batchSize)} | Errors: ${this.stats.errors}`);
+
+      // Print concise batch summary
+      process.stdout.write('\r' + ' '.repeat(120) + '\r');
+      console.log(`✅ Batch ${batchNumber} summary: tx=${transactions.length} | apps=${batchCounters.applications} sup=${batchCounters.suppliers} gw=${batchCounters.gateways} nodes=${batchCounters.nodes} svc=${batchCounters.services} claims=${batchCounters.claims} relays=${batchCounters.relays} stakeEv=${batchCounters.stakingEvents} | errors=${batchCounters.errors}`);
     }
     
     this.stats.endTime = new Date();
@@ -316,13 +344,25 @@ class ProductionDataProcessor {
       this.stats.entities.applicationsUnique = this.applicationAddresses.size;
       
       // Verbose output for first few transactions
-      if (this.verbose && this.stats.processedTransactions < 5) {
+      if (false && this.verbose && this.stats.processedTransactions < 5) {
         // Clear progress line before showing verbose output
         process.stdout.write('\r' + ' '.repeat(100) + '\r');
         console.log(`\n🔍 Transaction ${tx.hash}:`);
         console.log(`  Applications: ${applications.length}`);
       }
       
+      // Return counts for batch summary
+      return {
+        applications: applications.length,
+        suppliers: suppliers.length,
+        gateways: gateways.length,
+        nodes: nodes.length,
+        services: services.length,
+        claims: claims.length,
+        relays: relays.length,
+        stakingEvents: stakingEvents.length,
+      };
+
     } catch (error) {
       throw new Error(`Failed to process transaction: ${error.message}`);
     }
