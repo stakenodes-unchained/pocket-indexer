@@ -132,7 +132,7 @@ function parseSuppliers(tx, block, chain) {
     const suppliers = [];
     
     if (!tx) {
-      console.warn("No transaction provided to parseSuppliers");
+      // console.warn("No transaction provided to parseSuppliers");
       return suppliers;
     }
     
@@ -417,7 +417,7 @@ function parseApplications(txEnvelope, block, chain) {
     const tx = txEnvelope?.tx || txEnvelope; // accept full envelope or inner tx
     
     if (!tx) {
-      console.warn("No transaction provided to parseApplications");
+      // console.warn("No transaction provided to parseApplications");
       return apps;
     }
     
@@ -593,7 +593,7 @@ function parseStakingEvents(tx, block, chain) {
     const events = [];
     
     if (!tx) {
-      console.warn("No transaction provided to parseStakingEvents");
+      // console.warn("No transaction provided to parseStakingEvents");
       return events;
     }
     
@@ -994,7 +994,7 @@ function parseClaims(tx, block) {
     const claims = [];
     
     if (!tx) {
-      console.warn("No transaction provided to parseClaims");
+      // console.warn("No transaction provided to parseClaims");
       return claims;
     }
     
@@ -1086,7 +1086,7 @@ function parseServices(tx, block, chain) {
     const services = [];
     
     if (!tx) {
-      console.warn("No transaction provided to parseServices");
+      // console.warn("No transaction provided to parseServices");
       return services;
     }
     
@@ -1311,7 +1311,7 @@ function parseNodes(tx, block, chain) {
     const nodes = [];
     
     if (!tx) {
-      console.warn("No transaction provided to parseNodes");
+      // console.warn("No transaction provided to parseNodes");
       return nodes;
     }
     
@@ -1465,7 +1465,7 @@ function parseRelays(tx, block, chain) {
     const relays = [];
     
     if (!tx) {
-      console.warn("No transaction provided to parseRelays");
+      // console.warn("No transaction provided to parseRelays");
       return relays;
     }
     
@@ -1551,7 +1551,7 @@ function parseGovernance(tx, block, chain) {
     const governance = [];
     
     if (!tx) {
-      console.warn("No transaction provided to parseGovernance");
+      // console.warn("No transaction provided to parseGovernance");
       return governance;
     }
     
@@ -1643,7 +1643,7 @@ function parseGateways(tx, block, chain) {
     const gateways = [];
     
     if (!tx) {
-      console.warn("No transaction provided to parseGateways");
+      // console.warn("No transaction provided to parseGateways");
       return gateways;
     }
     
