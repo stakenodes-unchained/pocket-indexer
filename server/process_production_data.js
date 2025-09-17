@@ -276,14 +276,14 @@ class ProductionDataProcessor {
         for (const { result, tx } of parseResults) {
           if (result) {
             this.applyStateChanges(result, tx);
-            batchCounters.applications += result.applications || 0;
-            batchCounters.suppliers += result.suppliers || 0;
-            batchCounters.gateways += result.gateways || 0;
-            batchCounters.nodes += result.nodes || 0;
-            batchCounters.services += result.services || 0;
-            batchCounters.claims += result.claims || 0;
-            batchCounters.relays += result.relays || 0;
-            batchCounters.stakingEvents += result.stakingEvents || 0;
+            batchCounters.applications += (result.applications?.length || 0);
+            batchCounters.suppliers += (result.suppliers?.length || 0);
+            batchCounters.gateways += (result.gateways?.length || 0);
+            batchCounters.nodes += (result.nodes?.length || 0);
+            batchCounters.services += (result.services?.length || 0);
+            batchCounters.claims += (result.claims?.length || 0);
+            batchCounters.relays += (result.relays?.length || 0);
+            batchCounters.stakingEvents += (result.stakingEvents?.length || 0);
           }
           processedCount++;
         }
@@ -331,7 +331,7 @@ class ProductionDataProcessor {
       console.log(`✅ Batch ${batchNumber} summary: tx=${transactions.length} valid=${validTransactions.length} | apps=${batchCounters.applications} sup=${batchCounters.suppliers} gw=${batchCounters.gateways} nodes=${batchCounters.nodes} svc=${batchCounters.services} claims=${batchCounters.claims} relays=${batchCounters.relays} stakeEv=${batchCounters.stakingEvents} | errors=${batchCounters.errors}`);
       
       // Debug: Show sample transaction if no entities found
-      if (batchCounters.applications === 0 && batchCounters.suppliers === 0 && batchCounters.gateways === 0 && batchNumber <= 3) {
+      if (batchCounters.applications === 0 && batchCounters.suppliers === 0 && batchCounters.gateways === 0 && batchCounters.services === 0 && batchNumber <= 3) {
         console.log(`🔍 Debug: No entities found in batch ${batchNumber}. Sample transaction:`, {
           hash: validTransactions[0]?.hash,
           hasTxData: !!validTransactions[0]?.tx_data,
