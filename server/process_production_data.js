@@ -439,15 +439,15 @@ class ProductionDataProcessor {
       const relationships = parseRelationships(txData, blockData, tx.chain);
       
       return {
-        applications,
-        suppliers,
-        gateways,
-        nodes,
-        services,
-        claims,
-        relays,
-        stakingEvents,
-        relationships,
+        applications: applications || [],
+        suppliers: suppliers || [],
+        gateways: gateways || [],
+        nodes: nodes || [],
+        services: services || [],
+        claims: claims || [],
+        relays: relays || [],
+        stakingEvents: stakingEvents || [],
+        relationships: relationships || { applicationDelegations: [], applicationServiceConfigs: [] },
         txData,
         blockData,
         tx
@@ -465,16 +465,20 @@ class ProductionDataProcessor {
     this.stats.entities.applicationEvents += applications.length;
     this.stats.entities.suppliers += suppliers.length;
     this.stats.entities.gateways += gateways.length;
-    this.stats.entities.appDelegations += relationships.applicationDelegations.length;
-    this.stats.entities.appServiceConfigs += relationships.applicationServiceConfigs.length;
+    this.stats.entities.appDelegations += (relationships?.applicationDelegations?.length || 0);
+    this.stats.entities.appServiceConfigs += (relationships?.applicationServiceConfigs?.length || 0);
     
     // Save results if enabled
     if (this.saveResults) {
       this.results.applications.push(...applications);
       this.results.suppliers.push(...suppliers);
       this.results.gateways.push(...gateways);
-      this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
-      this.results.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
+      if (relationships?.applicationDelegations) {
+        this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
+      }
+      if (relationships?.applicationServiceConfigs) {
+        this.results.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
+      }
     }
     
     // Update application state (chronological order critical)
