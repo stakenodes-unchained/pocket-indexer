@@ -460,19 +460,22 @@ class ProductionDataProcessor {
   applyStateChanges(parseResult, tx) {
     // Apply state changes sequentially to maintain chronological order
     const { applications, suppliers, gateways, relationships } = parseResult;
+    const apps = Array.isArray(applications) ? applications : [];
+    const sups = Array.isArray(suppliers) ? suppliers : [];
+    const gws = Array.isArray(gateways) ? gateways : [];
     
     // Update statistics
-    this.stats.entities.applicationEvents += applications.length;
-    this.stats.entities.suppliers += suppliers.length;
-    this.stats.entities.gateways += gateways.length;
+    this.stats.entities.applicationEvents += apps.length;
+    this.stats.entities.suppliers += sups.length;
+    this.stats.entities.gateways += gws.length;
     this.stats.entities.appDelegations += (relationships?.applicationDelegations?.length || 0);
     this.stats.entities.appServiceConfigs += (relationships?.applicationServiceConfigs?.length || 0);
     
     // Save results if enabled
       if (this.saveResults) {
-        if (Array.isArray(applications)) this.results.applications.push(...applications);
-        if (Array.isArray(suppliers)) this.results.suppliers.push(...suppliers);
-        if (Array.isArray(gateways)) this.results.gateways.push(...gateways);
+      if (apps.length) this.results.applications.push(...apps);
+      if (sups.length) this.results.suppliers.push(...sups);
+      if (gws.length) this.results.gateways.push(...gws);
         if (relationships?.applicationDelegations && Array.isArray(relationships.applicationDelegations)) {
           this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
         }
@@ -482,17 +485,17 @@ class ProductionDataProcessor {
       }
     
     // Update application state (chronological order critical)
-    for (const appEvent of applications) {
+    for (const appEvent of apps) {
       this.updateApplicationState(appEvent);
     }
     
     // Update suppliers state (chronological order critical)
-    for (const supEvent of suppliers) {
+    for (const supEvent of sups) {
       this.updateSupplierState(supEvent);
     }
     
     // Update gateways state (chronological order critical)
-    for (const gwEvent of gateways) {
+    for (const gwEvent of gws) {
       this.updateGatewayState(gwEvent);
     }
   }
@@ -538,32 +541,32 @@ class ProductionDataProcessor {
       const stakingEvents = parseStakingEvents(txData, blockData, tx.chain);
       const relationships = parseRelationships(txData, blockData, tx.chain);
       
-      // Update statistics
-      this.stats.entities.applicationEvents += applications.length;
-      this.stats.entities.suppliers += suppliers.length;
-      this.stats.entities.gateways += gateways.length;
-      this.stats.entities.nodes += nodes.length;
-      this.stats.entities.services += services.length;
-      this.stats.entities.claims += claims.length;
-      this.stats.entities.relays += relays.length;
-      this.stats.entities.stakingEvents += stakingEvents.length;
-      this.stats.entities.appDelegations += relationships.applicationDelegations.length;
-      this.stats.entities.appServiceConfigs += relationships.applicationServiceConfigs.length;
+      // Update statistics (defensive)
+      this.stats.entities.applicationEvents += (Array.isArray(applications) ? applications.length : 0);
+      this.stats.entities.suppliers += (Array.isArray(suppliers) ? suppliers.length : 0);
+      this.stats.entities.gateways += (Array.isArray(gateways) ? gateways.length : 0);
+      this.stats.entities.nodes += (Array.isArray(nodes) ? nodes.length : 0);
+      this.stats.entities.services += (Array.isArray(services) ? services.length : 0);
+      this.stats.entities.claims += (Array.isArray(claims) ? claims.length : 0);
+      this.stats.entities.relays += (Array.isArray(relays) ? relays.length : 0);
+      this.stats.entities.stakingEvents += (Array.isArray(stakingEvents) ? stakingEvents.length : 0);
+      this.stats.entities.appDelegations += (relationships?.applicationDelegations?.length || 0);
+      this.stats.entities.appServiceConfigs += (relationships?.applicationServiceConfigs?.length || 0);
       
       // Store results if requested
       if (this.saveResults) {
-        if (Array.isArray(applications)) this.results.applications.push(...applications);
-        if (Array.isArray(suppliers)) this.results.suppliers.push(...suppliers);
-        if (Array.isArray(gateways)) this.results.gateways.push(...gateways);
-        if (Array.isArray(nodes)) this.results.nodes.push(...nodes);
-        if (Array.isArray(services)) this.results.services.push(...services);
-        if (Array.isArray(claims)) this.results.claims.push(...claims);
-        if (Array.isArray(relays)) this.results.relays.push(...relays);
-        if (Array.isArray(stakingEvents)) this.results.stakingEvents.push(...stakingEvents);
-        if (relationships?.applicationDelegations && Array.isArray(relationships.applicationDelegations)) {
+        if (Array.isArray(applications) && applications.length) this.results.applications.push(...applications);
+        if (Array.isArray(suppliers) && suppliers.length) this.results.suppliers.push(...suppliers);
+        if (Array.isArray(gateways) && gateways.length) this.results.gateways.push(...gateways);
+        if (Array.isArray(nodes) && nodes.length) this.results.nodes.push(...nodes);
+        if (Array.isArray(services) && services.length) this.results.services.push(...services);
+        if (Array.isArray(claims) && claims.length) this.results.claims.push(...claims);
+        if (Array.isArray(relays) && relays.length) this.results.relays.push(...relays);
+        if (Array.isArray(stakingEvents) && stakingEvents.length) this.results.stakingEvents.push(...stakingEvents);
+        if (relationships?.applicationDelegations && Array.isArray(relationships.applicationDelegations) && relationships.applicationDelegations.length) {
           this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
         }
-        if (relationships?.applicationServiceConfigs && Array.isArray(relationships.applicationServiceConfigs)) {
+        if (relationships?.applicationServiceConfigs && Array.isArray(relationships.applicationServiceConfigs) && relationships.applicationServiceConfigs.length) {
           this.results.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
         }
       }
