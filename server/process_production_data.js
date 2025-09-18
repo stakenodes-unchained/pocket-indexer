@@ -469,17 +469,17 @@ class ProductionDataProcessor {
     this.stats.entities.appServiceConfigs += (relationships?.applicationServiceConfigs?.length || 0);
     
     // Save results if enabled
-    if (this.saveResults) {
-      this.results.applications.push(...applications);
-      this.results.suppliers.push(...suppliers);
-      this.results.gateways.push(...gateways);
-      if (relationships?.applicationDelegations) {
-        this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
+      if (this.saveResults) {
+        if (Array.isArray(applications)) this.results.applications.push(...applications);
+        if (Array.isArray(suppliers)) this.results.suppliers.push(...suppliers);
+        if (Array.isArray(gateways)) this.results.gateways.push(...gateways);
+        if (relationships?.applicationDelegations && Array.isArray(relationships.applicationDelegations)) {
+          this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
+        }
+        if (relationships?.applicationServiceConfigs && Array.isArray(relationships.applicationServiceConfigs)) {
+          this.results.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
+        }
       }
-      if (relationships?.applicationServiceConfigs) {
-        this.results.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
-      }
-    }
     
     // Update application state (chronological order critical)
     for (const appEvent of applications) {
@@ -552,16 +552,20 @@ class ProductionDataProcessor {
       
       // Store results if requested
       if (this.saveResults) {
-        this.results.applications.push(...applications);
-        this.results.suppliers.push(...suppliers);
-        this.results.gateways.push(...gateways);
-        this.results.nodes.push(...nodes);
-        this.results.services.push(...services);
-        this.results.claims.push(...claims);
-        this.results.relays.push(...relays);
-        this.results.stakingEvents.push(...stakingEvents);
-        this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
-        this.results.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
+        if (Array.isArray(applications)) this.results.applications.push(...applications);
+        if (Array.isArray(suppliers)) this.results.suppliers.push(...suppliers);
+        if (Array.isArray(gateways)) this.results.gateways.push(...gateways);
+        if (Array.isArray(nodes)) this.results.nodes.push(...nodes);
+        if (Array.isArray(services)) this.results.services.push(...services);
+        if (Array.isArray(claims)) this.results.claims.push(...claims);
+        if (Array.isArray(relays)) this.results.relays.push(...relays);
+        if (Array.isArray(stakingEvents)) this.results.stakingEvents.push(...stakingEvents);
+        if (relationships?.applicationDelegations && Array.isArray(relationships.applicationDelegations)) {
+          this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
+        }
+        if (relationships?.applicationServiceConfigs && Array.isArray(relationships.applicationServiceConfigs)) {
+          this.results.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
+        }
       }
 
       // Update in-memory application state
