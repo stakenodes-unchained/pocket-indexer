@@ -95,7 +95,7 @@ function parseApplications(txEnvelope, block, chain) {
       if (msgType === 'pocket.application.MsgStakeApplication') {
         const servicesFromMsg = Array.isArray(msg.services) ? msg.services.map(s => s?.service_id).filter(Boolean) : [];
         const app = {
-          address: firstEv.address || msg.address || '',
+          address: firstEv.address || msg.address || msg.application_address || msg.app_address || '',
           staked_amount: (firstEv.stake && firstEv.stake.amount) || msg.stake?.amount || '0',
           chains: firstEv.services?.map(s => s?.service_id).filter(Boolean) || servicesFromMsg,
           status: 'staked',
@@ -105,7 +105,7 @@ function parseApplications(txEnvelope, block, chain) {
       }
       if (msgType === 'pocket.application.MsgUnstakeApplication') {
         const app = {
-          address: firstEv.address || msg.address || '',
+          address: firstEv.address || msg.address || msg.application_address || msg.app_address || '',
           status: 'unstake_requested',
           unstake_session_end_height: extractUnstakeSessionEndHeight(txEnvelope),
           last_seen: timestamp,
@@ -141,7 +141,7 @@ function parseApplications(txEnvelope, block, chain) {
       }
       if (msgType === 'pocket.migration.MsgClaimMorseApplication') {
         const app = {
-          address: firstEv.address || msg.pocket_address || msg.shannon_address || '',
+          address: firstEv.address || msg.pocket_address || msg.shannon_address || msg.application_address || msg.app_address || '',
           staked_amount: (firstEv.stake && firstEv.stake.amount) || undefined,
           chains: firstEv.services?.map(s => s?.service_id).filter(Boolean) || [],
           status: 'migrated',
@@ -226,15 +226,85 @@ function parseServices(txEnvelope, block, chain) {
     const out = [];
     const messages = getMessages(txEnvelope);
     const timestamp = getTimestamp(block);
+
+    // 1) Services defined in pocket.service.* messages (network-wide services)
     const evSvc = extractFromEvents(txEnvelope, ['pocket.service.'], ['service'])[0] || {};
     for (const msg of messages) {
       const msgType = normalizePocketMsgType(typeof msg?.['@type'] === 'string' ? msg['@type'] : '');
       if (msgType === 'pocket.service.MsgAddService') {
         const id = evSvc.id || msg.service?.id || msg.service_id || '';
         if (!id) continue;
-        out.push({ id, status: 'added', last_seen: timestamp });
+        out.push({
+          id,
+          owner_address: msg.owner_address || null,
+          status: 'added',
+          last_seen: timestamp,
+        });
       }
     }
+
+    // 2) Services advertised by suppliers in stake/edit/unstake (per-operator service configs)
+    for (const msg of messages) {
+      const msgType = normalizePocketMsgType(typeof msg?.['@type'] === 'string' ? msg['@type'] : '');
+      if ((msgType === 'pocket.supplier.MsgStakeSupplier' || msgType === 'pocket.supplier.MsgEditSupplier') && Array.isArray(msg.services)) {
+        for (const svc of msg.services) {
+          const serviceId = svc?.service_id;
+          if (!serviceId) continue;
+          out.push({
+            supplier_operator_address: msg.operator_address || msg.signer || '',
+            service_id: serviceId,
+            status: msgType.endsWith('EditSupplier') ? 'edited' : 'active',
+            last_seen: timestamp,
+            endpoint_url: Array.isArray(svc.endpoints) && svc.endpoints[0]?.url ? svc.endpoints[0].url : null,
+          });
+        }
+      }
+      if (msgType === 'pocket.supplier.MsgUnstakeSupplier' && Array.isArray(msg.services)) {
+        for (const svc of msg.services) {
+          const serviceId = svc?.service_id;
+          if (!serviceId) continue;
+          out.push({
+            supplier_operator_address: msg.operator_address || '',
+            service_id: serviceId,
+            status: 'inactive',
+            last_seen: timestamp,
+            endpoint_url: null,
+          });
+        }
+      }
+    }
+
+    // 3) Services advertised by gateways in stake/edit/unstake
+    for (const msg of messages) {
+      const msgType = normalizePocketMsgType(typeof msg?.['@type'] === 'string' ? msg['@type'] : '');
+      if ((msgType === 'pocket.gateway.MsgStakeGateway' || msgType === 'pocket.gateway.MsgEditGateway') && Array.isArray(msg.services)) {
+        for (const svc of msg.services) {
+          const serviceId = svc?.service_id;
+          if (!serviceId) continue;
+          out.push({
+            gateway_address: msg.address || msg.operator_address || msg.gateway_address || '',
+            service_id: serviceId,
+            status: msgType.endsWith('EditGateway') ? 'edited' : 'active',
+            last_seen: timestamp,
+            endpoint_url: Array.isArray(svc.endpoints) && svc.endpoints[0]?.url ? svc.endpoints[0].url : null,
+          });
+        }
+      }
+      if (msgType === 'pocket.gateway.MsgUnstakeGateway' && Array.isArray(msg.services)) {
+        for (const svc of msg.services) {
+          const serviceId = svc?.service_id;
+          if (!serviceId) continue;
+          out.push({
+            gateway_address: msg.address || msg.operator_address || msg.gateway_address || '',
+            service_id: serviceId,
+            status: 'inactive',
+            last_seen: timestamp,
+            endpoint_url: null,
+          });
+        }
+      }
+    }
+
     return out;
   } catch (_) { return []; }
 }

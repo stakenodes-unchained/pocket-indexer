@@ -15,13 +15,13 @@
 
 const { Client } = require('pg');
 const { 
-  parseSuppliers,
-  parseApplications,
-  parseGateways,
-  parseNodes,
-  parseServices,
-  parseClaims,
-  parseRelays,
+  parseSuppliers, 
+  parseApplications, 
+  parseGateways, 
+  parseNodes, 
+  parseServices, 
+  parseClaims, 
+  parseRelays, 
   parseStakingEvents,
   parseRelationships
 } = require('./services/indexer/entityParser.v2');
@@ -303,16 +303,16 @@ class ProductionDataProcessor {
               batchCounters.stakingEvents += counts.stakingEvents || 0;
             }
             processedCount++;
-          } catch (error) {
-            this.stats.errors++;
+        } catch (error) {
+          this.stats.errors++;
             batchCounters.errors++;
             console.error(`\n❌ Error processing transaction ${tx.hash}:`, error.message);
-            
-            if (this.verbose) {
-              console.error('Transaction data:', JSON.stringify(tx, null, 2));
-            }
+          
+          if (this.verbose) {
+            console.error('Transaction data:', JSON.stringify(tx, null, 2));
           }
         }
+      }
       }
       
       // Update skipped count
@@ -486,6 +486,12 @@ class ProductionDataProcessor {
     
     // Update application state (chronological order critical)
     for (const appEvent of apps) {
+      // Skip relationship records mistakenly mixed in
+      if (appEvent && appEvent.type === 'relationship') continue;
+      // Normalize possible field names
+      if (appEvent && !appEvent.address && appEvent.application_address) {
+        appEvent.address = appEvent.application_address;
+      }
       this.updateApplicationState(appEvent);
     }
     
@@ -572,7 +578,11 @@ class ProductionDataProcessor {
       }
 
       // Update in-memory application state
-      for (const appEvent of applications) {
+      for (const raw of Array.isArray(applications) ? applications : []) {
+        if (!raw || typeof raw !== 'object') continue;
+        if (raw.type === 'relationship') continue;
+        const appEvent = { ...raw };
+        if (!appEvent.address && appEvent.application_address) appEvent.address = appEvent.application_address;
         // Debug: detect if delegation events mistakenly carry stake
         if (appEvent.status === 'delegated' && appEvent.staked_amount) {
           this.debug.delegationEventsWithStakeAmount++;
@@ -610,7 +620,7 @@ class ProductionDataProcessor {
         relays: relays.length,
         stakingEvents: stakingEvents.length,
       };
-
+      
     } catch (error) {
       throw new Error(`Failed to process transaction: ${error.message}`);
     }
