@@ -459,30 +459,42 @@ class ProductionDataProcessor {
 
   applyStateChanges(parseResult, tx) {
     // Apply state changes sequentially to maintain chronological order
-    const { applications, suppliers, gateways, relationships } = parseResult;
+    const { applications, suppliers, gateways, services, claims, relays, stakingEvents, relationships } = parseResult;
     const apps = Array.isArray(applications) ? applications : [];
     const sups = Array.isArray(suppliers) ? suppliers : [];
     const gws = Array.isArray(gateways) ? gateways : [];
+    const svcs = Array.isArray(services) ? services : [];
+    const clms = Array.isArray(claims) ? claims : [];
+    const rlys = Array.isArray(relays) ? relays : [];
+    const stkEvts = Array.isArray(stakingEvents) ? stakingEvents : [];
     
     // Update statistics
     this.stats.entities.applicationEvents += apps.length;
     this.stats.entities.suppliers += sups.length;
     this.stats.entities.gateways += gws.length;
+    this.stats.entities.services += svcs.length;
+    this.stats.entities.claims += clms.length;
+    this.stats.entities.relays += rlys.length;
+    this.stats.entities.stakingEvents += stkEvts.length;
     this.stats.entities.appDelegations += (relationships?.applicationDelegations?.length || 0);
     this.stats.entities.appServiceConfigs += (relationships?.applicationServiceConfigs?.length || 0);
     
     // Save results if enabled
-      if (this.saveResults) {
+    if (this.saveResults) {
       if (apps.length) this.results.applications.push(...apps);
       if (sups.length) this.results.suppliers.push(...sups);
       if (gws.length) this.results.gateways.push(...gws);
-        if (relationships?.applicationDelegations && Array.isArray(relationships.applicationDelegations)) {
-          this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
-        }
-        if (relationships?.applicationServiceConfigs && Array.isArray(relationships.applicationServiceConfigs)) {
-          this.results.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
-        }
+      if (svcs.length) this.results.services.push(...svcs);
+      if (clms.length) this.results.claims.push(...clms);
+      if (rlys.length) this.results.relays.push(...rlys);
+      if (stkEvts.length) this.results.stakingEvents.push(...stkEvts);
+      if (relationships?.applicationDelegations && Array.isArray(relationships.applicationDelegations)) {
+        this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
       }
+      if (relationships?.applicationServiceConfigs && Array.isArray(relationships.applicationServiceConfigs)) {
+        this.results.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
+      }
+    }
     
     // Update application state (chronological order critical)
     for (const appEvent of apps) {
@@ -493,6 +505,10 @@ class ProductionDataProcessor {
         appEvent.address = appEvent.application_address;
       }
       this.updateApplicationState(appEvent);
+      // CRITICAL: Add to unique addresses set
+      if (appEvent && appEvent.address) {
+        this.applicationAddresses.add(appEvent.address);
+      }
     }
     
     // Update suppliers state (chronological order critical)
