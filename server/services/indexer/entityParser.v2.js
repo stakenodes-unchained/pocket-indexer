@@ -227,7 +227,8 @@ function parseServices(txEnvelope, block, chain) {
     const messages = getMessages(txEnvelope);
     const timestamp = getTimestamp(block);
 
-    // 1) Services defined in pocket.service.* messages (network-wide services)
+    // Only track unique service definitions from MsgAddService (network-wide services)
+    // Don't count supplier/gateway advertisements as separate services
     const evSvc = extractFromEvents(txEnvelope, ['pocket.service.'], ['service'])[0] || {};
     for (const msg of messages) {
       const msgType = normalizePocketMsgType(typeof msg?.['@type'] === 'string' ? msg['@type'] : '');
@@ -243,67 +244,9 @@ function parseServices(txEnvelope, block, chain) {
       }
     }
 
-    // 2) Services advertised by suppliers in stake/edit/unstake (per-operator service configs)
-    for (const msg of messages) {
-      const msgType = normalizePocketMsgType(typeof msg?.['@type'] === 'string' ? msg['@type'] : '');
-      if ((msgType === 'pocket.supplier.MsgStakeSupplier' || msgType === 'pocket.supplier.MsgEditSupplier') && Array.isArray(msg.services)) {
-        for (const svc of msg.services) {
-          const serviceId = svc?.service_id;
-          if (!serviceId) continue;
-          out.push({
-            supplier_operator_address: msg.operator_address || msg.signer || '',
-            service_id: serviceId,
-            status: msgType.endsWith('EditSupplier') ? 'edited' : 'active',
-            last_seen: timestamp,
-            endpoint_url: Array.isArray(svc.endpoints) && svc.endpoints[0]?.url ? svc.endpoints[0].url : null,
-          });
-        }
-      }
-      if (msgType === 'pocket.supplier.MsgUnstakeSupplier' && Array.isArray(msg.services)) {
-        for (const svc of msg.services) {
-          const serviceId = svc?.service_id;
-          if (!serviceId) continue;
-          out.push({
-            supplier_operator_address: msg.operator_address || '',
-            service_id: serviceId,
-            status: 'inactive',
-            last_seen: timestamp,
-            endpoint_url: null,
-          });
-        }
-      }
-    }
-
-    // 3) Services advertised by gateways in stake/edit/unstake
-    for (const msg of messages) {
-      const msgType = normalizePocketMsgType(typeof msg?.['@type'] === 'string' ? msg['@type'] : '');
-      if ((msgType === 'pocket.gateway.MsgStakeGateway' || msgType === 'pocket.gateway.MsgEditGateway') && Array.isArray(msg.services)) {
-        for (const svc of msg.services) {
-          const serviceId = svc?.service_id;
-          if (!serviceId) continue;
-          out.push({
-            gateway_address: msg.address || msg.operator_address || msg.gateway_address || '',
-            service_id: serviceId,
-            status: msgType.endsWith('EditGateway') ? 'edited' : 'active',
-            last_seen: timestamp,
-            endpoint_url: Array.isArray(svc.endpoints) && svc.endpoints[0]?.url ? svc.endpoints[0].url : null,
-          });
-        }
-      }
-      if (msgType === 'pocket.gateway.MsgUnstakeGateway' && Array.isArray(msg.services)) {
-        for (const svc of msg.services) {
-          const serviceId = svc?.service_id;
-          if (!serviceId) continue;
-          out.push({
-            gateway_address: msg.address || msg.operator_address || msg.gateway_address || '',
-            service_id: serviceId,
-            status: 'inactive',
-            last_seen: timestamp,
-            endpoint_url: null,
-          });
-        }
-      }
-    }
+    // Note: We intentionally don't parse supplier/gateway service advertisements here
+    // because those are not "services" - they are service configurations/advertisements
+    // The actual services are the unique service definitions created via MsgAddService
 
     return out;
   } catch (_) { return []; }
@@ -327,6 +270,7 @@ function parseClaims(txEnvelope, block, chain) {
           session_start_block_height: sh.session_start_block_height || 0,
           session_end_block_height: sh.session_end_block_height || 0,
           status: 'claimed',
+          settled: false, // Claims start as unsettled
           last_seen: timestamp,
         });
       }
