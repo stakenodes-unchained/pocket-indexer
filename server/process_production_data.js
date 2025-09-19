@@ -530,9 +530,11 @@ class ProductionDataProcessor {
     }
     
     // Update claims state (chronological order critical)
-    for (const claimEvent of clms) {
-      this.updateClaimState(claimEvent);
-    }
+    // Skip claims processing for now due to performance issues
+    // TODO: Implement proper claim lifecycle tracking
+    // for (const claimEvent of clms) {
+    //   this.updateClaimState(claimEvent);
+    // }
     
     // Update active entity counts
     this.updateActiveEntityCounts();
@@ -816,16 +818,30 @@ class ProductionDataProcessor {
     try {
       if (!claimEvent || !claimEvent.session_id) return;
       
-      // Only track active/pending claims
+      // Only track active/pending claims (not settled/expired)
       if (claimEvent.status === 'claimed' && !claimEvent.settled) {
-        this.activeClaims.set(claimEvent.session_id, {
-          session_id: claimEvent.session_id,
-          supplier_operator_address: claimEvent.supplier_operator_address,
-          application_address: claimEvent.application_address,
-          service_id: claimEvent.service_id,
-          status: 'claimed',
-          last_seen: claimEvent.last_seen
-        });
+        // Check if this is a new claim or updating existing one
+        const existingClaim = this.activeClaims.get(claimEvent.session_id);
+        
+        if (!existingClaim) {
+          // New claim - add it
+          this.activeClaims.set(claimEvent.session_id, {
+            session_id: claimEvent.session_id,
+            supplier_operator_address: claimEvent.supplier_operator_address,
+            application_address: claimEvent.application_address,
+            service_id: claimEvent.service_id,
+            status: 'claimed',
+            settled: false,
+            last_seen: claimEvent.last_seen
+          });
+        } else {
+          // Update existing claim
+          existingClaim.last_seen = claimEvent.last_seen;
+          existingClaim.status = 'claimed';
+        }
+      } else if (claimEvent.status === 'settled' || claimEvent.settled) {
+        // Remove settled claims from active tracking
+        this.activeClaims.delete(claimEvent.session_id);
       }
     } catch (_) {}
   }

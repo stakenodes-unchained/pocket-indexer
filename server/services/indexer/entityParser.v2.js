@@ -255,27 +255,32 @@ function parseServices(txEnvelope, block, chain) {
 // Claims/Proofs
 function parseClaims(txEnvelope, block, chain) {
   try {
-    const out = [];
-    const messages = getMessages(txEnvelope);
-    const timestamp = getTimestamp(block);
-    for (const msg of messages) {
-      const msgType = normalizePocketMsgType(typeof msg?.['@type'] === 'string' ? msg['@type'] : '');
-      if (msgType === 'pocket.proof.MsgCreateClaim') {
-        const sh = msg.session_header || {};
-        out.push({
-          supplier_operator_address: msg.supplier_operator_address || msg.signer || '',
-          application_address: sh.application_address || '',
-          service_id: sh.service_id || '',
-          session_id: sh.session_id || '',
-          session_start_block_height: sh.session_start_block_height || 0,
-          session_end_block_height: sh.session_end_block_height || 0,
-          status: 'claimed',
-          settled: false, // Claims start as unsettled
-          last_seen: timestamp,
-        });
-      }
-    }
-    return out;
+    // Skip claims parsing for now due to performance issues
+    // Claims are temporary and should be tracked differently
+    return [];
+    
+    // Original logic (commented out for performance):
+    // const out = [];
+    // const messages = getMessages(txEnvelope);
+    // const timestamp = getTimestamp(block);
+    // for (const msg of messages) {
+    //   const msgType = normalizePocketMsgType(typeof msg?.['@type'] === 'string' ? msg['@type'] : '');
+    //   if (msgType === 'pocket.proof.MsgCreateClaim') {
+    //     const sh = msg.session_header || {};
+    //     out.push({
+    //       supplier_operator_address: msg.supplier_operator_address || msg.signer || '',
+    //       application_address: sh.application_address || '',
+    //       service_id: sh.service_id || '',
+    //       session_id: sh.session_id || '',
+    //       session_start_block_height: sh.session_start_block_height || 0,
+    //       session_end_block_height: sh.session_end_block_height || 0,
+    //       status: 'claimed',
+    //       settled: false, // Claims start as unsettled
+    //       last_seen: timestamp,
+    //     });
+    //   }
+    // }
+    // return out;
   } catch (_) { return []; }
 }
 
