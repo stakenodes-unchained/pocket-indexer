@@ -1088,6 +1088,7 @@ class ProductionDataProcessor {
 
   async persistFinalState() {
     try {
+      let upserts = { apps: 0, appSvc: 0, supSvc: 0, dels: 0, sups: 0, gws: 0 };
       // Persist applications with extended columns
       for (const app of this.applicationState.values()) {
         await this.pgClient.query(
@@ -1119,6 +1120,7 @@ class ProductionDataProcessor {
             app.unstake_session_end_height || null,
           ]
         );
+        upserts.apps++;
       }
 
       // Persist queued application service configs
@@ -1140,6 +1142,7 @@ class ProductionDataProcessor {
               sc.last_seen || null,
             ]
           );
+          upserts.appSvc++;
         }
       }
 
@@ -1162,6 +1165,7 @@ class ProductionDataProcessor {
               sc.last_seen || null,
             ]
           );
+          upserts.supSvc++;
         }
       }
 
@@ -1181,6 +1185,7 @@ class ProductionDataProcessor {
               d.timestamp,
             ]
           );
+          upserts.dels++;
         }
       }
 
@@ -1208,6 +1213,7 @@ class ProductionDataProcessor {
             sup.unstake_session_end_height || null,
           ]
         );
+        upserts.sups++;
       }
 
       // Persist gateways with extended columns
@@ -1234,7 +1240,11 @@ class ProductionDataProcessor {
             gw.unstake_session_end_height || null,
           ]
         );
+        upserts.gws++;
       }
+
+      // Summary log
+      console.log(`📝 Upserts summary: applications=${upserts.apps}, app_service_configs=${upserts.appSvc}, supplier_service_configs=${upserts.supSvc}, delegations=${upserts.dels}, suppliers=${upserts.sups}, gateways=${upserts.gws}`);
     } catch (e) {
       console.error('Failed to persist final state:', e.message);
     }
