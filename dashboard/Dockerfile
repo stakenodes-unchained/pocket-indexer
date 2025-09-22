@@ -11,7 +11,7 @@ FROM node:20-alpine AS runner
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/public ./public
+# COPY --from=builder /app/public ./public
 COPY --from=builder /app/package.json ./package.json
 RUN npm i --omit=dev --ignore-scripts && adduser -D -u 1001 nextjs && chown -R nextjs:nextjs /app
 USER nextjs
