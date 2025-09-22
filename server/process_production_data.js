@@ -138,6 +138,10 @@ class ProductionDataProcessor {
       stakeEventsFromMsgBody: 0,
       stakeEventsMissingAmount: 0,
     };
+
+    // Address tracking sets used by update*State; initialize to avoid undefined
+    this.applicationAddresses = new Set();
+    this.supplierAddresses = new Set();
   }
 
   async connect() {
