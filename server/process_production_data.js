@@ -103,7 +103,9 @@ class ProductionDataProcessor {
       endTime: null
     };
     
-    this.results = {
+    // Results are buffered per-batch and streamed to disk to avoid memory growth
+    this.results = null; // avoid unbounded growth when SAVE_RESULTS=true
+    this.pendingResults = {
       applications: [],
       suppliers: [],
       gateways: [],
@@ -117,6 +119,8 @@ class ProductionDataProcessor {
         applicationServiceConfigs: []
       }
     };
+    this.resultsFilePath = null;
+    this.resultsChunksWritten = 0;
 
     // Periodic flush controls to avoid unbounded memory growth
     this.flushEveryBatches = options.flushEveryBatches || 5;
@@ -168,6 +172,9 @@ class ProductionDataProcessor {
       
       await this.pgClient.connect();
       console.log(`✅ Connected to database: ${CONFIG.DB_HOST}:${CONFIG.DB_PORT}/${CONFIG.DB_NAME}`);
+      if (this.saveResults) {
+        await this.initializeResultsFile();
+      }
       
       // Verify chain exists
       const chainCheck = await this.pgClient.query(
@@ -351,6 +358,9 @@ class ProductionDataProcessor {
       // Print concise batch summary
       process.stdout.write('\r' + ' '.repeat(120) + '\r');
       console.log(`✅ Batch ${batchNumber} summary: tx=${transactions.length} valid=${validTransactions.length} | apps=${batchCounters.applications} sup=${batchCounters.suppliers} gw=${batchCounters.gateways} nodes=${batchCounters.nodes} svc=${batchCounters.services} claims=${batchCounters.claims} relays=${batchCounters.relays} stakeEv=${batchCounters.stakingEvents} | errors=${batchCounters.errors}`);
+      if (this.saveResults) {
+        await this.flushResultsBufferToFile();
+      }
       // Periodically flush pending DB queues to bound memory
       this.batchesProcessed++;
       const pendingSizes = {
@@ -383,9 +393,7 @@ class ProductionDataProcessor {
     // Persist final state before optionally saving results and disconnecting
     await this.persistFinalState();
     
-    if (this.saveResults) {
-      await this.saveResultsToFile();
-    }
+    // results are streamed per-batch now
   }
 
   // Verification method to ensure chronological order
@@ -510,20 +518,20 @@ class ProductionDataProcessor {
     this.stats.entities.appDelegations += (relationships?.applicationDelegations?.length || 0);
     this.stats.entities.appServiceConfigs += (relationships?.applicationServiceConfigs?.length || 0);
     
-    // Save results if enabled
+    // Buffer results if enabled; they will be streamed per-batch
     if (this.saveResults) {
-      if (apps.length) this.results.applications.push(...apps);
-      if (sups.length) this.results.suppliers.push(...sups);
-      if (gws.length) this.results.gateways.push(...gws);
-      if (svcs.length) this.results.services.push(...svcs);
-      if (clms.length) this.results.claims.push(...clms);
-      if (rlys.length) this.results.relays.push(...rlys);
-      if (stkEvts.length) this.results.stakingEvents.push(...stkEvts);
+      if (apps.length) this.pendingResults.applications.push(...apps);
+      if (sups.length) this.pendingResults.suppliers.push(...sups);
+      if (gws.length) this.pendingResults.gateways.push(...gws);
+      if (svcs.length) this.pendingResults.services.push(...svcs);
+      if (clms.length) this.pendingResults.claims.push(...clms);
+      if (rlys.length) this.pendingResults.relays.push(...rlys);
+      if (stkEvts.length) this.pendingResults.stakingEvents.push(...stkEvts);
       if (relationships?.applicationDelegations && Array.isArray(relationships.applicationDelegations)) {
-        this.results.relationships.applicationDelegations.push(...relationships.applicationDelegations);
+        this.pendingResults.relationships.applicationDelegations.push(...relationships.applicationDelegations);
       }
       if (relationships?.applicationServiceConfigs && Array.isArray(relationships.applicationServiceConfigs)) {
-        this.results.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
+        this.pendingResults.relationships.applicationServiceConfigs.push(...relationships.applicationServiceConfigs);
       }
     }
     
@@ -1259,6 +1267,65 @@ class ProductionDataProcessor {
       console.log(`📝 Upserts summary: applications=${upserts.apps}, app_service_configs=${upserts.appSvc}, supplier_service_configs=${upserts.supSvc}, delegations=${upserts.dels}, suppliers=${upserts.sups}, gateways=${upserts.gws}`);
     } catch (e) {
       console.error('Failed to persist final state:', e.message);
+    }
+  }
+
+  async initializeResultsFile() {
+    const fs = require('fs').promises;
+    const path = require('path');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `production_data_${this.chain}_${timestamp}.jsonl`;
+    this.resultsFilePath = path.join(__dirname, filename);
+    const header = {
+      metadata: {
+        chain: this.chain,
+        startedAt: new Date().toISOString(),
+        format: 'jsonl-batch',
+        note: 'Each line is a JSON object with a batch of results.'
+      }
+    };
+    await fs.writeFile(this.resultsFilePath, JSON.stringify(header) + '\n');
+    console.log(`📝 Streaming results to: ${filename}`);
+  }
+
+  async flushResultsBufferToFile() {
+    try {
+      if (!this.saveResults || !this.resultsFilePath) return;
+      const hasAny = (
+        (this.pendingResults.applications && this.pendingResults.applications.length) ||
+        (this.pendingResults.suppliers && this.pendingResults.suppliers.length) ||
+        (this.pendingResults.gateways && this.pendingResults.gateways.length) ||
+        (this.pendingResults.nodes && this.pendingResults.nodes.length) ||
+        (this.pendingResults.services && this.pendingResults.services.length) ||
+        (this.pendingResults.claims && this.pendingResults.claims.length) ||
+        (this.pendingResults.relays && this.pendingResults.relays.length) ||
+        (this.pendingResults.stakingEvents && this.pendingResults.stakingEvents.length) ||
+        (this.pendingResults.relationships && ((this.pendingResults.relationships.applicationDelegations && this.pendingResults.relationships.applicationDelegations.length) || (this.pendingResults.relationships.applicationServiceConfigs && this.pendingResults.relationships.applicationServiceConfigs.length)))
+      );
+      if (!hasAny) return;
+      const fs = require('fs').promises;
+      const line = JSON.stringify({
+        batch: this.batchesProcessed + 1,
+        results: this.pendingResults
+      }) + '\n';
+      await fs.appendFile(this.resultsFilePath, line);
+      this.resultsChunksWritten++;
+      this.pendingResults = {
+        applications: [],
+        suppliers: [],
+        gateways: [],
+        nodes: [],
+        services: [],
+        claims: [],
+        relays: [],
+        stakingEvents: [],
+        relationships: {
+          applicationDelegations: [],
+          applicationServiceConfigs: []
+        }
+      };
+    } catch (e) {
+      console.error('Failed to write results batch:', e.message);
     }
   }
 
