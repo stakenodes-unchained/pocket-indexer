@@ -14,7 +14,7 @@ async function testProductionScript() {
     // Test with pocket-testnet-beta and optimized settings
     const processor = new ProductionDataProcessor({
       chain: 'pocket-testnet-beta',
-      batchSize: 5000, // Larger batches for better performance
+      batchSize: 2000, // Larger batches for better performance
       limit: 1600000, // Reduced limit for faster testing
       verbose: false,
       saveResults: true,

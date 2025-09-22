@@ -118,6 +118,11 @@ class ProductionDataProcessor {
       }
     };
 
+    // Periodic flush controls to avoid unbounded memory growth
+    this.flushEveryBatches = options.flushEveryBatches || 5;
+    this.maxPendingQueueSize = options.maxPendingQueueSize || 10000; // total of all queues
+    this.batchesProcessed = 0;
+
     // In-memory entity state tracking (current state, not events)
     this.applicationState = new Map(); // key: application address, value: state object
     this.supplierState = new Map(); // key: operator_address, value: state object
@@ -346,6 +351,17 @@ class ProductionDataProcessor {
       // Print concise batch summary
       process.stdout.write('\r' + ' '.repeat(120) + '\r');
       console.log(`✅ Batch ${batchNumber} summary: tx=${transactions.length} valid=${validTransactions.length} | apps=${batchCounters.applications} sup=${batchCounters.suppliers} gw=${batchCounters.gateways} nodes=${batchCounters.nodes} svc=${batchCounters.services} claims=${batchCounters.claims} relays=${batchCounters.relays} stakeEv=${batchCounters.stakingEvents} | errors=${batchCounters.errors}`);
+      // Periodically flush pending DB queues to bound memory
+      this.batchesProcessed++;
+      const pendingSizes = {
+        appSvc: Array.isArray(this._pendingAppServiceConfigs) ? this._pendingAppServiceConfigs.length : 0,
+        supSvc: Array.isArray(this._pendingSupplierServiceConfigs) ? this._pendingSupplierServiceConfigs.length : 0,
+        dels: Array.isArray(this._pendingDelegations) ? this._pendingDelegations.length : 0,
+      };
+      const totalPending = pendingSizes.appSvc + pendingSizes.supSvc + pendingSizes.dels;
+      if (this.batchesProcessed % this.flushEveryBatches === 0 || totalPending >= this.maxPendingQueueSize) {
+        await this.flushQueues();
+      }
       
       // Debug: Show sample transaction if no entities found
       if (batchCounters.applications === 0 && batchCounters.suppliers === 0 && batchCounters.gateways === 0 && batchCounters.services === 0 && batchNumber <= 3) {
@@ -466,10 +482,7 @@ class ProductionDataProcessor {
         claims: claims || [],
         relays: relays || [],
         stakingEvents: stakingEvents || [],
-        relationships: relationships || { applicationDelegations: [], applicationServiceConfigs: [] },
-        txData,
-        blockData,
-        tx
+        relationships: relationships || { applicationDelegations: [], applicationServiceConfigs: [] }
       };
     } catch (error) {
       throw new Error(`Parse error for ${tx.hash}: ${error.message}`);
@@ -1246,6 +1259,81 @@ class ProductionDataProcessor {
       console.log(`📝 Upserts summary: applications=${upserts.apps}, app_service_configs=${upserts.appSvc}, supplier_service_configs=${upserts.supSvc}, delegations=${upserts.dels}, suppliers=${upserts.sups}, gateways=${upserts.gws}`);
     } catch (e) {
       console.error('Failed to persist final state:', e.message);
+    }
+  }
+
+  // Persist and clear pending queues incrementally to bound memory usage
+  async flushQueues() {
+    try {
+      let upserts = { appSvc: 0, supSvc: 0, dels: 0 };
+      if (Array.isArray(this._pendingAppServiceConfigs) && this._pendingAppServiceConfigs.length) {
+        for (const sc of this._pendingAppServiceConfigs) {
+          await this.pgClient.query(
+            `INSERT INTO application_service_configs (application_address, chain, service_id, endpoints, config_options, last_seen)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (application_address, chain, service_id) DO UPDATE SET
+               endpoints=EXCLUDED.endpoints,
+               config_options=EXCLUDED.config_options,
+               last_seen=EXCLUDED.last_seen`,
+            [
+              sc.application_address,
+              sc.chain,
+              sc.service_id,
+              Array.isArray(sc.endpoints) ? sc.endpoints : [],
+              sc.config_options || {},
+              sc.last_seen || null,
+            ]
+          );
+          upserts.appSvc++;
+        }
+        this._pendingAppServiceConfigs = [];
+      }
+      if (Array.isArray(this._pendingSupplierServiceConfigs) && this._pendingSupplierServiceConfigs.length) {
+        for (const sc of this._pendingSupplierServiceConfigs) {
+          await this.pgClient.query(
+            `INSERT INTO supplier_service_configs (supplier_address, chain, service_id, endpoints, config_options, last_seen)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (supplier_address, chain, service_id) DO UPDATE SET
+               endpoints=EXCLUDED.endpoints,
+               config_options=EXCLUDED.config_options,
+               last_seen=EXCLUDED.last_seen`,
+            [
+              sc.supplier_address,
+              sc.chain,
+              sc.service_id,
+              Array.isArray(sc.endpoints) ? sc.endpoints : [],
+              sc.config_options || {},
+              sc.last_seen || null,
+            ]
+          );
+          upserts.supSvc++;
+        }
+        this._pendingSupplierServiceConfigs = [];
+      }
+      if (Array.isArray(this._pendingDelegations) && this._pendingDelegations.length) {
+        for (const d of this._pendingDelegations) {
+          await this.pgClient.query(
+            `INSERT INTO delegations (application_address, gateway_address, chain, is_active, action, timestamp)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (application_address, gateway_address, chain, timestamp, action) DO NOTHING`,
+            [
+              d.application_address,
+              d.gateway_address,
+              d.chain,
+              d.is_active,
+              d.action,
+              d.timestamp,
+            ]
+          );
+          upserts.dels++;
+        }
+        this._pendingDelegations = [];
+      }
+      if (upserts.appSvc || upserts.supSvc || upserts.dels) {
+        console.log(`🧹 Flushed queues: app_service_configs=${upserts.appSvc}, supplier_service_configs=${upserts.supSvc}, delegations=${upserts.dels}`);
+      }
+    } catch (e) {
+      console.error('Failed to flush queues:', e.message);
     }
   }
 
