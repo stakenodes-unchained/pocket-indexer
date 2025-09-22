@@ -689,6 +689,7 @@ function parseStakingEvents(tx, block, chain) {
         if (msgType === 'pocket.application.MsgDelegateToGateway') {
           const event = {
             address: msg.application_address || msg.app_address || '',
+            chain: chain || 'unknown',
             type: 'application',
             amount: msg.amount?.amount || '0',
             event: 'delegate_to_gateway',
@@ -703,6 +704,7 @@ function parseStakingEvents(tx, block, chain) {
         if (msgType === 'pocket.application.MsgUndelegateFromGateway') {
           const event = {
             address: msg.application_address || msg.app_address || '',
+            chain: chain || 'unknown',
             type: 'application',
             amount: msg.amount?.amount || '0',
             event: 'undelegate_from_gateway',
@@ -717,6 +719,7 @@ function parseStakingEvents(tx, block, chain) {
         if (msgType === 'pocket.application.MsgStakeApplication') {
           const event = {
             address: msg.application_address || msg.address || '',
+            chain: chain || 'unknown',
             type: 'application',
             amount: msg.stake?.amount || '0',
             event: 'stake',
@@ -731,6 +734,7 @@ function parseStakingEvents(tx, block, chain) {
         if (msgType === 'pocket.application.MsgUnstakeApplication') {
           const event = {
             address: msg.application_address || msg.address || '',
+            chain: chain || 'unknown',
             type: 'application',
             amount: '0',
             event: 'unstake',
@@ -777,6 +781,7 @@ function parseStakingEvents(tx, block, chain) {
         if (msgType === 'cosmos.staking.v1beta1.MsgDelegate' || msgType === 'cosmos.staking.MsgDelegate') {
           const event = {
             address: msg.delegator_address || '',
+            chain: chain || 'unknown',
             type: 'delegator',
             amount: msg.amount?.amount || '0',
             event: 'delegate',
@@ -791,6 +796,7 @@ function parseStakingEvents(tx, block, chain) {
         if (msgType === 'cosmos.staking.v1beta1.MsgUndelegate' || msgType === 'cosmos.staking.MsgUndelegate') {
           const event = {
             address: msg.delegator_address || '',
+            chain: chain || 'unknown',
             type: 'delegator',
             amount: msg.amount?.amount || '0',
             event: 'undelegate',
@@ -805,6 +811,7 @@ function parseStakingEvents(tx, block, chain) {
         if (msgType === 'cosmos.staking.v1beta1.MsgBeginRedelegate' || msgType === 'cosmos.staking.MsgBeginRedelegate') {
           const event = {
             address: msg.delegator_address || '',
+            chain: chain || 'unknown',
             type: 'delegator',
             amount: msg.amount?.amount || '0',
             event: 'redelegate',
@@ -820,6 +827,7 @@ function parseStakingEvents(tx, block, chain) {
         if (msgType === 'cosmos.distr.v1beta1.MsgWithdrawDelegatorReward' || msgType === 'cosmos.distr.MsgWithdrawDelegatorReward') {
           const event = {
             address: msg.delegator_address || '',
+            chain: chain || 'unknown',
             type: 'delegator',
             amount: null, // Rewards amount varies
             event: 'withdraw_reward',

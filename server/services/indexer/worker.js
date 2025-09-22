@@ -10,7 +10,8 @@ const {
   upsertNode,
   saveRelay,
   saveGovernance,
-  upsertGateway
+  upsertGateway,
+  upsertNetworkService
 } = require('./db');
 const { transformBlock } = require('./transformer');
 const { fetchBlockByHeight, fetchLatestBlock } = require('./rpc');
@@ -22,9 +23,8 @@ const {
   parseServices,
   parseNodes,
   parseRelays,
-  parseGovernance,
-  parseGateways
-} = require('./entityParser');
+  parseGateways,
+} = require('./entityParser.v2');
 
 const { rpcName, rpcUrl, batchSize } = workerData;
 
@@ -43,7 +43,7 @@ async function processBlock(blockData) {
     // Save block to database
     let block = await saveBlock(blockData, rpcName, rpcUrl);
     
-    // If block already exists, skip processing
+    // If block already exists, skip processing to avoid null 'block' usage
     if (!block) {
       console.log(`[Worker ${workerData.id}] Block already exists, skipping processing`);
       return;
@@ -59,7 +59,7 @@ async function processBlock(blockData) {
         const services = parseServices(tx, blockData, rpcName);
         const nodes = parseNodes(tx, blockData, rpcName);
         const relays = parseRelays(tx, blockData, rpcName);
-        const governance = parseGovernance(tx, blockData, rpcName);
+        const governance = []; // Governance parsing not implemented in v2 yet
         const gateways = parseGateways(tx, blockData, rpcName);
 
         // Save all entities with individual error handling
@@ -93,7 +93,16 @@ async function processBlock(blockData) {
         // Services
         try {
           for (const service of services) {
-            await upsertService(service);
+            // If this is a per-supplier/gateway advertisement, require supplier_address
+            if (service.supplier_address) {
+              await upsertService(service);
+            } else if (service.id) {
+              // Network-wide service definition
+              await upsertNetworkService(service);
+            } else {
+              // Skip invalid service records lacking identifiers
+              continue;
+            }
           }
         } catch (serviceError) {
           console.error(`[Worker ${workerData.id}] Error saving services for transaction:`, serviceError.message);
@@ -153,7 +162,7 @@ async function syncHistoricalBlocks() {
   const latestHeight = parseInt(latestBlock.block.header.height, 10);
 
   while (currentHeight < latestHeight) {
-    await processBlock(await fetchBlockByHeight(currentHeight + 1, rpcUrl));
+    await processBlock(await fetchBlockByHeight(currentHeight, rpcUrl));
     currentHeight++;
   }
   log('Historical block sync complete.');

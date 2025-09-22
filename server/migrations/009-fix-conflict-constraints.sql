@@ -3,86 +3,86 @@
 -- and fixes any ON CONFLICT issues
 
 -- Drop and recreate suppliers table with proper constraints
-DROP TABLE IF EXISTS suppliers CASCADE;
-CREATE TABLE suppliers (
-  address TEXT NOT NULL,
-  chain TEXT NOT NULL,
-  public_key TEXT,
-  staked_amount NUMERIC DEFAULT 0,
-  status TEXT,
-  service_url TEXT,
-  last_seen TIMESTAMP,
-  geo TEXT,
-  PRIMARY KEY (address, chain)
-);
+-- DROP TABLE IF EXISTS suppliers CASCADE;
+-- CREATE TABLE suppliers (
+--   address TEXT NOT NULL,
+--   chain TEXT NOT NULL,
+--   public_key TEXT,
+--   staked_amount NUMERIC DEFAULT 0,
+--   status TEXT,
+--   service_url TEXT,
+--   last_seen TIMESTAMP,
+--   geo TEXT,
+--   PRIMARY KEY (address, chain)
+-- );
 
 -- Drop and recreate applications table with proper constraints
-DROP TABLE IF EXISTS applications CASCADE;
-CREATE TABLE applications (
-  address TEXT NOT NULL,
-  chain TEXT NOT NULL,
-  public_key TEXT,
-  staked_amount NUMERIC DEFAULT 0,
-  status TEXT,
-  chains TEXT[],
-  last_seen TIMESTAMP,
-  PRIMARY KEY (address, chain)
-);
+-- DROP TABLE IF EXISTS applications CASCADE;
+-- CREATE TABLE applications (
+--   address TEXT NOT NULL,
+--   chain TEXT NOT NULL,
+--   public_key TEXT,
+--   staked_amount NUMERIC DEFAULT 0,
+--   status TEXT,
+--   chains TEXT[],
+--   last_seen TIMESTAMP,
+--   PRIMARY KEY (address, chain)
+-- );
 
 -- Drop and recreate nodes table with proper constraints
-DROP TABLE IF EXISTS nodes CASCADE;
-CREATE TABLE nodes (
-  address TEXT NOT NULL,
-  chain TEXT NOT NULL,
-  public_key TEXT,
-  staked_amount NUMERIC DEFAULT 0,
-  status TEXT,
-  geo TEXT,
-  last_seen TIMESTAMP,
-  service_url TEXT,
-  PRIMARY KEY (address, chain)
-);
+-- DROP TABLE IF EXISTS nodes CASCADE;
+-- CREATE TABLE nodes (
+--   address TEXT NOT NULL,
+--   chain TEXT NOT NULL,
+--   public_key TEXT,
+--   staked_amount NUMERIC DEFAULT 0,
+--   status TEXT,
+--   geo TEXT,
+--   last_seen TIMESTAMP,
+--   service_url TEXT,
+--   PRIMARY KEY (address, chain)
+-- );
 
--- Drop and recreate gateways table with proper constraints
-DROP TABLE IF EXISTS gateways CASCADE;
-CREATE TABLE gateways (
-  address TEXT NOT NULL,
-  chain TEXT NOT NULL,
-  public_key TEXT,
-  staked_amount NUMERIC DEFAULT 0,
-  status TEXT,
-  service_url TEXT,
-  last_seen TIMESTAMP,
-  geo TEXT,
-  PRIMARY KEY (address, chain)
-);
+-- -- Drop and recreate gateways table with proper constraints
+-- DROP TABLE IF EXISTS gateways CASCADE;
+-- CREATE TABLE gateways (
+--   address TEXT NOT NULL,
+--   chain TEXT NOT NULL,
+--   public_key TEXT,
+--   staked_amount NUMERIC DEFAULT 0,
+--   status TEXT,
+--   service_url TEXT,
+--   last_seen TIMESTAMP,
+--   geo TEXT,
+--   PRIMARY KEY (address, chain)
+-- );
 
--- Ensure services table has proper constraints
--- Services table uses different structure (supplier_address + chain)
-DROP TABLE IF EXISTS services CASCADE;
-CREATE TABLE services (
-  id SERIAL PRIMARY KEY,
-  supplier_address TEXT NOT NULL,
-  chain TEXT NOT NULL,
-  service_url TEXT,
-  status TEXT,
-  last_checked TIMESTAMP,
-  UNIQUE(supplier_address, chain, service_url)
-);
+-- -- Ensure services table has proper constraints
+-- -- Services table uses different structure (supplier_address + chain)
+-- DROP TABLE IF EXISTS services CASCADE;
+-- CREATE TABLE services (
+--   id SERIAL PRIMARY KEY,
+--   supplier_address TEXT NOT NULL,
+--   chain TEXT NOT NULL,
+--   service_url TEXT,
+--   status TEXT,
+--   last_checked TIMESTAMP,
+--   UNIQUE(supplier_address, chain, service_url)
+-- );
 
--- Ensure staking table has proper constraints
--- This table tracks staking events, not current state
-DROP TABLE IF EXISTS staking CASCADE;
-CREATE TABLE staking (
-  id SERIAL PRIMARY KEY,
-  address TEXT NOT NULL,
-  chain TEXT NOT NULL,
-  type TEXT NOT NULL, -- 'supplier', 'application', 'node', 'gateway'
-  amount NUMERIC,
-  event TEXT NOT NULL, -- 'stake', 'unstake', 'slash', 'reward'
-  timestamp TIMESTAMP NOT NULL,
-  created_at TIMESTAMP DEFAULT NOW()
-);
+-- -- Ensure staking table has proper constraints
+-- -- This table tracks staking events, not current state
+-- DROP TABLE IF EXISTS staking CASCADE;
+-- CREATE TABLE staking (
+--   id SERIAL PRIMARY KEY,
+--   address TEXT NOT NULL,
+--   chain TEXT NOT NULL,
+--   type TEXT NOT NULL, -- 'supplier', 'application', 'node', 'gateway'
+--   amount NUMERIC,
+--   event TEXT NOT NULL, -- 'stake', 'unstake', 'slash', 'reward'
+--   timestamp TIMESTAMP NOT NULL,
+--   created_at TIMESTAMP DEFAULT NOW()
+-- );
 
 -- Add indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_suppliers_chain ON suppliers(chain);

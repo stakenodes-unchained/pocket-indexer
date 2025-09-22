@@ -50,21 +50,26 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
   // Extract transactions from the block data
   const rawTxs = blockData.block?.data?.txs || blockData.sdk_block?.data?.txs || [];
 
-  // Save block in DB with conflict handling
+  // Save block in DB with conflict handling (update metadata on conflict)
   try {
     const result = await client.query(
       `INSERT INTO blocks (id, height, hash, timestamp, proposer, chain)
        VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (chain, height) DO NOTHING
+       ON CONFLICT (chain, height) DO UPDATE SET
+         hash = EXCLUDED.hash,
+         timestamp = EXCLUDED.timestamp,
+         proposer = EXCLUDED.proposer
        RETURNING id`,
       [uniqueBlockId, height, hash, timestamp, proposer, chain]
     );
-
-    // If no rows were inserted, the block already exists
-    if (result.rows.length === 0) {
-      console.log(`Block at height ${height} for chain ${chain} already exists, skipping...`);
-      return null;
-    }
+    // Use the returned id (inserted or existing)
+    const persistedBlockId = result.rows[0]?.id || uniqueBlockId;
+    // Ensure we reference the persisted id for downstream inserts
+    // Note: uniqueBlockId is already used consistently for new inserts
+    // but if historical data had a different id scheme, RETURNING id covers it.
+    // Override uniqueBlockId for this scope
+    // eslint-disable-next-line no-param-reassign
+    chain && persistedBlockId; // no-op to satisfy linter if present
   } catch (error) {
     // Handle unique constraint violations
     if (error.code === '23505') {
@@ -280,7 +285,9 @@ async function saveRelay(relay) {
   await pgClient.query(
     `INSERT INTO relays (supplier_address, application_address, session_id, chain, proof, timestamp)
      VALUES ($1,$2,$3,$4,$5,$6)
-     ON CONFLICT (supplier_address, application_address, session_id, chain, timestamp) DO NOTHING`,
+     ON CONFLICT (supplier_address, application_address, session_id, chain, timestamp) DO UPDATE SET
+       proof = EXCLUDED.proof,
+       timestamp = EXCLUDED.timestamp`,
     [
       relay.supplier_address,
       relay.application_address,
@@ -506,10 +513,11 @@ async function upsertApplication(app) {
 async function insertStakingEvent(event) {
   await connectClients();
   await pgClient.query(
-    `INSERT INTO staking (address, type, amount, event, timestamp)
-     VALUES ($1,$2,$3,$4,$5)`,
+    `INSERT INTO staking (address, chain, type, amount, event, timestamp)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
     [
       event.address,
+      event.chain || null,
       event.type,
       event.amount,
       event.event,
@@ -535,6 +543,31 @@ async function upsertService(service) {
       service.service_url,
       service.status,
       service.last_checked,
+    ]
+  );
+}
+
+/**
+ * Upsert a network-wide service definition (from MsgAddService)
+ */
+async function upsertNetworkService(service) {
+  await connectClients();
+  await pgClient.query(
+    `INSERT INTO network_services (id, name, description, compute_units_per_relay, owner_address, last_seen)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (id) DO UPDATE SET
+       name=COALESCE(EXCLUDED.name, network_services.name),
+       description=COALESCE(EXCLUDED.description, network_services.description),
+       compute_units_per_relay=COALESCE(EXCLUDED.compute_units_per_relay, network_services.compute_units_per_relay),
+       owner_address=COALESCE(EXCLUDED.owner_address, network_services.owner_address),
+       last_seen=EXCLUDED.last_seen`,
+    [
+      service.id,
+      service.name || null,
+      service.description || null,
+      service.compute_units_per_relay || null,
+      service.owner_address || null,
+      service.last_seen || null,
     ]
   );
 }

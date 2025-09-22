@@ -4,5 +4,5 @@ yarn-error.log
 dist
 .idea
 .env
-
+.next
 server/datastore/*

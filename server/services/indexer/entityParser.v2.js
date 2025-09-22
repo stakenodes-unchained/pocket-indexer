@@ -105,6 +105,7 @@ function parseApplications(txEnvelope, block, chain) {
             endpoints: Array.isArray(s?.endpoints) ? s.endpoints.filter(Boolean) : [],
             config_options: s?.config_options || {}
           })).filter(sc => sc.service_id) : [],
+          chain,
           status: 'staked',
           last_seen: timestamp,
         };
@@ -115,6 +116,7 @@ function parseApplications(txEnvelope, block, chain) {
           address: firstEv.address || msg.address || msg.application_address || msg.app_address || '',
           status: 'unstake_requested',
           unstake_session_end_height: extractUnstakeSessionEndHeight(txEnvelope),
+          chain,
           last_seen: timestamp,
         };
         if (app.address) apps.push(app);
@@ -124,6 +126,7 @@ function parseApplications(txEnvelope, block, chain) {
           address: msg.application_address || msg.app_address || '',
           gateway_address: msg.gateway_address || null,
           status: 'delegated',
+          chain,
           last_seen: timestamp,
         };
         if (app.address) apps.push(app);
@@ -133,6 +136,7 @@ function parseApplications(txEnvelope, block, chain) {
           address: msg.application_address || msg.app_address || '',
           gateway_address: msg.gateway_address || null,
           status: 'undelegated',
+          chain,
           last_seen: timestamp,
         };
         if (app.address) apps.push(app);
@@ -142,6 +146,7 @@ function parseApplications(txEnvelope, block, chain) {
           address: msg.destination_address || '',
           source_address: msg.source_address || undefined,
           status: 'transfer_pending',
+          chain,
           last_seen: timestamp,
         };
         if (app.address) apps.push(app);
@@ -153,6 +158,7 @@ function parseApplications(txEnvelope, block, chain) {
           stake_denom: (firstEv.stake && firstEv.stake.denom) || undefined,
           chains: firstEv.services?.map(s => s?.service_id).filter(Boolean) || [],
           status: 'migrated',
+          chain,
           last_seen: timestamp,
         };
         if (app.address) apps.push(app);
@@ -175,14 +181,15 @@ function parseSuppliers(txEnvelope, block, chain) {
       if (msgType === 'pocket.supplier.MsgStakeSupplier') {
         const sup = {
           operator_address: evSupp.operator_address || msg.operator_address || '',
-      staked_amount: (evSupp.stake && evSupp.stake.amount) || msg.stake?.amount || '0',
+          staked_amount: (evSupp.stake && evSupp.stake.amount) || msg.stake?.amount || '0',
       stake_denom: (evSupp.stake && evSupp.stake.denom) || msg.stake?.denom || null,
-      services: evSupp.services?.map(s => s?.service_id).filter(Boolean) || (Array.isArray(msg.services) ? msg.services.map(s => s?.service_id).filter(Boolean) : []),
+          services: evSupp.services?.map(s => s?.service_id).filter(Boolean) || (Array.isArray(msg.services) ? msg.services.map(s => s?.service_id).filter(Boolean) : []),
       service_configs: Array.isArray(msg.services) ? msg.services.map(s => ({
         service_id: s?.service_id || '',
         endpoints: Array.isArray(s?.endpoints) ? s.endpoints.filter(Boolean) : [],
         config_options: s?.config_options || {}
       })).filter(sc => sc.service_id) : [],
+          chain,
           status: 'staked',
           last_seen: timestamp,
         };
@@ -193,6 +200,7 @@ function parseSuppliers(txEnvelope, block, chain) {
           operator_address: msg.operator_address || '',
           status: 'unstake_requested',
           unstake_session_end_height: extractUnstakeSessionEndHeight(txEnvelope),
+          chain,
           last_seen: timestamp,
         };
         if (sup.operator_address) out.push(sup);
@@ -214,8 +222,9 @@ function parseGateways(txEnvelope, block, chain) {
       if (msgType === 'pocket.gateway.MsgStakeGateway') {
         const gw = {
           address: evGw.address || msg.address || '',
-      staked_amount: (evGw.stake && evGw.stake.amount) || msg.stake?.amount || '0',
+          staked_amount: (evGw.stake && evGw.stake.amount) || msg.stake?.amount || '0',
       stake_denom: (evGw.stake && evGw.stake.denom) || msg.stake?.denom || null,
+          chain,
           status: 'staked',
           last_seen: timestamp,
         };
@@ -226,6 +235,7 @@ function parseGateways(txEnvelope, block, chain) {
           address: msg.address || '',
           status: 'unstake_requested',
           unstake_session_end_height: extractUnstakeSessionEndHeight(txEnvelope),
+          chain,
           last_seen: timestamp,
         };
         if (gw.address) out.push(gw);
@@ -257,11 +267,44 @@ function parseServices(txEnvelope, block, chain) {
           last_seen: timestamp,
         });
       }
+      // Supplier service advertisements (per-operator service configs)
+      if (msgType === 'pocket.supplier.MsgStakeSupplier' || msgType === 'pocket.supplier.MsgEditSupplier') {
+        const servicesArr = Array.isArray(msg.services) ? msg.services : [];
+        const operator = msg.operator_address || null;
+        for (const s of servicesArr) {
+          const serviceId = s?.service_id || null;
+          if (!operator || !serviceId) continue;
+          const firstEndpoint = Array.isArray(s.endpoints) ? s.endpoints.find(Boolean) : null;
+          out.push({
+            supplier_address: operator,
+            chain: serviceId,
+            service_url: typeof firstEndpoint === 'string' ? firstEndpoint : (firstEndpoint?.url || null),
+            status: msgType.endsWith('EditSupplier') ? 'edited' : 'active',
+            last_checked: timestamp,
+          });
+        }
+      }
+      // Gateway service advertisements
+      if (msgType === 'pocket.gateway.MsgStakeGateway' || msgType === 'pocket.gateway.MsgEditGateway') {
+        const servicesArr = Array.isArray(msg.services) ? msg.services : [];
+        const gatewayAddr = msg.address || null;
+        for (const s of servicesArr) {
+          const serviceId = s?.service_id || null;
+          if (!gatewayAddr || !serviceId) continue;
+          const firstEndpoint = Array.isArray(s.endpoints) ? s.endpoints.find(Boolean) : null;
+          out.push({
+            supplier_address: gatewayAddr,
+            chain: serviceId,
+            service_url: typeof firstEndpoint === 'string' ? firstEndpoint : (firstEndpoint?.url || null),
+            status: msgType.endsWith('EditGateway') ? 'edited' : 'active',
+            last_checked: timestamp,
+          });
+        }
+      }
     }
 
-    // Note: We intentionally don't parse supplier/gateway service advertisements here
-    // because those are not "services" - they are service configurations/advertisements
-    // The actual services are the unique service definitions created via MsgAddService
+    // Note: We now include supplier/gateway service advertisements for persistence in services table,
+    // while network-wide unique services (MsgAddService) are routed to network_services.
 
     return out;
   } catch (_) { return []; }
@@ -307,14 +350,69 @@ function parseStakingEvents(txEnvelope, block, chain) {
     const timestamp = getTimestamp(block);
     for (const msg of messages) {
       const msgType = normalizePocketMsgType(typeof msg?.['@type'] === 'string' ? msg['@type'] : '');
-      if (msgType === 'pocket.application.MsgStakeApplication') out.push({ entity: 'application', action: 'stake', last_seen: timestamp });
-      if (msgType === 'pocket.application.MsgUnstakeApplication') out.push({ entity: 'application', action: 'unstake', last_seen: timestamp });
-      if (msgType === 'pocket.supplier.MsgStakeSupplier') out.push({ entity: 'supplier', action: 'stake', last_seen: timestamp });
-      if (msgType === 'pocket.supplier.MsgUnstakeSupplier') out.push({ entity: 'supplier', action: 'unstake', last_seen: timestamp });
-      if (msgType === 'pocket.gateway.MsgStakeGateway') out.push({ entity: 'gateway', action: 'stake', last_seen: timestamp });
-      if (msgType === 'pocket.gateway.MsgUnstakeGateway') out.push({ entity: 'gateway', action: 'unstake', last_seen: timestamp });
+      if (msgType === 'pocket.application.MsgStakeApplication') {
+        out.push({
+          address: msg.application_address || msg.app_address || msg.address || '',
+          chain,
+          type: 'application',
+          amount: String(msg.stake?.amount || '0'),
+          event: 'stake',
+          timestamp,
+        });
+      }
+      if (msgType === 'pocket.application.MsgUnstakeApplication') {
+        out.push({
+          address: msg.application_address || msg.app_address || msg.address || '',
+          chain,
+          type: 'application',
+          amount: '0',
+          event: 'unstake',
+          timestamp,
+        });
+      }
+      if (msgType === 'pocket.supplier.MsgStakeSupplier') {
+        out.push({
+          address: msg.operator_address || msg.signer || '',
+          chain,
+          type: 'supplier',
+          amount: String(msg.stake?.amount || '0'),
+          event: 'stake',
+          timestamp,
+        });
+      }
+      if (msgType === 'pocket.supplier.MsgUnstakeSupplier') {
+        out.push({
+          address: msg.operator_address || '',
+          chain,
+          type: 'supplier',
+          amount: '0',
+          event: 'unstake',
+          timestamp,
+        });
+      }
+      if (msgType === 'pocket.gateway.MsgStakeGateway') {
+        out.push({
+          address: msg.address || msg.gateway_address || '',
+          chain,
+          type: 'gateway',
+          amount: String(msg.stake?.amount || '0'),
+          event: 'stake',
+          timestamp,
+        });
+      }
+      if (msgType === 'pocket.gateway.MsgUnstakeGateway') {
+        out.push({
+          address: msg.address || msg.gateway_address || '',
+          chain,
+          type: 'gateway',
+          amount: '0',
+          event: 'unstake',
+          timestamp,
+        });
+      }
     }
-    return out;
+    // Filter out any malformed events without address
+    return out.filter(e => e.address);
   } catch (_) { return []; }
 }
 
