@@ -97,7 +97,14 @@ function parseApplications(txEnvelope, block, chain) {
         const app = {
           address: firstEv.address || msg.address || msg.application_address || msg.app_address || '',
           staked_amount: (firstEv.stake && firstEv.stake.amount) || msg.stake?.amount || '0',
+          stake_denom: (firstEv.stake && firstEv.stake.denom) || msg.stake?.denom || null,
           chains: firstEv.services?.map(s => s?.service_id).filter(Boolean) || servicesFromMsg,
+          // Full service configs from message body when available
+          service_configs: Array.isArray(msg.services) ? msg.services.map(s => ({
+            service_id: s?.service_id || '',
+            endpoints: Array.isArray(s?.endpoints) ? s.endpoints.filter(Boolean) : [],
+            config_options: s?.config_options || {}
+          })).filter(sc => sc.service_id) : [],
           status: 'staked',
           last_seen: timestamp,
         };
@@ -143,6 +150,7 @@ function parseApplications(txEnvelope, block, chain) {
         const app = {
           address: firstEv.address || msg.pocket_address || msg.shannon_address || msg.application_address || msg.app_address || '',
           staked_amount: (firstEv.stake && firstEv.stake.amount) || undefined,
+          stake_denom: (firstEv.stake && firstEv.stake.denom) || undefined,
           chains: firstEv.services?.map(s => s?.service_id).filter(Boolean) || [],
           status: 'migrated',
           last_seen: timestamp,
@@ -167,8 +175,14 @@ function parseSuppliers(txEnvelope, block, chain) {
       if (msgType === 'pocket.supplier.MsgStakeSupplier') {
         const sup = {
           operator_address: evSupp.operator_address || msg.operator_address || '',
-          staked_amount: (evSupp.stake && evSupp.stake.amount) || msg.stake?.amount || '0',
-          services: evSupp.services?.map(s => s?.service_id).filter(Boolean) || (Array.isArray(msg.services) ? msg.services.map(s => s?.service_id).filter(Boolean) : []),
+      staked_amount: (evSupp.stake && evSupp.stake.amount) || msg.stake?.amount || '0',
+      stake_denom: (evSupp.stake && evSupp.stake.denom) || msg.stake?.denom || null,
+      services: evSupp.services?.map(s => s?.service_id).filter(Boolean) || (Array.isArray(msg.services) ? msg.services.map(s => s?.service_id).filter(Boolean) : []),
+      service_configs: Array.isArray(msg.services) ? msg.services.map(s => ({
+        service_id: s?.service_id || '',
+        endpoints: Array.isArray(s?.endpoints) ? s.endpoints.filter(Boolean) : [],
+        config_options: s?.config_options || {}
+      })).filter(sc => sc.service_id) : [],
           status: 'staked',
           last_seen: timestamp,
         };
@@ -200,7 +214,8 @@ function parseGateways(txEnvelope, block, chain) {
       if (msgType === 'pocket.gateway.MsgStakeGateway') {
         const gw = {
           address: evGw.address || msg.address || '',
-          staked_amount: (evGw.stake && evGw.stake.amount) || msg.stake?.amount || '0',
+      staked_amount: (evGw.stake && evGw.stake.amount) || msg.stake?.amount || '0',
+      stake_denom: (evGw.stake && evGw.stake.denom) || msg.stake?.denom || null,
           status: 'staked',
           last_seen: timestamp,
         };

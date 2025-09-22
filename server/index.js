@@ -84,6 +84,191 @@ app.get('/api/v1/chains', (req, res) => {
   }
 });
 
+// Entities APIs
+// Applications list
+app.get('/api/v1/applications', async (req, res) => {
+  try {
+    const { chain, status, address, page = 1, limit = 25 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+    if (chain) { conditions.push(`chain = $${idx++}`); values.push(chain); }
+    if (status) { conditions.push(`status = $${idx++}`); values.push(status); }
+    if (address) { conditions.push(`address = $${idx++}`); values.push(address); }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const pageNum = parseInt(page, 10); const limitNum = parseInt(limit, 10); const offset = (pageNum - 1) * limitNum;
+    const countSql = `SELECT COUNT(*) AS total FROM applications ${where}`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows[0].total, 10);
+    const listSql = `SELECT address, chain, staked_amount, stake_denom, status, chains, delegated, gateway_address, delegatee_gateway_addresses, unstake_session_end_height, last_seen
+                     FROM applications ${where}
+                     ORDER BY last_seen DESC NULLS LAST
+                     LIMIT $${idx} OFFSET $${idx + 1}`;
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    res.json({ data: listRes.rows, meta: { total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) } });
+  } catch (error) {
+    console.error('Error fetching applications:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Application detail (with service configs and delegations)
+app.get('/api/v1/applications/:address', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { chain } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    const base = await client.query(
+      `SELECT address, chain, staked_amount, stake_denom, status, chains, delegated, gateway_address, delegatee_gateway_addresses, pending_undelegations, unstake_session_end_height, last_seen
+       FROM applications WHERE address = $1 ${chain ? 'AND chain = $2' : ''} LIMIT 1`,
+      chain ? [address, chain] : [address]
+    );
+    if (base.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    const row = base.rows[0];
+    const svc = await client.query(
+      `SELECT service_id, endpoints, config_options, last_seen FROM application_service_configs WHERE application_address = $1 AND chain = $2 ORDER BY service_id`,
+      [row.address, row.chain]
+    );
+    const dels = await client.query(
+      `SELECT application_address, gateway_address, is_active, action, timestamp FROM delegations WHERE application_address = $1 AND chain = $2 ORDER BY timestamp DESC`,
+      [row.address, row.chain]
+    );
+    res.json({ data: { ...row, service_configs: svc.rows, delegations: dels.rows } });
+  } catch (error) {
+    console.error('Error fetching application detail:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Suppliers list
+app.get('/api/v1/suppliers', async (req, res) => {
+  try {
+    const { chain, status, address, page = 1, limit = 25 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+    if (chain) { conditions.push(`chain = $${idx++}`); values.push(chain); }
+    if (status) { conditions.push(`status = $${idx++}`); values.push(status); }
+    if (address) { conditions.push(`address = $${idx++}`); values.push(address); }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const pageNum = parseInt(page, 10); const limitNum = parseInt(limit, 10); const offset = (pageNum - 1) * limitNum;
+    const countSql = `SELECT COUNT(*) AS total FROM suppliers ${where}`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows[0].total, 10);
+    const listSql = `SELECT address, chain, staked_amount, stake_denom, status, last_seen, unstake_session_end_height
+                     FROM suppliers ${where}
+                     ORDER BY last_seen DESC NULLS LAST
+                     LIMIT $${idx} OFFSET $${idx + 1}`;
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    res.json({ data: listRes.rows, meta: { total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) } });
+  } catch (error) {
+    console.error('Error fetching suppliers:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Supplier detail (with service configs)
+app.get('/api/v1/suppliers/:address', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { chain } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    const base = await client.query(
+      `SELECT address, chain, staked_amount, stake_denom, status, last_seen, unstake_session_end_height
+       FROM suppliers WHERE address = $1 ${chain ? 'AND chain = $2' : ''} LIMIT 1`,
+      chain ? [address, chain] : [address]
+    );
+    if (base.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    const row = base.rows[0];
+    const svc = await client.query(
+      `SELECT service_id, endpoints, config_options, last_seen FROM supplier_service_configs WHERE supplier_address = $1 AND chain = $2 ORDER BY service_id`,
+      [row.address, row.chain]
+    );
+    res.json({ data: { ...row, service_configs: svc.rows } });
+  } catch (error) {
+    console.error('Error fetching supplier detail:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Gateways list
+app.get('/api/v1/gateways', async (req, res) => {
+  try {
+    const { chain, status, address, page = 1, limit = 25 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+    if (chain) { conditions.push(`chain = $${idx++}`); values.push(chain); }
+    if (status) { conditions.push(`status = $${idx++}`); values.push(status); }
+    if (address) { conditions.push(`address = $${idx++}`); values.push(address); }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const pageNum = parseInt(page, 10); const limitNum = parseInt(limit, 10); const offset = (pageNum - 1) * limitNum;
+    const countSql = `SELECT COUNT(*) AS total FROM gateways ${where}`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows[0].total, 10);
+    const listSql = `SELECT address, chain, staked_amount, stake_denom, status, last_seen, unstake_session_end_height
+                     FROM gateways ${where}
+                     ORDER BY last_seen DESC NULLS LAST
+                     LIMIT $${idx} OFFSET $${idx + 1}`;
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    res.json({ data: listRes.rows, meta: { total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) } });
+  } catch (error) {
+    console.error('Error fetching gateways:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Gateway detail
+app.get('/api/v1/gateways/:address', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { chain } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    const base = await client.query(
+      `SELECT address, chain, staked_amount, stake_denom, status, last_seen, unstake_session_end_height
+       FROM gateways WHERE address = $1 ${chain ? 'AND chain = $2' : ''} LIMIT 1`,
+      chain ? [address, chain] : [address]
+    );
+    if (base.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    res.json({ data: base.rows[0] });
+  } catch (error) {
+    console.error('Error fetching gateway detail:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Application delegations list (filterable)
+app.get('/api/v1/delegations', async (req, res) => {
+  try {
+    const { chain, application_address, gateway_address, active } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+    if (chain) { conditions.push(`chain = $${idx++}`); values.push(chain); }
+    if (application_address) { conditions.push(`application_address = $${idx++}`); values.push(application_address); }
+    if (gateway_address) { conditions.push(`gateway_address = $${idx++}`); values.push(gateway_address); }
+    if (typeof active !== 'undefined') { conditions.push(`is_active = $${idx++}`); values.push(active === 'true'); }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sql = `SELECT application_address, gateway_address, chain, is_active, action, timestamp FROM delegations ${where} ORDER BY timestamp DESC LIMIT 500`;
+    const result = await client.query(sql, values);
+    res.json({ data: result.rows });
+  } catch (error) {
+    console.error('Error fetching delegations:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start the server and initialize the worker pool
 const startServer = async () => {
   try {

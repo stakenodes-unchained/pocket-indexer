@@ -142,6 +142,11 @@ class ProductionDataProcessor {
     // Address tracking sets used by update*State; initialize to avoid undefined
     this.applicationAddresses = new Set();
     this.supplierAddresses = new Set();
+
+    // Track additional application state needed for persistence
+    // We'll keep stake denom and delegation history per app
+    this.applicationDelegations = new Map(); // key: app -> Set of gateway addresses
+    this.applicationPendingUndelegations = new Map(); // key: app -> Set of gateway addresses
   }
 
   async connect() {
@@ -516,11 +521,38 @@ class ProductionDataProcessor {
         appEvent.address = appEvent.application_address;
       }
       this.updateApplicationState(appEvent);
+      // Persist application service configs seen in stake events
+      if (Array.isArray(appEvent.service_configs) && appEvent.service_configs.length) {
+        for (const sc of appEvent.service_configs) {
+          this.queueUpsertAppServiceConfig({
+            application_address: appEvent.address,
+            chain: tx.chain,
+            service_id: sc.service_id,
+            endpoints: sc.endpoints || [],
+            config_options: sc.config_options || {},
+            last_seen: appEvent.last_seen
+          });
+        }
+      }
     }
     
     // Update suppliers state (chronological order critical)
     for (const supEvent of sups) {
       this.updateSupplierState(supEvent);
+      // Queue supplier service configs seen in stake events
+      if (Array.isArray(supEvent.service_configs) && supEvent.service_configs.length) {
+        for (const sc of supEvent.service_configs) {
+          if (!this._pendingSupplierServiceConfigs) this._pendingSupplierServiceConfigs = [];
+          this._pendingSupplierServiceConfigs.push({
+            supplier_address: supEvent.operator_address,
+            chain: tx.chain,
+            service_id: sc.service_id,
+            endpoints: sc.endpoints || [],
+            config_options: sc.config_options || {},
+            last_seen: supEvent.last_seen
+          });
+        }
+      }
     }
     
     // Update gateways state (chronological order critical)
@@ -542,6 +574,34 @@ class ProductionDataProcessor {
     
     // Update active entity counts
     this.updateActiveEntityCounts();
+
+    // Track delegation relationships for later persistence
+    if (relationships?.applicationDelegations) {
+      for (const rel of relationships.applicationDelegations) {
+        this.queueInsertDelegation({
+          application_address: rel.application_address,
+          gateway_address: rel.gateway_address,
+          chain: tx.chain,
+          is_active: rel.action === 'add',
+          action: rel.action,
+          timestamp: rel.last_seen || new Date().toISOString(),
+        });
+        // Maintain sets to build delegatee_gateway_addresses and pending_undelegations
+        if (rel.application_address && rel.gateway_address) {
+          if (rel.action === 'add') {
+            const set = this.applicationDelegations.get(rel.application_address) || new Set();
+            set.add(rel.gateway_address);
+            this.applicationDelegations.set(rel.application_address, set);
+            const pend = this.applicationPendingUndelegations.get(rel.application_address);
+            if (pend) pend.delete(rel.gateway_address);
+          } else if (rel.action === 'remove') {
+            const pend = this.applicationPendingUndelegations.get(rel.application_address) || new Set();
+            pend.add(rel.gateway_address);
+            this.applicationPendingUndelegations.set(rel.application_address, pend);
+          }
+        }
+      }
+    }
   }
 
   async processTransaction(tx) {
@@ -671,9 +731,12 @@ class ProductionDataProcessor {
       const existing = this.applicationState.get(appEvent.address) || {
         address: appEvent.address,
         staked_amount: '0',
+        stake_denom: null,
         chains: [],
         delegated: false,
         gateway_address: null,
+        delegatee_gateway_addresses: [],
+        pending_undelegations: {},
         status: 'unknown',
         unstake_session_end_height: undefined,
         last_seen: null
@@ -692,12 +755,18 @@ class ProductionDataProcessor {
           if (appEvent.staked_amount) {
             existing.staked_amount = appEvent.staked_amount;
           }
+          if (appEvent.stake_denom) {
+            existing.stake_denom = appEvent.stake_denom;
+          }
           existing.status = 'staked';
           break;
         }
         case 'edited': {
           if (appEvent.staked_amount) {
             existing.staked_amount = appEvent.staked_amount;
+          }
+          if (appEvent.stake_denom) {
+            existing.stake_denom = appEvent.stake_denom;
           }
           // Merge chains already handled above
           existing.status = 'edited';
@@ -714,11 +783,34 @@ class ProductionDataProcessor {
         case 'delegated': {
           existing.delegated = true;
           if (appEvent.gateway_address) existing.gateway_address = appEvent.gateway_address;
+          if (appEvent.gateway_address) {
+            // Add to list of delegatee gateways
+            const set = this.applicationDelegations.get(appEvent.address) || new Set();
+            set.add(appEvent.gateway_address);
+            this.applicationDelegations.set(appEvent.address, set);
+            // Also reflect in state array for quick persistence
+            const arr = new Set(existing.delegatee_gateway_addresses || []);
+            arr.add(appEvent.gateway_address);
+            existing.delegatee_gateway_addresses = Array.from(arr);
+            // Remove from pending undelegations if present
+            const pend = this.applicationPendingUndelegations.get(appEvent.address);
+            if (pend) pend.delete(appEvent.gateway_address);
+            if (existing.pending_undelegations && existing.pending_undelegations[appEvent.gateway_address]) {
+              delete existing.pending_undelegations[appEvent.gateway_address];
+            }
+          }
           existing.status = 'delegated';
           break;
         }
         case 'undelegated': {
           existing.delegated = false;
+          if (existing.gateway_address) {
+            // Mark pending undelegation for that gateway
+            const pend = this.applicationPendingUndelegations.get(appEvent.address) || new Set();
+            pend.add(existing.gateway_address);
+            this.applicationPendingUndelegations.set(appEvent.address, pend);
+            existing.pending_undelegations = Object.assign({}, existing.pending_undelegations, { [existing.gateway_address]: true });
+          }
           existing.gateway_address = null;
           existing.status = 'undelegated';
           break;
@@ -749,6 +841,17 @@ class ProductionDataProcessor {
     }
   }
 
+  // Queue methods to accumulate DB writes without blocking hot path
+  queueUpsertAppServiceConfig(config) {
+    if (!this._pendingAppServiceConfigs) this._pendingAppServiceConfigs = [];
+    this._pendingAppServiceConfigs.push(config);
+  }
+
+  queueInsertDelegation(rel) {
+    if (!this._pendingDelegations) this._pendingDelegations = [];
+    this._pendingDelegations.push(rel);
+  }
+
   updateSupplierState(supEvent) {
     try {
       if (!supEvent || !supEvent.operator_address) return;
@@ -756,6 +859,7 @@ class ProductionDataProcessor {
       const existing = this.supplierState.get(supEvent.operator_address) || {
         operator_address: supEvent.operator_address,
         staked_amount: '0',
+        stake_denom: null,
         services: [],
         status: 'unknown',
         unstake_session_end_height: undefined,
@@ -768,6 +872,7 @@ class ProductionDataProcessor {
       if (supEvent.status === 'staked' && supEvent.staked_amount) {
         existing.staked_amount = supEvent.staked_amount;
         existing.status = 'staked';
+        if (supEvent.stake_denom) existing.stake_denom = supEvent.stake_denom;
       }
       if (supEvent.status === 'unstake_requested') {
         existing.status = 'unstake_requested';
@@ -784,6 +889,7 @@ class ProductionDataProcessor {
       const existing = this.gatewayState.get(gwEvent.address) || {
         address: gwEvent.address,
         staked_amount: '0',
+        stake_denom: null,
         status: 'unknown',
         unstake_session_end_height: undefined,
         last_seen: null,
@@ -791,6 +897,7 @@ class ProductionDataProcessor {
       if (gwEvent.status === 'staked' && gwEvent.staked_amount) {
         existing.staked_amount = gwEvent.staked_amount;
         existing.status = 'staked';
+        if (gwEvent.stake_denom) existing.stake_denom = gwEvent.stake_denom;
       }
       if (gwEvent.status === 'unstake_requested') {
         existing.status = 'unstake_requested';
@@ -973,6 +1080,163 @@ class ProductionDataProcessor {
       for (const g of sampleGw) {
         console.log(`  - ${g.address} | status=${g.status} | staked=${g.staked_amount}${g.unstake_session_end_height ? ' | unstake_height=' + g.unstake_session_end_height : ''}`);
       }
+    }
+    // After printing, persist final application state to DB
+    // This writes applications table plus queued service configs and delegations
+    this.persistFinalState().catch(() => {});
+  }
+
+  async persistFinalState() {
+    try {
+      // Persist applications with extended columns
+      for (const app of this.applicationState.values()) {
+        await this.pgClient.query(
+          `INSERT INTO applications (address, chain, public_key, staked_amount, status, chains, last_seen, stake_denom, 
+             delegated, gateway_address, delegatee_gateway_addresses, unstake_session_end_height)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+           ON CONFLICT (address, chain) DO UPDATE SET
+             staked_amount=EXCLUDED.staked_amount,
+             status=EXCLUDED.status,
+             chains=EXCLUDED.chains,
+             last_seen=EXCLUDED.last_seen,
+             stake_denom=EXCLUDED.stake_denom,
+             delegated=EXCLUDED.delegated,
+             gateway_address=EXCLUDED.gateway_address,
+             delegatee_gateway_addresses=EXCLUDED.delegatee_gateway_addresses,
+             unstake_session_end_height=EXCLUDED.unstake_session_end_height`,
+          [
+            app.address,
+            this.chain,
+            null,
+            app.staked_amount || '0',
+            app.status || null,
+            Array.isArray(app.chains) ? app.chains : [],
+            app.last_seen || null,
+            app.stake_denom || null,
+            app.delegated || false,
+            app.gateway_address || null,
+            Array.isArray(app.delegatee_gateway_addresses) ? app.delegatee_gateway_addresses : Array.from(this.applicationDelegations.get(app.address) || []),
+            app.unstake_session_end_height || null,
+          ]
+        );
+      }
+
+      // Persist queued application service configs
+      if (Array.isArray(this._pendingAppServiceConfigs)) {
+        for (const sc of this._pendingAppServiceConfigs) {
+          await this.pgClient.query(
+            `INSERT INTO application_service_configs (application_address, chain, service_id, endpoints, config_options, last_seen)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (application_address, chain, service_id) DO UPDATE SET
+               endpoints=EXCLUDED.endpoints,
+               config_options=EXCLUDED.config_options,
+               last_seen=EXCLUDED.last_seen`,
+            [
+              sc.application_address,
+              sc.chain,
+              sc.service_id,
+              Array.isArray(sc.endpoints) ? sc.endpoints : [],
+              sc.config_options || {},
+              sc.last_seen || null,
+            ]
+          );
+        }
+      }
+
+      // Persist queued supplier service configs
+      if (Array.isArray(this._pendingSupplierServiceConfigs)) {
+        for (const sc of this._pendingSupplierServiceConfigs) {
+          await this.pgClient.query(
+            `INSERT INTO supplier_service_configs (supplier_address, chain, service_id, endpoints, config_options, last_seen)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (supplier_address, chain, service_id) DO UPDATE SET
+               endpoints=EXCLUDED.endpoints,
+               config_options=EXCLUDED.config_options,
+               last_seen=EXCLUDED.last_seen`,
+            [
+              sc.supplier_address,
+              sc.chain,
+              sc.service_id,
+              Array.isArray(sc.endpoints) ? sc.endpoints : [],
+              sc.config_options || {},
+              sc.last_seen || null,
+            ]
+          );
+        }
+      }
+
+      // Persist queued delegations
+      if (Array.isArray(this._pendingDelegations)) {
+        for (const d of this._pendingDelegations) {
+          await this.pgClient.query(
+            `INSERT INTO delegations (application_address, gateway_address, chain, is_active, action, timestamp)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (application_address, gateway_address, chain, timestamp, action) DO NOTHING`,
+            [
+              d.application_address,
+              d.gateway_address,
+              d.chain,
+              d.is_active,
+              d.action,
+              d.timestamp,
+            ]
+          );
+        }
+      }
+
+      // Persist suppliers with extended columns
+      for (const sup of this.supplierState.values()) {
+        await this.pgClient.query(
+          `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo, stake_denom, unstake_session_end_height)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           ON CONFLICT (address, chain) DO UPDATE SET
+             staked_amount=EXCLUDED.staked_amount,
+             status=EXCLUDED.status,
+             last_seen=EXCLUDED.last_seen,
+             stake_denom=EXCLUDED.stake_denom,
+             unstake_session_end_height=EXCLUDED.unstake_session_end_height`,
+          [
+            sup.operator_address,
+            this.chain,
+            null,
+            sup.staked_amount || '0',
+            sup.status || null,
+            null,
+            sup.last_seen || null,
+            null,
+            sup.stake_denom || null,
+            sup.unstake_session_end_height || null,
+          ]
+        );
+      }
+
+      // Persist gateways with extended columns
+      for (const gw of this.gatewayState.values()) {
+        await this.pgClient.query(
+          `INSERT INTO gateways (address, chain, public_key, staked_amount, status, service_url, last_seen, geo, stake_denom, unstake_session_end_height)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           ON CONFLICT (address, chain) DO UPDATE SET
+             staked_amount=EXCLUDED.staked_amount,
+             status=EXCLUDED.status,
+             last_seen=EXCLUDED.last_seen,
+             stake_denom=EXCLUDED.stake_denom,
+             unstake_session_end_height=EXCLUDED.unstake_session_end_height`,
+          [
+            gw.address,
+            this.chain,
+            null,
+            gw.staked_amount || '0',
+            gw.status || null,
+            null,
+            gw.last_seen || null,
+            null,
+            gw.stake_denom || null,
+            gw.unstake_session_end_height || null,
+          ]
+        );
+      }
+    } catch (e) {
+      console.error('Failed to persist final state:', e.message);
     }
   }
 
