@@ -1,5 +1,5 @@
 async function fetchChains(params?: { q?: string }) {
-  const res = await fetch('http://localhost:3006/api/v1/metrics/chains', { cache: 'no-store' });
+  const res = await fetch('http://pocket_indexer_api:3006/api/v1/metrics/chains', { cache: 'no-store' });
   if (!res.ok) return { data: [] };
   return res.json();
 }

@@ -1,13 +1,13 @@
 interface Params { chain: string }
 
 async function fetchChainHistory(chain: string) {
-  const res = await fetch(`http://localhost:3006/api/v1/metrics/chains/${encodeURIComponent(chain)}?limit=200`, { cache: 'no-store' });
+  const res = await fetch(`http://pocket_indexer_api:3006/api/v1/metrics/chains/${encodeURIComponent(chain)}?limit=200`, { cache: 'no-store' });
   if (!res.ok) return { data: [] };
   return res.json();
 }
 
 async function fetchApps(chain: string, page = 1, limit = 10, status?: string) {
-  const url = new URL(`http://localhost:3006/api/v1/applications`);
+  const url = new URL(`http://pocket_indexer_api:3006/api/v1/applications`);
   url.searchParams.set('chain', chain);
   url.searchParams.set('page', String(page));
   url.searchParams.set('limit', String(limit));
@@ -18,7 +18,7 @@ async function fetchApps(chain: string, page = 1, limit = 10, status?: string) {
 }
 
 async function fetchSuppliers(chain: string, page = 1, limit = 10, status?: string) {
-  const url = new URL(`http://localhost:3006/api/v1/suppliers`);
+  const url = new URL(`http://pocket_indexer_api:3006/api/v1/suppliers`);
   url.searchParams.set('chain', chain);
   url.searchParams.set('page', String(page));
   url.searchParams.set('limit', String(limit));
@@ -29,7 +29,7 @@ async function fetchSuppliers(chain: string, page = 1, limit = 10, status?: stri
 }
 
 async function fetchStaking(chain: string, page = 1, limit = 20, type?: string, event?: string) {
-  const url = new URL(`http://localhost:3006/api/v1/staking`);
+  const url = new URL(`http://pocket_indexer_api:3006/api/v1/staking`);
   url.searchParams.set('chain', chain);
   url.searchParams.set('page', String(page));
   url.searchParams.set('limit', String(limit));
@@ -41,7 +41,7 @@ async function fetchStaking(chain: string, page = 1, limit = 20, type?: string, 
 }
 
 async function fetchGateways(chain: string, page = 1, limit = 10, status?: string) {
-  const url = new URL(`http://localhost:3006/api/v1/gateways`);
+  const url = new URL(`http://pocket_indexer_api:3006/api/v1/gateways`);
   url.searchParams.set('chain', chain);
   url.searchParams.set('page', String(page));
   url.searchParams.set('limit', String(limit));
