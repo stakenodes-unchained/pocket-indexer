@@ -364,6 +364,8 @@ class ProductionDataProcessor {
     process.stdout.write('\r' + ' '.repeat(100) + '\r');
     console.log('🎉 Processing completed!');
     this.printSummary();
+    // Persist final state before optionally saving results and disconnecting
+    await this.persistFinalState();
     
     if (this.saveResults) {
       await this.saveResultsToFile();
@@ -1081,9 +1083,6 @@ class ProductionDataProcessor {
         console.log(`  - ${g.address} | status=${g.status} | staked=${g.staked_amount}${g.unstake_session_end_height ? ' | unstake_height=' + g.unstake_session_end_height : ''}`);
       }
     }
-    // After printing, persist final application state to DB
-    // This writes applications table plus queued service configs and delegations
-    this.persistFinalState().catch(() => {});
   }
 
   async persistFinalState() {
