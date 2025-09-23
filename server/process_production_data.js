@@ -27,6 +27,15 @@ const {
 } = require('./services/indexer/entityParser.v2');
 require('dotenv').config();
 
+// Surface hidden async errors instead of silent process kills
+process.on('unhandledRejection', (reason) => {
+  try {
+    console.error('Unhandled promise rejection:', reason && reason.stack ? reason.stack : reason);
+  } catch (_) {
+    // no-op
+  }
+});
+
 // Configuration
 const CONFIG = {
   // Database connection (read-only)
@@ -278,31 +287,28 @@ class ProductionDataProcessor {
         // CRITICAL: Process transactions in chronological order to maintain state consistency
         // We can parallelize parsing but must apply state changes sequentially
         const parseResults = [];
-        
-        // Parse all transactions in parallel (safe - no state mutation)
-        const parsePromises = validTransactions.map(async (tx, index) => {
-          try {
-            const result = await this.parseTransactionOnly(tx);
-            return { index, result, tx };
-          } catch (error) {
-            return { index, error, tx };
-          }
-        });
-        
-        const parseResults_raw = await Promise.allSettled(parsePromises);
-        
-        // Sort results by original index to maintain chronological order
-        for (const result of parseResults_raw) {
-          if (result.status === 'fulfilled') {
-            parseResults.push(result.value);
-          } else {
-            this.stats.errors++;
-            batchCounters.errors++;
-            if (this.verbose) {
-              console.error(`\n❌ Error parsing transaction:`, result.reason.message);
+
+        // Bound concurrency to avoid resource spikes
+        const concurrency = Math.max(1, Math.min(this.maxConcurrency, 16));
+        let i = 0;
+        const tasks = new Array(Math.min(concurrency, validTransactions.length)).fill(0).map(async () => {
+          while (true) {
+            const index = i++;
+            if (index >= validTransactions.length) break;
+            const tx = validTransactions[index];
+            try {
+              const result = await this.parseTransactionOnly(tx);
+              parseResults.push({ index, result, tx });
+            } catch (error) {
+              this.stats.errors++;
+              batchCounters.errors++;
+              if (this.verbose) {
+                console.error(`\n❌ Error parsing transaction:`, error && error.message ? error.message : error);
+              }
             }
           }
-        }
+        });
+        await Promise.all(tasks);
         
         // Sort by original transaction order
         parseResults.sort((a, b) => a.index - b.index);
