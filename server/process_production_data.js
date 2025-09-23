@@ -40,6 +40,7 @@ const CONFIG = {
   DEFAULT_BATCH_SIZE: 1000,
   DEFAULT_LIMIT: null, // null = no limit
   MAX_BATCH_SIZE: 5000,
+  DEFAULT_OFFSET: 0,
   
   // Output options
   VERBOSE: process.env.VERBOSE === 'true',
@@ -69,7 +70,7 @@ class ProductionDataProcessor {
     this.limit = options.limit || CONFIG.DEFAULT_LIMIT;
     this.verbose = options.verbose || CONFIG.VERBOSE;
     this.saveResults = options.saveResults || CONFIG.SAVE_RESULTS;
-    
+    this.transactionsOffset = options.offset || CONFIG.DEFAULT_OFFSET;
     this.pgClient = null;
     
     // Performance optimizations
@@ -156,6 +157,11 @@ class ProductionDataProcessor {
     // We'll keep stake denom and delegation history per app
     this.applicationDelegations = new Map(); // key: app -> Set of gateway addresses
     this.applicationPendingUndelegations = new Map(); // key: app -> Set of gateway addresses
+
+    // Track which entities changed this batch for incremental upserts
+    this.touchedApplications = new Set();
+    this.touchedSuppliers = new Set();
+    this.touchedGateways = new Set();
   }
 
   async connect() {
@@ -211,7 +217,7 @@ class ProductionDataProcessor {
     
     this.stats.startTime = new Date();
     
-    let offset = 0;
+    let offset = this.transactionsOffset;
     let processedCount = 0;
     
     while (true) {
@@ -358,6 +364,9 @@ class ProductionDataProcessor {
       // Print concise batch summary
       process.stdout.write('\r' + ' '.repeat(120) + '\r');
       console.log(`✅ Batch ${batchNumber} summary: tx=${transactions.length} valid=${validTransactions.length} | apps=${batchCounters.applications} sup=${batchCounters.suppliers} gw=${batchCounters.gateways} nodes=${batchCounters.nodes} svc=${batchCounters.services} claims=${batchCounters.claims} relays=${batchCounters.relays} stakeEv=${batchCounters.stakingEvents} | errors=${batchCounters.errors}`);
+      // Incremental upserts of changed entities to keep memory flat and DB in sync
+      await this.upsertTouchedEntities();
+      this.resetTouchedEntities();
       if (this.saveResults) {
         await this.flushResultsBufferToFile();
       }
@@ -544,6 +553,7 @@ class ProductionDataProcessor {
         appEvent.address = appEvent.application_address;
       }
       this.updateApplicationState(appEvent);
+      if (appEvent && appEvent.address) this.touchedApplications.add(appEvent.address);
       // Persist application service configs seen in stake events
       if (Array.isArray(appEvent.service_configs) && appEvent.service_configs.length) {
         for (const sc of appEvent.service_configs) {
@@ -562,6 +572,7 @@ class ProductionDataProcessor {
     // Update suppliers state (chronological order critical)
     for (const supEvent of sups) {
       this.updateSupplierState(supEvent);
+      if (supEvent && supEvent.operator_address) this.touchedSuppliers.add(supEvent.operator_address);
       // Queue supplier service configs seen in stake events
       if (Array.isArray(supEvent.service_configs) && supEvent.service_configs.length) {
         for (const sc of supEvent.service_configs) {
@@ -581,6 +592,7 @@ class ProductionDataProcessor {
     // Update gateways state (chronological order critical)
     for (const gwEvent of gws) {
       this.updateGatewayState(gwEvent);
+      if (gwEvent && gwEvent.address) this.touchedGateways.add(gwEvent.address);
     }
     
     // Update services state (chronological order critical)
@@ -1268,6 +1280,114 @@ class ProductionDataProcessor {
     } catch (e) {
       console.error('Failed to persist final state:', e.message);
     }
+  }
+
+  async upsertTouchedEntities() {
+    try {
+      let upserts = { apps: 0, sups: 0, gws: 0 };
+      // Applications
+      for (const address of this.touchedApplications) {
+        const app = this.applicationState.get(address);
+        if (!app) continue;
+        await this.pgClient.query(
+          `INSERT INTO applications (address, chain, public_key, staked_amount, status, chains, last_seen, stake_denom, 
+             delegated, gateway_address, delegatee_gateway_addresses, unstake_session_end_height)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+           ON CONFLICT (address, chain) DO UPDATE SET
+             staked_amount=EXCLUDED.staked_amount,
+             status=EXCLUDED.status,
+             chains=EXCLUDED.chains,
+             last_seen=EXCLUDED.last_seen,
+             stake_denom=EXCLUDED.stake_denom,
+             delegated=EXCLUDED.delegated,
+             gateway_address=EXCLUDED.gateway_address,
+             delegatee_gateway_addresses=EXCLUDED.delegatee_gateway_addresses,
+             unstake_session_end_height=EXCLUDED.unstake_session_end_height`,
+          [
+            app.address,
+            this.chain,
+            null,
+            app.staked_amount || '0',
+            app.status || null,
+            Array.isArray(app.chains) ? app.chains : [],
+            app.last_seen || null,
+            app.stake_denom || null,
+            app.delegated || false,
+            app.gateway_address || null,
+            Array.isArray(app.delegatee_gateway_addresses) ? app.delegatee_gateway_addresses : Array.from(this.applicationDelegations.get(app.address) || []),
+            app.unstake_session_end_height || null,
+          ]
+        );
+        upserts.apps++;
+      }
+      // Suppliers
+      for (const operator_address of this.touchedSuppliers) {
+        const sup = this.supplierState.get(operator_address);
+        if (!sup) continue;
+        await this.pgClient.query(
+          `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo, stake_denom, unstake_session_end_height)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           ON CONFLICT (address, chain) DO UPDATE SET
+             staked_amount=EXCLUDED.staked_amount,
+             status=EXCLUDED.status,
+             last_seen=EXCLUDED.last_seen,
+             stake_denom=EXCLUDED.stake_denom,
+             unstake_session_end_height=EXCLUDED.unstake_session_end_height`,
+          [
+            sup.operator_address,
+            this.chain,
+            null,
+            sup.staked_amount || '0',
+            sup.status || null,
+            null,
+            sup.last_seen || null,
+            null,
+            sup.stake_denom || null,
+            sup.unstake_session_end_height || null,
+          ]
+        );
+        upserts.sups++;
+      }
+      // Gateways
+      for (const address of this.touchedGateways) {
+        const gw = this.gatewayState.get(address);
+        if (!gw) continue;
+        await this.pgClient.query(
+          `INSERT INTO gateways (address, chain, public_key, staked_amount, status, service_url, last_seen, geo, stake_denom, unstake_session_end_height)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           ON CONFLICT (address, chain) DO UPDATE SET
+             staked_amount=EXCLUDED.staked_amount,
+             status=EXCLUDED.status,
+             last_seen=EXCLUDED.last_seen,
+             stake_denom=EXCLUDED.stake_denom,
+             unstake_session_end_height=EXCLUDED.unstake_session_end_height`,
+          [
+            gw.address,
+            this.chain,
+            null,
+            gw.staked_amount || '0',
+            gw.status || null,
+            null,
+            gw.last_seen || null,
+            null,
+            gw.stake_denom || null,
+            gw.unstake_session_end_height || null,
+          ]
+        );
+        upserts.gws++;
+      }
+      if (upserts.apps || upserts.sups || upserts.gws) {
+        console.log(`📝 Upserted entities this batch: applications=${upserts.apps}, suppliers=${upserts.sups}, gateways=${upserts.gws}`);
+      }
+    } catch (e) {
+      console.error('Failed during incremental upserts:', e.message);
+    }
+  }
+
+  resetTouchedEntities() {
+    this.touchedApplications.clear();
+    this.touchedSuppliers.clear();
+    this.touchedGateways.clear();
   }
 
   async initializeResultsFile() {

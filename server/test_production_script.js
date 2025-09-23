@@ -15,8 +15,9 @@ async function testProductionScript() {
     const processor = new ProductionDataProcessor({
       chain: 'pocket-testnet-beta',
       batchSize: 2000, // Larger batches for better performance
-      limit: 1600000, // Reduced limit for faster testing
+      limit: 50000, // Reduced limit for faster testing
       verbose: false,
+      offset: 0 * 25 * 2000,
       saveResults: true,
       parseInParallel: true, // Enable parallel processing
       maxConcurrency: 15, // Higher concurrency for better throughput
