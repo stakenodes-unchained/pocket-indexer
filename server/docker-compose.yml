@@ -89,28 +89,6 @@ services:
       - default
       - pocket_indexer_network
 
-  dashboard:
-    container_name: pocket_indexer_dashboard
-    build:
-      context: ../dashboard
-      dockerfile: Dockerfile
-    environment:
-      - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=http://api:3006
-    ports:
-      - "3010:3010"
-    depends_on:
-      - api
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-        compress: "true"
-    networks:
-      - default
-
 
 networks:
   default:
