@@ -2,8 +2,8 @@
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
-  basePath: '/indexer',
-  assetPrefix: '/indexer'
+  basePath: '',
+  assetPrefix: ''
 };
 
 module.exports = nextConfig;
