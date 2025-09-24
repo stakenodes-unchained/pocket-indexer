@@ -386,8 +386,22 @@ app.get('/api/v1/health/workers', async (req, res) => {
   try {
     await transactionService.connectDB();
     const client = transactionService.pgClient;
-    const result = await client.query(`SELECT * FROM worker_heartbeats ORDER BY last_seen DESC`);
-    res.json({ data: result.rows });
+    const heartbeats = await client.query(`SELECT * FROM worker_heartbeats ORDER BY last_seen DESC`);
+    const workers = indexerPool.getWorkersStatus();
+    const processInfo = {
+      pid: process.pid,
+      uptime_s: Math.round(process.uptime()),
+      memory: process.memoryUsage(),
+      cpu_usage: process.cpuUsage(),
+      node: process.version,
+      argv: process.argv,
+      env: {
+        WORKER_CONCURRENCY: process.env.WORKER_CONCURRENCY,
+        HISTORICAL_BATCH_SIZE: process.env.HISTORICAL_BATCH_SIZE,
+      }
+    };
+    const redis = await indexerPool.getRedisStats();
+    res.json({ data: { heartbeats: heartbeats.rows, workers, process: processInfo, redis } });
   } catch (error) {
     console.error('Error fetching workers health:', error);
     res.status(500).json({ error: error.message });
@@ -396,8 +410,8 @@ app.get('/api/v1/health/workers', async (req, res) => {
 
 app.get('/api/v1/health/rpc', async (req, res) => {
   try {
-    // Thin endpoint; UI can call per RPC directly if needed. Here we respond OK for now.
-    res.json({ data: { status: 'ok' } });
+    const workers = indexerPool.getWorkersStatus();
+    res.json({ data: { status: 'ok', workers } });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -180,6 +180,35 @@ class TransactionWorkerPool {
   }
 
   /**
+   * Summarize current workers
+   */
+  getWorkersStatus() {
+    const list = [];
+    for (const [name, worker] of this.workers.entries()) {
+      list.push({
+        name,
+        threadId: worker.threadId,
+        isRunning: worker.threadId != null,
+      });
+    }
+    return list;
+  }
+
+  /**
+   * Return Redis stats (memory, keyspace) for health endpoints
+   */
+  async getRedisStats() {
+    try {
+      const memory = await redis.info('memory');
+      const stats = await redis.info('stats');
+      const keyspace = await redis.info('keyspace');
+      return { memory, stats, keyspace };
+    } catch (e) {
+      return { error: e.message };
+    }
+  }
+
+  /**
    * Shutdown all workers
    */
   async shutdown() {
