@@ -417,6 +417,117 @@ app.get('/api/v1/health/rpc', async (req, res) => {
   }
 });
 
+// --- Health history helpers ---
+function parseWindow(req) {
+  const now = Date.now();
+  const from = req.query.from ? new Date(req.query.from).getTime() : now - 60 * 60 * 1000;
+  const to = req.query.to ? new Date(req.query.to).getTime() : now;
+  const limit = parseInt(req.query.limit || '200', 10);
+  const interval = req.query.interval || null; // future: apply bucketing
+  return { from: new Date(from), to: new Date(to), limit, interval };
+}
+
+app.get('/api/v1/health/rpc/history', async (req, res) => {
+  try {
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    const { from, to, limit } = parseWindow(req);
+    const result = await client.query(
+      `SELECT ts, status, active_workers FROM health_rpc
+       WHERE ts >= $1 AND ts < $2
+       ORDER BY ts ASC
+       LIMIT $3`,
+      [from, to, limit]
+    );
+    res.json({ data: result.rows });
+  } catch (error) {
+    console.error('Error fetching rpc history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/v1/health/workers/history', async (req, res) => {
+  try {
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    const { from, to, limit } = parseWindow(req);
+    const chain = req.query.chain || null;
+    const sql = `SELECT ts, COALESCE(chain,'') AS chain, workers, heartbeats, avg_lag, p95_lag
+                 FROM health_workers
+                 WHERE ts >= $1 AND ts < $2
+                 ${chain ? 'AND chain = $4' : ''}
+                 ORDER BY ts ASC
+                 LIMIT $3`;
+    const params = chain ? [from, to, limit, chain] : [from, to, limit];
+    const result = await client.query(sql, params);
+    res.json({ data: result.rows });
+  } catch (error) {
+    console.error('Error fetching workers history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/v1/health/process/history', async (req, res) => {
+  try {
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    const { from, to, limit } = parseWindow(req);
+    const result = await client.query(
+      `SELECT ts, rss, heap_used, heap_total, external, array_buffers, cpu_user_ms, cpu_system_ms
+       FROM health_process
+       WHERE ts >= $1 AND ts < $2
+       ORDER BY ts ASC
+       LIMIT $3`,
+      [from, to, limit]
+    );
+    res.json({ data: result.rows });
+  } catch (error) {
+    console.error('Error fetching process history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/v1/health/redis/history', async (req, res) => {
+  try {
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    const { from, to, limit } = parseWindow(req);
+    const result = await client.query(
+      `SELECT ts, used_memory, maxmemory, instantaneous_ops_per_sec, mem_fragmentation_ratio
+       FROM health_redis
+       WHERE ts >= $1 AND ts < $2
+       ORDER BY ts ASC
+       LIMIT $3`,
+      [from, to, limit]
+    );
+    res.json({ data: result.rows });
+  } catch (error) {
+    console.error('Error fetching redis history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/v1/health/redis/keyspace/history', async (req, res) => {
+  try {
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    const { from, to, limit } = parseWindow(req);
+    const db = req.query.db || 'db0';
+    const result = await client.query(
+      `SELECT ts, db, keys, expires, avg_ttl
+       FROM health_redis_keyspace
+       WHERE ts >= $1 AND ts < $2 AND db = $4
+       ORDER BY ts ASC
+       LIMIT $3`,
+      [from, to, limit, db]
+    );
+    res.json({ data: result.rows });
+  } catch (error) {
+    console.error('Error fetching redis keyspace history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Staking events endpoint (list with filters)
 app.get('/api/v1/staking', async (req, res) => {
   try {

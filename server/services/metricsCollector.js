@@ -15,6 +15,7 @@ class MetricsCollector {
     });
     this.pg._connected = false;
     this.rpcs = getRpcEndpoints();
+    this.includeHealth = true;
   }
 
   async connect() {
@@ -88,11 +89,23 @@ class MetricsCollector {
       for (const rpc of this.rpcs) {
         await this.snapshotChain(rpc.name, rpc.url);
       }
+      if (this.includeHealth) {
+        await this.snapshotProcess();
+        await this.snapshotRedis();
+        await this.snapshotRpc();
+        await this.snapshotWorkers();
+      }
     }, this.intervalMs);
     // Kick immediately
     (async () => {
       for (const rpc of this.rpcs) {
         await this.snapshotChain(rpc.name, rpc.url);
+      }
+      if (this.includeHealth) {
+        await this.snapshotProcess();
+        await this.snapshotRedis();
+        await this.snapshotRpc();
+        await this.snapshotWorkers();
       }
     })();
     console.log(`MetricsCollector started (${this.intervalMs}ms)`);
@@ -105,6 +118,94 @@ class MetricsCollector {
       await this.pg.end();
       this.pg._connected = false;
     }
+  }
+
+  // --- Health snapshots ---
+  async snapshotProcess() {
+    try {
+      await this.connect();
+      const mem = process.memoryUsage();
+      const cpu = process.cpuUsage();
+      await this.pg.query(
+        `INSERT INTO health_process (rss, heap_used, heap_total, external, array_buffers, cpu_user_ms, cpu_system_ms)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [mem.rss, mem.heapUsed, mem.heapTotal, mem.external, mem.arrayBuffers, cpu.user, cpu.system]
+      );
+    } catch (_) {}
+  }
+
+  async snapshotRedis() {
+    try {
+      await this.connect();
+      const redis = require('../config/redis');
+      const infoMem = await redis.info('memory');
+      const infoStats = await redis.info('stats');
+      const infoKeyspace = await redis.info('keyspace');
+      const get = (section, key) => {
+        const m = section.match(new RegExp(`${key}:(\\d+)`));
+        return m ? parseInt(m[1], 10) : null;
+      };
+      const getFloat = (section, key) => {
+        const m = section.match(new RegExp(`${key}:(\\d+(?:\\.\\d+)?)`));
+        return m ? parseFloat(m[1]) : null;
+      };
+      const used_memory = get(infoMem, 'used_memory');
+      const maxmemory = get(infoMem, 'maxmemory');
+      const mem_fragmentation_ratio = getFloat(infoMem, 'mem_fragmentation_ratio');
+      const instantaneous_ops_per_sec = get(infoStats, 'instantaneous_ops_per_sec');
+      await this.pg.query(
+        `INSERT INTO health_redis (used_memory, maxmemory, instantaneous_ops_per_sec, mem_fragmentation_ratio)
+         VALUES ($1,$2,$3,$4)`,
+        [used_memory, maxmemory, instantaneous_ops_per_sec, mem_fragmentation_ratio]
+      );
+      // keyspace db0 line like: db0:keys=10,expires=0,avg_ttl=0
+      const line = (infoKeyspace.split('\n').find(l => l.startsWith('db0:')) || '').trim();
+      if (line) {
+        const keys = parseInt((line.match(/keys=(\d+)/) || [])[1] || 0, 10);
+        const expires = parseInt((line.match(/expires=(\d+)/) || [])[1] || 0, 10);
+        const avg_ttl = parseInt((line.match(/avg_ttl=(\d+)/) || [])[1] || 0, 10);
+        await this.pg.query(
+          `INSERT INTO health_redis_keyspace (db, keys, expires, avg_ttl) VALUES ($1,$2,$3,$4)`,
+          ['db0', keys, expires, avg_ttl]
+        );
+      }
+    } catch (_) {}
+  }
+
+  async snapshotRpc() {
+    try {
+      await this.connect();
+      const indexerPool = require('./indexer/pool');
+      const workers = indexerPool.getWorkersStatus();
+      await this.pg.query(
+        `INSERT INTO health_rpc (status, active_workers) VALUES ($1,$2)`,
+        ['ok', workers.filter(w => w.isRunning).length]
+      );
+    } catch (_) {}
+  }
+
+  async snapshotWorkers() {
+    try {
+      await this.connect();
+      // We don't have per-heartbeat table beyond last_seen; approximate using heartbeats table and metrics_snapshots
+      const res = await this.pg.query(`SELECT COUNT(*) AS c FROM worker_heartbeats WHERE last_seen >= NOW() - INTERVAL '1 minute'`);
+      const heartbeats = parseInt(res.rows[0].c || 0, 10);
+      // Lag approximation: average over chains latest - processed from metrics_snapshots latest row per chain
+      const lagRes = await this.pg.query(
+        `WITH latest AS (
+           SELECT DISTINCT ON (chain) chain, processed_height, latest_height
+           FROM metrics_snapshots
+           ORDER BY chain, ts DESC
+         )
+         SELECT AVG(GREATEST(latest_height - processed_height,0))::numeric AS avg_lag
+         FROM latest`
+      );
+      const avg_lag = parseFloat(lagRes.rows[0].avg_lag || 0);
+      await this.pg.query(
+        `INSERT INTO health_workers (workers, heartbeats, avg_lag) VALUES ($1,$2,$3)`,
+        [heartbeats, heartbeats, avg_lag]
+      );
+    } catch (_) {}
   }
 }
 
