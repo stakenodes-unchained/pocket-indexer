@@ -216,21 +216,42 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
     }
   }
 
-  // Prepare block data for caching
+  // Prepare lightweight data for caching (avoid huge payloads in Redis)
+  const lightweightTxs = processedTxs.map(tx => ({
+    hash: tx.hash,
+    height: height,
+    sender: tx.sender,
+    recipient: tx.recipient,
+    amount: tx.amount,
+    fee: typeof tx.fee === 'object' ? tx.fee?.amount?.[0]?.amount || '0' : tx.fee,
+    amount_denom: tx.amount_denom || null,
+    fee_denom: tx.fee_denom || null,
+    memo: tx.memo,
+    type: tx.type,
+    status: tx.status,
+    timestamp: tx.timestamp,
+  }));
+
   const blockForCache = {
     height,
     hash,
     timestamp,
     proposer,
-    transactions: processedTxs
+    chain,
+    transactions: lightweightTxs.map(t => ({
+      hash: t.hash,
+      type: t.type,
+      status: t.status,
+      timestamp: t.timestamp,
+    })),
   };
 
-  // Cache block in Redis (list: recent:blocks)
+  // Cache block in Redis (list: recent:blocks) with max len trim on push
   await redis.lpush('recent:blocks', JSON.stringify(blockForCache));
   await redis.ltrim('recent:blocks', 0, PAGE_SIZE - 1);
 
-  // Cache transactions in Redis (list: recent:txs)
-  for (const tx of processedTxs) {
+  // Cache transactions in Redis (list: recent:txs) - lightweight only
+  for (const tx of lightweightTxs) {
     await redis.lpush('recent:txs', JSON.stringify(tx));
   }
   await redis.ltrim('recent:txs', 0, PAGE_SIZE - 1);
