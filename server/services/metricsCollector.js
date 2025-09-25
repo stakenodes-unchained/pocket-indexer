@@ -4,7 +4,7 @@ const { fetchLatestBlock } = require('./indexer/rpc');
 
 class MetricsCollector {
   constructor(options = {}) {
-    this.intervalMs = options.intervalMs || 30000; // 30s default
+    this.intervalMs = options.intervalMs || 50000; // 30s default
     this.timer = null;
     this.pg = new Client({
       host: process.env.DB_HOST,
@@ -28,22 +28,46 @@ class MetricsCollector {
   async snapshotChain(chain, rpcUrl) {
     try {
       await this.connect();
-      // processed height based on transactions joined to blocks (more accurate than raw blocks)
-      const processedRes = await this.pg.query(
-        `SELECT MAX(b.height) AS h
-         FROM transactions t
-         JOIN blocks b ON b.id = t.block_id AND b.chain = t.chain
-         WHERE t.chain = $1`,
+      // Determine processed heights for parallel streams
+      // 1) monitor_processed_height from latest heartbeat
+      const hbRes = await this.pg.query(
+        `SELECT meta FROM worker_heartbeats WHERE worker_id = $1 ORDER BY last_seen DESC LIMIT 1`,
         [chain]
       );
-      const processedHeight = parseInt(processedRes.rows?.[0]?.h || 0, 10);
+      let monitorProcessed = 0;
+      if (hbRes.rows?.[0]?.meta) {
+        const meta = hbRes.rows[0].meta;
+        const v = meta && (meta.lastProcessedHeight || meta.currentHeight);
+        monitorProcessed = v ? parseInt(v, 10) : 0;
+      }
+      // Fallback: use max block height if heartbeat not present yet
+      if (!monitorProcessed || monitorProcessed <= 0) {
+        const processedRes = await this.pg.query(
+          `SELECT MAX(height) AS h FROM blocks WHERE chain = $1`,
+          [chain]
+        );
+        monitorProcessed = parseInt(processedRes.rows?.[0]?.h || 0, 10);
+      }
+      // 2) history_processed_height from historical_sync (for diagnostics/backlog)
+      const histRes = await this.pg.query(
+        `SELECT last_height FROM historical_sync WHERE chain = $1`,
+        [chain]
+      );
+      const historyProcessed = histRes.rows?.[0]?.last_height ? parseInt(histRes.rows[0].last_height, 10) : 0;
 
-      // latest height from RPC
-      let latestHeight = processedHeight;
+      // latest height from RPC; fallback to DB max(blocks.height) if RPC fails
+      let latestHeight = 0;
       try {
         const latest = await fetchLatestBlock(rpcUrl);
         latestHeight = parseInt(latest.block.header.height, 10);
       } catch (_) {}
+      if (!latestHeight || latestHeight <= 0) {
+        const dbMax = await this.pg.query(
+          `SELECT MAX(height) AS h FROM blocks WHERE chain = $1`,
+          [chain]
+        );
+        latestHeight = parseInt(dbMax.rows?.[0]?.h || 0, 10);
+      }
 
       // entity counts
       const appsRes = await this.pg.query('SELECT COUNT(*) AS c FROM applications WHERE chain = $1', [chain]);
@@ -73,10 +97,11 @@ class MetricsCollector {
       );
       const error_rate = parseFloat(errRateRes.rows[0].e || 0);
 
+      // Store monitorProcessed as processed_height for lag calculations
       await this.pg.query(
         `INSERT INTO metrics_snapshots (chain, processed_height, latest_height, tx_rate, error_rate, applications, suppliers, gateways, services)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [chain, processedHeight, latestHeight, tx_rate || 0, isFinite(error_rate) ? error_rate : 0, applications, suppliers, gateways, services]
+        [chain, monitorProcessed, latestHeight, tx_rate || 0, isFinite(error_rate) ? error_rate : 0, applications, suppliers, gateways, services]
       );
     } catch (e) {
       console.warn('Metrics snapshot failed for', chain, e.message);
