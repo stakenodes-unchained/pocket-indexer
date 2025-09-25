@@ -1,4 +1,5 @@
 const redis = require('../config/redis');
+const REDIS_CACHE_TX_DETAIL = (process.env.REDIS_CACHE_TX_DETAIL || 'false') === 'true';
 const { getRpcEndpoints } = require('../config/rpc');
 const { Client } = require('pg');
 
@@ -125,6 +126,16 @@ class TransactionService {
   async getTransactionById(transactionId, chain) {
     try {
       await this.connectDB();
+      // Optional quick-hit from Redis hash (lightweight) if enabled
+      if (REDIS_CACHE_TX_DETAIL) {
+        const key = `tx:${chain || ''}:${transactionId}`;
+        try {
+          const h = await redis.hgetall(key);
+          if (h && Object.keys(h).length) {
+            return { data: h };
+          }
+        } catch (_) {}
+      }
       
       if (chain) {
         // If chain is specified, look only in that chain

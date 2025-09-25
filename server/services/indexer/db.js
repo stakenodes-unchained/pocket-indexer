@@ -6,6 +6,10 @@ const { classifyTransaction, parseClaims } = require('./entityParser');
 require('dotenv').config();
 
 const PAGE_SIZE = parseInt(process.env.PAGE_SIZE || '50', 10);
+const REDIS_CACHE_TX_DETAIL = (process.env.REDIS_CACHE_TX_DETAIL || 'false') === 'true';
+const REDIS_TX_TTL_SEC = parseInt(process.env.REDIS_TX_TTL_SEC || '0', 10); // 0 = no TTL
+const REDIS_RECENT_TTL_SEC = parseInt(process.env.REDIS_RECENT_TTL_SEC || '0', 10); // 0 = no TTL
+const REDIS_INDEX_TXS = (process.env.REDIS_INDEX_TXS || 'false') === 'true';
 
 // PostgreSQL client
 const pgClient = new Client({
@@ -167,27 +171,33 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
           chain: chain
         });
 
-        // Cache transaction in Redis
+        // Cache transaction in Redis (optional & lightweight)
         try {
-          await redis.hset(`tx:${chain}:${txHash}`, {
-            hash: tx.hash,
-            height: height.toString(),
-            sender: tx.sender,
-            recipient: tx.recipient,
-            amount: tx.amount,
-            fee: typeof tx.fee === 'object' ? JSON.stringify(tx.fee) : tx.fee,
-            memo: tx.memo,
-            type: tx.type,
-            status: tx.status,
-            timestamp: tx.timestamp,
-            messages: tx.messages ? JSON.stringify(tx.messages) : '[]',
-            gas_wanted: tx.gas_wanted || '0',
-            gas_used: tx.gas_used || '0',
-            tx_data: tx.tx_data || ''
-          });
+          if (REDIS_CACHE_TX_DETAIL) {
+            const key = `tx:${chain}:${txHash}`;
+            await redis.hset(key, {
+              hash: tx.hash,
+              height: height.toString(),
+              sender: tx.sender,
+              recipient: tx.recipient,
+              amount: tx.amount,
+              fee: typeof tx.fee === 'object' ? JSON.stringify(tx.fee) : tx.fee,
+              memo: tx.memo,
+              type: tx.type,
+              status: tx.status,
+              timestamp: tx.timestamp,
+              gas_wanted: tx.gas_wanted || '0',
+              gas_used: tx.gas_used || '0'
+            });
+            if (REDIS_TX_TTL_SEC > 0) {
+              await redis.expire(key, REDIS_TX_TTL_SEC);
+            }
+          }
 
-          // Add to sorted set for pagination
-          await redis.zadd(`chain:${chain}:txs`, height, txHash);
+          // Optional sorted index for pagination
+          if (REDIS_INDEX_TXS) {
+            await redis.zadd(`chain:${chain}:txs`, height, txHash);
+          }
         } catch (cacheError) {
           console.warn(`Failed to cache transaction ${txHash}:`, cacheError.message);
           // Continue processing - caching failure shouldn't stop the process
@@ -249,12 +259,18 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
   // Cache block in Redis (list: recent:blocks) with max len trim on push
   await redis.lpush('recent:blocks', JSON.stringify(blockForCache));
   await redis.ltrim('recent:blocks', 0, PAGE_SIZE - 1);
+  if (REDIS_RECENT_TTL_SEC > 0) {
+    await redis.expire('recent:blocks', REDIS_RECENT_TTL_SEC);
+  }
 
   // Cache transactions in Redis (list: recent:txs) - lightweight only
   for (const tx of lightweightTxs) {
     await redis.lpush('recent:txs', JSON.stringify(tx));
   }
   await redis.ltrim('recent:txs', 0, PAGE_SIZE - 1);
+  if (REDIS_RECENT_TTL_SEC > 0) {
+    await redis.expire('recent:txs', REDIS_RECENT_TTL_SEC);
+  }
 
   // Update latest processed height
   await redis.set(`chain:${chain}:latest_height`, height.toString());
