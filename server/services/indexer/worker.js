@@ -219,6 +219,7 @@ async function monitorNewBlocks() {
   log('Starting new block monitor...');
   let lastProcessedHeight = await getLastProcessedHeight(rpcName);
   const { upsertWorkerHeartbeat } = require('./db');
+  const monitorIntervalMs = parseInt(process.env.MONITOR_INTERVAL_MS || '10000', 10);
 
   setInterval(async () => {
     try {
@@ -236,13 +237,17 @@ async function monitorNewBlocks() {
         log(`New blocks detected. From ${lastProcessedHeight + 1} to ${latestHeight}`);
         for (let height = lastProcessedHeight + 1; height <= latestHeight; height++) {
           await processBlock(await fetchBlockByHeight(height, rpcUrl));
+          // Emit heartbeat on each processed block so monitorProcessed stays fresh under heavy load
+          try {
+            await upsertWorkerHeartbeat(rpcName, { threadId: workerData.id, type: 'monitor', lastProcessedHeight: height });
+          } catch (_) {}
         }
         lastProcessedHeight = latestHeight;
       }
     } catch (error) {
       reportError(`Error in new block monitor: ${error.message}`);
     }
-  }, 10000); // Check every 10 seconds
+  }, monitorIntervalMs); // Default 10s; configurable via MONITOR_INTERVAL_MS
 }
 
 async function run() {

@@ -4,7 +4,7 @@ const { fetchLatestBlock } = require('./indexer/rpc');
 
 class MetricsCollector {
   constructor(options = {}) {
-    this.intervalMs = options.intervalMs || 50000; // 30s default
+    this.intervalMs = options.intervalMs || 5000; // 30s default
     this.timer = null;
     this.pg = new Client({
       host: process.env.DB_HOST,
