@@ -385,6 +385,44 @@ async function saveClaim(claim) {
 }
 
 /**
+ * Bulk save claims with one statement per chunk for throughput
+ */
+async function bulkSaveClaims(claims) {
+  await connectClients();
+  if (!Array.isArray(claims) || claims.length === 0) return;
+  const chunkSize = 500;
+  for (let i = 0; i < claims.length; i += chunkSize) {
+    const chunk = claims.slice(i, i + chunkSize);
+    const values = [];
+    const params = [];
+    let p = 1;
+    for (const c of chunk) {
+      values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+      params.push(
+        c.supplier_operator_address,
+        c.application_address,
+        c.service_id,
+        c.session_id,
+        c.session_start_block_height,
+        c.session_end_block_height,
+        c.root_hash,
+        c.proof || null,
+        c.status || 'claimed',
+        c.timestamp || new Date().toISOString()
+      );
+    }
+    const sql = `INSERT INTO claims (supplier_operator_address, application_address, service_id, session_id, session_start_block_height, session_end_block_height, root_hash, proof, status, timestamp)
+                 VALUES ${values.join(',')}
+                 ON CONFLICT (supplier_operator_address, session_id, service_id, application_address) DO UPDATE SET
+                   root_hash=EXCLUDED.root_hash,
+                   proof=EXCLUDED.proof,
+                   status=EXCLUDED.status,
+                   timestamp=EXCLUDED.timestamp`;
+    await pgClient.query(sql, params);
+  }
+}
+
+/**
  * Get the last processed block height from the database for a specific chain
  * @param {string} chain Chain name
  * @returns {Promise<number>}
@@ -396,6 +434,38 @@ async function getLastProcessedHeight(chain) {
     [chain]
   );
   return res.rows[0].max ? parseInt(res.rows[0].max, 10) : 0;
+}
+
+/**
+ * Historical sync checkpoint helpers
+ */
+async function getHistoricalCheckpoint(chain) {
+  await connectClients();
+  const res = await pgClient.query('SELECT last_height FROM historical_sync WHERE chain = $1', [chain]);
+  return res.rows[0]?.last_height ? parseInt(res.rows[0].last_height, 10) : 0;
+}
+
+async function setHistoricalCheckpoint(chain, height) {
+  await connectClients();
+  await pgClient.query(
+    `INSERT INTO historical_sync (chain, last_height, updated_at)
+     VALUES ($1,$2,NOW())
+     ON CONFLICT (chain) DO UPDATE SET last_height = EXCLUDED.last_height, updated_at = NOW()`,
+    [chain, height]
+  );
+}
+
+/**
+ * Upsert worker heartbeat (per-chain worker)
+ */
+async function upsertWorkerHeartbeat(workerId, meta) {
+  await connectClients();
+  await pgClient.query(
+    `INSERT INTO worker_heartbeats (worker_id, last_seen, meta)
+     VALUES ($1, NOW(), $2)
+     ON CONFLICT (worker_id) DO UPDATE SET last_seen = NOW(), meta = $2`,
+    [workerId, meta || {}]
+  );
 }
 
 /**
@@ -742,5 +812,8 @@ module.exports = {
   saveRelay,
   saveGovernance,
   saveClaim,
+  bulkSaveClaims,
   upsertGateway,
+  getHistoricalCheckpoint,
+  setHistoricalCheckpoint
 }; 

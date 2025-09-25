@@ -49,18 +49,43 @@ async function processBlock(blockData) {
       return;
     }
     
+    // Buffer claims for bulk upsert per block
+    const claimsBuffer = [];
     for (const tx of block.transactions) {
       try {
-        // Parse and save entities based on transaction type
-        // Each parsing function is now robust and will return empty arrays on errors
-        const suppliers = parseSuppliers(tx, blockData, rpcName);
-        const applications = parseApplications(tx, blockData, rpcName);
-        const stakingEvents = parseStakingEvents(tx, blockData, rpcName);
-        const services = parseServices(tx, blockData, rpcName);
-        const nodes = parseNodes(tx, blockData, rpcName);
-        const relays = parseRelays(tx, blockData, rpcName);
-        const governance = []; // Governance parsing not implemented in v2 yet
-        const gateways = parseGateways(tx, blockData, rpcName);
+        // Light message-type check to short-circuit non-relevant parsers
+        const msgs = (tx && tx.tx && tx.tx.body && Array.isArray(tx.tx.body.messages)) ? tx.tx.body.messages : [];
+        const hasProofOrClaim = msgs.some(m => {
+          const t = m && (m['@type'] || m.type_url || '');
+          return typeof t === 'string' && (t.includes('pocket.proof.MsgCreateClaim') || t.includes('pocket.proof.MsgSubmitProof'));
+        });
+
+        let suppliers = [];
+        let applications = [];
+        let stakingEvents = [];
+        let services = [];
+        let nodes = [];
+        let relays = [];
+        let gateways = [];
+        const governance = [];
+
+        if (hasProofOrClaim) {
+          // Claims fast-path: only parse claims/relays
+          relays = parseRelays(tx, blockData, rpcName);
+          const claims = require('./entityParser.v2').parseClaims(tx, blockData, rpcName);
+          if (Array.isArray(claims) && claims.length) {
+            claimsBuffer.push(...claims);
+          }
+        } else {
+          // Full parsing for non-claim transactions
+          suppliers = parseSuppliers(tx, blockData, rpcName);
+          applications = parseApplications(tx, blockData, rpcName);
+          stakingEvents = parseStakingEvents(tx, blockData, rpcName);
+          services = parseServices(tx, blockData, rpcName);
+          nodes = parseNodes(tx, blockData, rpcName);
+          relays = parseRelays(tx, blockData, rpcName);
+          gateways = parseGateways(tx, blockData, rpcName);
+        }
 
         // Save all entities with individual error handling
         // Suppliers
@@ -148,6 +173,15 @@ async function processBlock(blockData) {
         // Continue with next transaction - don't let one bad transaction stop the whole block
       }
     }
+    // Flush buffered claims in bulk for this block
+    try {
+      if (claimsBuffer.length) {
+        const { bulkSaveClaims } = require('./db');
+        await bulkSaveClaims(claimsBuffer);
+      }
+    } catch (e) {
+      console.error(`[Worker ${workerData.id}] Error bulk saving claims:`, e.message);
+    }
     console.log(`[Worker ${workerData.id}] Successfully processed block ${blockData.block?.header?.height || 'unknown'}`);
   } catch (error) {
     console.error(`[Worker ${workerData.id}] Error processing block:`, error);
@@ -157,12 +191,19 @@ async function processBlock(blockData) {
 
 async function syncHistoricalBlocks() {
   log('Starting historical block sync...');
-  let currentHeight = await getLastProcessedHeight(rpcName);
+  const { getHistoricalCheckpoint, setHistoricalCheckpoint, upsertWorkerHeartbeat } = require('./db');
+  let currentHeight = await getHistoricalCheckpoint(rpcName);
   const latestBlock = await fetchLatestBlock(rpcUrl);
   const latestHeight = parseInt(latestBlock.block.header.height, 10);
-
+  let lastProcessedHeight = await getLastProcessedHeight(rpcName);
+  
+  currentHeight = currentHeight || lastProcessedHeight;
   while (currentHeight < latestHeight) {
     await processBlock(await fetchBlockByHeight(currentHeight, rpcUrl));
+    await setHistoricalCheckpoint(rpcName, currentHeight);
+    try {
+      await upsertWorkerHeartbeat(rpcName, { threadId: workerData.id, type: 'history', currentHeight });
+    } catch (_) {}
     currentHeight++;
   }
   log('Historical block sync complete.');
@@ -171,9 +212,15 @@ async function syncHistoricalBlocks() {
 async function monitorNewBlocks() {
   log('Starting new block monitor...');
   let lastProcessedHeight = await getLastProcessedHeight(rpcName);
+  const { upsertWorkerHeartbeat } = require('./db');
 
   setInterval(async () => {
     try {
+      // Heartbeat once per interval with lightweight meta
+      try {
+        await upsertWorkerHeartbeat(rpcName, { threadId: workerData.id, type: 'monitor', lastProcessedHeight });
+      } catch (_) {}
+
       const latestBlock = await fetchLatestBlock(rpcUrl);
       const latestHeight = parseInt(latestBlock.block.header.height, 10);
 
@@ -192,8 +239,10 @@ async function monitorNewBlocks() {
 
 async function run() {
   log(`Worker started for ${rpcName}`);
-  await syncHistoricalBlocks(rpcName);
-  await monitorNewBlocks(rpcName);
+  // Start monitor immediately (independent of historical sync)
+  monitorNewBlocks(rpcName);
+  // Run historical sync in parallel and keep checkpointing
+  syncHistoricalBlocks(rpcName).catch(e => reportError(`Historical sync error: ${e.message}`));
 }
 
 run().catch(error => {

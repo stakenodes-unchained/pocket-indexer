@@ -298,12 +298,13 @@ Base URL: `http://localhost:3006`
       "data": {
         "heartbeats": [
           {
-            "id": 1,
-            "worker_name": "pocket-testnet-beta",
+            "worker_id": "pocket-testnet-beta",
             "last_seen": "2025-09-24T03:40:00.000Z",
-            "status": "running",
-            "processed_height": 344124,
-            "latest_height": 344130
+            "meta": {
+              "type": "monitor",
+              "threadId": 14,
+              "lastProcessedHeight": 344124
+            }
           }
         ],
         "workers": [
@@ -331,7 +332,17 @@ Base URL: `http://localhost:3006`
           "memory": "# Memory\nused_memory:...\n...",
           "stats": "# Stats\ntotal_connections_received:...\n...",
           "keyspace": "# Keyspace\n# db0:keys=...,expires=...,avg_ttl=...\n..."
-        }
+        },
+        "chains": [
+          {
+            "chain": "pocket-testnet-beta",
+            "history_checkpoint": 343000,
+            "processed_height": 344120,
+            "latest_height": 344130,
+            "monitor_lag": 10,
+            "history_backlog": 1120
+          }
+        ]
       }
     }
     ```
@@ -345,6 +356,14 @@ Base URL: `http://localhost:3006`
         "status": "ok",
         "workers": [
           { "name": "pocket-testnet-beta", "threadId": 14, "isRunning": true }
+        ],
+        "chains": [
+          {
+            "chain": "pocket-testnet-beta",
+            "latest_height": 344130,
+            "processed_height": 344120,
+            "monitor_lag": 10
+          }
         ]
       }
     }
