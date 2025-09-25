@@ -491,6 +491,22 @@ async function upsertWorkerHeartbeat(workerId, meta) {
 }
 
 /**
+ * Get latest processed_height from metrics_snapshots for a chain
+ */
+async function getSnapshotProcessedHeight(chain) {
+  await connectClients();
+  const res = await pgClient.query(
+    `SELECT processed_height FROM metrics_snapshots
+     WHERE chain = $1
+     ORDER BY ts DESC
+     LIMIT 1`,
+    [chain]
+  );
+  const v = res.rows[0]?.processed_height;
+  return v ? parseInt(v, 10) : 0;
+}
+
+/**
  * Get a block by height and chain (cache first)
  */
 async function getBlock(height, chain) {
@@ -837,5 +853,7 @@ module.exports = {
   bulkSaveClaims,
   upsertGateway,
   getHistoricalCheckpoint,
-  setHistoricalCheckpoint
+  setHistoricalCheckpoint,
+  upsertWorkerHeartbeat,
+  getSnapshotProcessedHeight
 }; 

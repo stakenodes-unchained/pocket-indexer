@@ -402,17 +402,17 @@ app.get('/api/v1/health/workers', async (req, res) => {
     };
     const redis = await indexerPool.getRedisStats();
     // Per-chain lag/backlog view (monitoring vs historical)
-    const processedHeightsRes = await client.query(`SELECT chain, MAX(height) AS processed_height FROM blocks GROUP BY chain`);
-    const processedMap = new Map(processedHeightsRes.rows.map(r => [r.chain, parseInt(r.processed_height || 0, 10)]));
     const histRes = await client.query(`SELECT chain, last_height FROM historical_sync`);
     const historyMap = new Map(histRes.rows.map(r => [r.chain, parseInt(r.last_height || 0, 10)]));
-    const latestRes = await client.query(`SELECT DISTINCT ON (chain) chain, latest_height FROM metrics_snapshots ORDER BY chain, ts DESC`);
-    const latestMap = new Map(latestRes.rows.map(r => [r.chain, parseInt(r.latest_height || 0, 10)]));
+    // Use the same data source as metrics endpoint: latest snapshot per chain
+    const snapRes = await client.query(`SELECT DISTINCT ON (chain) chain, processed_height, latest_height FROM metrics_snapshots ORDER BY chain, ts DESC`);
+    const snapMap = new Map(snapRes.rows.map(r => [r.chain, { processed: parseInt(r.processed_height || 0, 10), latest: parseInt(r.latest_height || 0, 10) }]));
     const chains = transactionService.getAvailableChains();
     const chainHealth = chains.map(chain => {
-      const processed_height = processedMap.get(chain) || 0;
+      const snap = snapMap.get(chain) || { processed: 0, latest: 0 };
+      const processed_height = snap.processed || 0;
       const history_checkpoint = historyMap.get(chain) || 0;
-      const latest_height = latestMap.get(chain) || 0;
+      const latest_height = snap.latest || 0;
       const monitor_lag = Math.max(latest_height - processed_height, 0);
       const history_backlog = Math.max(processed_height - history_checkpoint, 0);
       return {
@@ -437,15 +437,17 @@ app.get('/api/v1/health/rpc', async (req, res) => {
     // Include per-chain simple lag view from snapshots if present
     await transactionService.connectDB();
     const client = transactionService.pgClient;
-    const latestRes = await client.query(`SELECT DISTINCT ON (chain) chain, latest_height FROM metrics_snapshots ORDER BY chain, ts DESC`);
-    const processedRes = await client.query(`SELECT chain, MAX(height) AS processed_height FROM blocks GROUP BY chain`);
-    const processedMap = new Map(processedRes.rows.map(r => [r.chain, parseInt(r.processed_height || 0, 10)]));
-    const chains = latestRes.rows.map(r => ({
-      chain: r.chain,
-      latest_height: parseInt(r.latest_height || 0, 10),
-      processed_height: processedMap.get(r.chain) || 0,
-      monitor_lag: Math.max(parseInt(r.latest_height || 0, 10) - (processedMap.get(r.chain) || 0), 0),
-    }));
+    const snapRes = await client.query(`SELECT DISTINCT ON (chain) chain, processed_height, latest_height FROM metrics_snapshots ORDER BY chain, ts DESC`);
+    const chains = snapRes.rows.map(r => {
+      const latest = parseInt(r.latest_height || 0, 10);
+      const processed = parseInt(r.processed_height || 0, 10);
+      return {
+        chain: r.chain,
+        latest_height: latest,
+        processed_height: processed,
+        monitor_lag: Math.max(latest - processed, 0),
+      };
+    });
     res.json({ data: { status: 'ok', workers, chains } });
   } catch (error) {
     res.status(500).json({ error: error.message });

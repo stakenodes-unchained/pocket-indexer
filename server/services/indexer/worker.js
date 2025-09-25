@@ -191,8 +191,12 @@ async function processBlock(blockData) {
 
 async function syncHistoricalBlocks() {
   log('Starting historical block sync...');
-  const { getHistoricalCheckpoint, setHistoricalCheckpoint, upsertWorkerHeartbeat } = require('./db');
-  let currentHeight = await getHistoricalCheckpoint(rpcName);
+  const { getHistoricalCheckpoint, setHistoricalCheckpoint, upsertWorkerHeartbeat, getSnapshotProcessedHeight } = require('./db');
+  // Prefer metrics snapshot processed_height; fallback to checkpoint
+  let currentHeight = await getSnapshotProcessedHeight(rpcName);
+  if (!currentHeight || currentHeight <= 0) {
+    currentHeight = await getHistoricalCheckpoint(rpcName);
+  }
   const latestBlock = await fetchLatestBlock(rpcUrl);
   const latestHeight = parseInt(latestBlock.block.header.height, 10);
   let lastProcessedHeight = await getLastProcessedHeight(rpcName);
