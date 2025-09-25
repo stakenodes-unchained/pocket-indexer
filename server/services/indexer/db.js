@@ -23,13 +23,35 @@ const pgClient = new Client({
 // Redis client
 const redis = new Redis(process.env.REDIS_URL);
 
+let pgConnectingPromise = null;
+let redisConnectingPromise = null;
+
 async function connectClients() {
+  // Postgres: guard concurrent connects
   if (!pgClient._connected) {
-    await pgClient.connect();
-    pgClient._connected = true;
+    if (!pgConnectingPromise) {
+      pgConnectingPromise = (async () => {
+        if (!pgClient._connected) {
+          await pgClient.connect();
+          pgClient._connected = true;
+        }
+        pgConnectingPromise = null;
+      })();
+    }
+    await pgConnectingPromise;
   }
+
+  // Redis: guard concurrent connects
   if (!redis.status || redis.status !== 'ready') {
-    await redis.connect();
+    if (!redisConnectingPromise) {
+      redisConnectingPromise = (async () => {
+        if (!redis.status || redis.status !== 'ready') {
+          try { await redis.connect(); } catch (_) {}
+        }
+        redisConnectingPromise = null;
+      })();
+    }
+    await redisConnectingPromise;
   }
 }
 

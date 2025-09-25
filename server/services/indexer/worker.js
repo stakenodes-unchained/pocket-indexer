@@ -239,10 +239,10 @@ async function monitorNewBlocks() {
 
 async function run() {
   log(`Worker started for ${rpcName}`);
-  // Start monitor immediately (independent of historical sync)
-  monitorNewBlocks(rpcName);
   // Run historical sync in parallel and keep checkpointing
   syncHistoricalBlocks(rpcName).catch(e => reportError(`Historical sync error: ${e.message}`));
+  // Start monitor immediately (independent of historical sync)
+  monitorNewBlocks(rpcName);
 }
 
 run().catch(error => {
