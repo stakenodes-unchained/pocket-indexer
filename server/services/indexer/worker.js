@@ -207,7 +207,9 @@ async function syncHistoricalBlocks() {
     await setHistoricalCheckpoint(rpcName, currentHeight);
     try {
       await upsertWorkerHeartbeat(rpcName, { threadId: workerData.id, type: 'history', currentHeight });
-    } catch (_) {}
+    } catch (_) {
+      console.error(`[Worker ${workerData.id}] Error upserting worker heartbeat:`, _.message);
+    }
     currentHeight++;
   }
   log('Historical block sync complete.');
@@ -223,7 +225,9 @@ async function monitorNewBlocks() {
       // Heartbeat once per interval with lightweight meta
       try {
         await upsertWorkerHeartbeat(rpcName, { threadId: workerData.id, type: 'monitor', lastProcessedHeight });
-      } catch (_) {}
+      } catch (_) {
+        console.error(`[Worker ${workerData.id}] Error upserting worker heartbeat:`, _.message);
+      }
 
       const latestBlock = await fetchLatestBlock(rpcUrl);
       const latestHeight = parseInt(latestBlock.block.header.height, 10);
