@@ -215,7 +215,10 @@ async function syncHistoricalBlocks() {
   log(`Historical sync: current=${currentHeight}, monitoring=${monitoringHeight}`);
   
   // Fill gaps between historical sync and monitoring
-  while (currentHeight < monitoringHeight) {
+  let consecutiveErrors = 0;
+  const maxConsecutiveErrors = 10;
+  
+  while (currentHeight < monitoringHeight && consecutiveErrors < maxConsecutiveErrors) {
     try {
       // Check if the next block already exists
       const nextHeight = currentHeight + 1;
@@ -225,13 +228,16 @@ async function syncHistoricalBlocks() {
         log(`Block ${nextHeight} already exists, skipping...`);
         currentHeight = nextHeight;
         await setHistoricalCheckpoint(rpcName, currentHeight);
+        consecutiveErrors = 0; // Reset error counter on success
         continue;
       }
       
       // Process the missing block
+      log(`Processing historical block ${nextHeight}...`);
       await processBlock(await fetchBlockByHeight(nextHeight, rpcUrl));
       currentHeight = nextHeight;
       await setHistoricalCheckpoint(rpcName, currentHeight);
+      consecutiveErrors = 0; // Reset error counter on success
       
       // Update heartbeat with progress
       try {
@@ -252,11 +258,36 @@ async function syncHistoricalBlocks() {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     } catch (error) {
-      console.error(`[Worker ${workerData.id}] Error processing historical block ${currentHeight + 1}:`, error.message);
+      consecutiveErrors++;
+      console.error(`[Worker ${workerData.id}] Error processing historical block ${currentHeight + 1} (error ${consecutiveErrors}/${maxConsecutiveErrors}):`, error.message);
+      
+      // Update heartbeat with error status
+      try {
+        await upsertWorkerHeartbeat(`${rpcName}-historical`, { 
+          threadId: workerData.id, 
+          type: 'historical', 
+          currentHeight: currentHeight + 1,
+          targetHeight: monitoringHeight,
+          status: 'error',
+          error: error.message,
+          lastError: new Date().toISOString(),
+          consecutiveErrors
+        });
+      } catch (_) {}
+      
       // Skip this block and continue
       currentHeight++;
       await setHistoricalCheckpoint(rpcName, currentHeight);
+      
+      // Add delay after errors to prevent rapid retry loops
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
+  }
+  
+  if (consecutiveErrors >= maxConsecutiveErrors) {
+    log(`Too many consecutive errors (${consecutiveErrors}), stopping historical sync and entering continuous gap filling mode`);
+  } else {
+    log(`Historical sync completed successfully. Current height: ${currentHeight}, Monitoring height: ${monitoringHeight}`);
   }
   
   // After filling sequential gaps, check for any remaining gaps using getNextGapToFill
@@ -290,6 +321,20 @@ async function syncHistoricalBlocks() {
       nextGap = await getNextGapToFill(rpcName);
     } catch (error) {
       console.error(`[Worker ${workerData.id}] Error filling gap at height ${nextGap}:`, error.message);
+      
+      // Update heartbeat with error status
+      try {
+        await upsertWorkerHeartbeat(`${rpcName}-historical`, { 
+          threadId: workerData.id, 
+          type: 'historical', 
+          currentHeight: nextGap,
+          targetHeight: monitoringHeight,
+          status: 'error',
+          error: error.message,
+          lastError: new Date().toISOString()
+        });
+      } catch (_) {}
+      
       // Skip this gap and try the next one
       nextGap = await getNextGapToFill(rpcName);
     }
@@ -324,7 +369,7 @@ async function continuousGapFilling() {
           await processBlock(await fetchBlockByHeight(gapHeight, rpcUrl));
           log(`Filled gap at height ${gapHeight}`);
           
-          // Update heartbeat
+          // Update heartbeat with success
           try {
             await upsertWorkerHeartbeat(`${rpcName}-historical`, { 
               threadId: workerData.id, 
@@ -336,6 +381,19 @@ async function continuousGapFilling() {
           } catch (_) {}
         } catch (error) {
           console.error(`[Worker ${workerData.id}] Error filling gap at height ${gapHeight}:`, error.message);
+          
+          // Update heartbeat with error status
+          try {
+            await upsertWorkerHeartbeat(`${rpcName}-historical`, { 
+              threadId: workerData.id, 
+              type: 'historical', 
+              currentHeight: gapHeight,
+              targetHeight: monitoringHeight,
+              status: 'error',
+              error: error.message,
+              lastError: new Date().toISOString()
+            });
+          } catch (_) {}
         }
       } else {
         // No gaps found, update heartbeat to show we're monitoring
@@ -351,6 +409,19 @@ async function continuousGapFilling() {
       }
     } catch (error) {
       console.error(`[Worker ${workerData.id}] Error in continuous gap filling:`, error.message);
+      
+      // Update heartbeat with error status for the main function error
+      try {
+        await upsertWorkerHeartbeat(`${rpcName}-historical`, { 
+          threadId: workerData.id, 
+          type: 'historical', 
+          currentHeight: 0,
+          targetHeight: 0,
+          status: 'error',
+          error: error.message,
+          lastError: new Date().toISOString()
+        });
+      } catch (_) {}
     }
   }, gapCheckInterval);
 }
@@ -410,8 +481,37 @@ async function run() {
   log(`Worker started for ${rpcName} (process type: ${processType})`);
   
   if (processType === 'historical') {
-    // Only run historical sync
-    await syncHistoricalBlocks();
+    // Run historical sync with periodic restart
+    const restartInterval = parseInt(process.env.HISTORICAL_RESTART_INTERVAL_MS || '300000', 10); // Default 5 minutes
+    
+    const runHistoricalSync = async () => {
+      try {
+        await syncHistoricalBlocks();
+      } catch (error) {
+        console.error(`[Worker ${workerData.id}] Historical sync failed:`, error.message);
+        // Update heartbeat with error
+        try {
+          const { upsertWorkerHeartbeat } = require('./db');
+          await upsertWorkerHeartbeat(`${rpcName}-historical`, { 
+            threadId: workerData.id, 
+            type: 'historical', 
+            status: 'error',
+            error: error.message,
+            lastError: new Date().toISOString()
+          });
+        } catch (_) {}
+      }
+    };
+    
+    // Run initial sync
+    await runHistoricalSync();
+    
+    // Set up periodic restart
+    setInterval(async () => {
+      log(`Restarting historical sync for ${rpcName}...`);
+      await runHistoricalSync();
+    }, restartInterval);
+    
   } else if (processType === 'monitor') {
     // Only run monitoring
     monitorNewBlocks();
