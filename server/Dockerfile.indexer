@@ -17,7 +17,7 @@ RUN npm install --legacy-peer-deps
 COPY . .
 
 # Make the startup script executable
-RUN chmod +x start.sh
+RUN chmod +x start_indexer_server.sh
 
 # Set Node.js environment to production
 ENV NODE_ENV=production
@@ -35,4 +35,4 @@ USER node
 EXPOSE 3006
 
 # Command to run the startup script
-CMD ["./start.sh"]
+CMD ["./start_indexer_server.sh"]

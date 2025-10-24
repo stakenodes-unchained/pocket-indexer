@@ -7,6 +7,8 @@ const { getRpcEndpoints } = require('../../config/rpc');
 class TransactionWorkerPool {
   constructor() {
     this.workers = new Map();
+    this.historicalWorkers = new Map();
+    this.monitorWorkers = new Map();
     this.rpcEndpoints = getRpcEndpoints();
     this.concurrency = parseInt(process.env.WORKER_CONCURRENCY || '2', 2);
     this.batchSize = parseInt(process.env.HISTORICAL_BATCH_SIZE || '50', 10);
@@ -32,42 +34,79 @@ class TransactionWorkerPool {
 
     for (const rpc of this.rpcEndpoints) {
       try {
-        // Create fresh workers for each RPC endpoint
-        const newWorker = new Worker(path.join(__dirname, 'worker.js'), {
+        // Create historical sync worker
+        const historicalWorker = new Worker(path.join(__dirname, 'worker.js'), {
           workerData: {
             rpcName: rpc.name,
             rpcUrl: rpc.url,
             batchSize: this.batchSize,
-            id: rpc.name
+            id: `${rpc.name}-historical`,
+            processType: 'historical'
           }
         });
 
-        newWorker.on('message', (message) => {
+        historicalWorker.on('message', (message) => {
           if (message.type === 'log') {
-            console.log(`[Worker ${rpc.name}]`, message.data);
+            console.log(`[Historical Worker ${rpc.name}]`, message.data);
           } else if (message.type === 'error') {
-            console.error(`[Worker ${rpc.name}]`, message.data);
+            console.error(`[Historical Worker ${rpc.name}]`, message.data);
           } else if (message.type === 'status') {
-            console.log(`[Worker ${rpc.name}] Status:`, message.data);
+            console.log(`[Historical Worker ${rpc.name}] Status:`, message.data);
           }
         });
 
-        newWorker.on('error', (err) => {
-          console.error(`Worker for ${rpc.name} encountered an error:`, err);
-          this.restartWorker(rpc.name, rpc.url);
+        historicalWorker.on('error', (err) => {
+          console.error(`Historical worker for ${rpc.name} encountered an error:`, err);
+          this.restartHistoricalWorker(rpc.name, rpc.url);
         });
 
-        newWorker.on('exit', (code) => {
+        historicalWorker.on('exit', (code) => {
           if (code !== 0) {
-            console.error(`Worker for ${rpc.name} exited with code ${code}`);
-            this.restartWorker(rpc.name, rpc.url);
+            console.error(`Historical worker for ${rpc.name} exited with code ${code}`);
+            this.restartHistoricalWorker(rpc.name, rpc.url);
           }
         });
 
-        this.workers.set(rpc.name, newWorker);
-        console.log(`Started worker for RPC endpoint ${rpc.name} (${rpc.url})`);
+        this.historicalWorkers.set(rpc.name, historicalWorker);
+        console.log(`Started historical worker for RPC endpoint ${rpc.name} (${rpc.url})`);
+
+        // Create monitoring worker
+        const monitorWorker = new Worker(path.join(__dirname, 'worker.js'), {
+          workerData: {
+            rpcName: rpc.name,
+            rpcUrl: rpc.url,
+            batchSize: this.batchSize,
+            id: `${rpc.name}-monitor`,
+            processType: 'monitor'
+          }
+        });
+
+        monitorWorker.on('message', (message) => {
+          if (message.type === 'log') {
+            console.log(`[Monitor Worker ${rpc.name}]`, message.data);
+          } else if (message.type === 'error') {
+            console.error(`[Monitor Worker ${rpc.name}]`, message.data);
+          } else if (message.type === 'status') {
+            console.log(`[Monitor Worker ${rpc.name}] Status:`, message.data);
+          }
+        });
+
+        monitorWorker.on('error', (err) => {
+          console.error(`Monitor worker for ${rpc.name} encountered an error:`, err);
+          this.restartMonitorWorker(rpc.name, rpc.url);
+        });
+
+        monitorWorker.on('exit', (code) => {
+          if (code !== 0) {
+            console.error(`Monitor worker for ${rpc.name} exited with code ${code}`);
+            this.restartMonitorWorker(rpc.name, rpc.url);
+          }
+        });
+
+        this.monitorWorkers.set(rpc.name, monitorWorker);
+        console.log(`Started monitor worker for RPC endpoint ${rpc.name} (${rpc.url})`);
       } catch (error) {
-        console.error(`Failed to start worker for RPC endpoint ${rpc.name}:`, error);
+        console.error(`Failed to start workers for RPC endpoint ${rpc.name}:`, error);
       }
     }
 
@@ -76,14 +115,14 @@ class TransactionWorkerPool {
   }
 
   /**
-   * Restart a worker that has crashed or exited
+   * Restart a historical worker that has crashed or exited
    */
-  async restartWorker(rpcName, rpcUrl) {
-    console.log(`Restarting worker for RPC endpoint ${rpcName}...`);
+  async restartHistoricalWorker(rpcName, rpcUrl) {
+    console.log(`Restarting historical worker for RPC endpoint ${rpcName}...`);
     
     // Remove the old worker reference
-    if (this.workers.has(rpcName)) {
-      this.workers.delete(rpcName);
+    if (this.historicalWorkers.has(rpcName)) {
+      this.historicalWorkers.delete(rpcName);
     }
     
     // Wait before restarting to avoid rapid restart cycles
@@ -95,36 +134,91 @@ class TransactionWorkerPool {
           rpcName,
           rpcUrl,
           batchSize: this.batchSize,
-          id: rpcName
+          id: `${rpcName}-historical`,
+          processType: 'historical'
         }
       });
 
       newWorker.on('message', (message) => {
         if (message.type === 'log') {
-          console.log(`[Worker ${rpcName}]`, message.data);
+          console.log(`[Historical Worker ${rpcName}]`, message.data);
         } else if (message.type === 'error') {
-          console.error(`[Worker ${rpcName}]`, message.data);
+          console.error(`[Historical Worker ${rpcName}]`, message.data);
         }
       });
 
       newWorker.on('error', (err) => {
-        console.error(`Worker for ${rpcName} encountered an error:`, err);
-        this.restartWorker(rpcName, rpcUrl);
+        console.error(`Historical worker for ${rpcName} encountered an error:`, err);
+        this.restartHistoricalWorker(rpcName, rpcUrl);
       });
 
       newWorker.on('exit', (code) => {
         if (code !== 0) {
-          console.error(`Worker for ${rpcName} exited with code ${code}`);
-          this.restartWorker(rpcName, rpcUrl);
+          console.error(`Historical worker for ${rpcName} exited with code ${code}`);
+          this.restartHistoricalWorker(rpcName, rpcUrl);
         }
       });
 
-      this.workers.set(rpcName, newWorker);
-      console.log(`Restarted worker for RPC endpoint ${rpcName}`);
+      this.historicalWorkers.set(rpcName, newWorker);
+      console.log(`Restarted historical worker for RPC endpoint ${rpcName}`);
     } catch (error) {
-      console.error(`Failed to restart worker for RPC endpoint ${rpcName}:`, error);
+      console.error(`Failed to restart historical worker for RPC endpoint ${rpcName}:`, error);
       // Try again after a longer delay
-      setTimeout(() => this.restartWorker(rpcName, rpcUrl), 10000);
+      setTimeout(() => this.restartHistoricalWorker(rpcName, rpcUrl), 10000);
+    }
+  }
+
+  /**
+   * Restart a monitor worker that has crashed or exited
+   */
+  async restartMonitorWorker(rpcName, rpcUrl) {
+    console.log(`Restarting monitor worker for RPC endpoint ${rpcName}...`);
+    
+    // Remove the old worker reference
+    if (this.monitorWorkers.has(rpcName)) {
+      this.monitorWorkers.delete(rpcName);
+    }
+    
+    // Wait before restarting to avoid rapid restart cycles
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    try {
+      const newWorker = new Worker(path.join(__dirname, 'worker.js'), {
+        workerData: {
+          rpcName,
+          rpcUrl,
+          batchSize: this.batchSize,
+          id: `${rpcName}-monitor`,
+          processType: 'monitor'
+        }
+      });
+
+      newWorker.on('message', (message) => {
+        if (message.type === 'log') {
+          console.log(`[Monitor Worker ${rpcName}]`, message.data);
+        } else if (message.type === 'error') {
+          console.error(`[Monitor Worker ${rpcName}]`, message.data);
+        }
+      });
+
+      newWorker.on('error', (err) => {
+        console.error(`Monitor worker for ${rpcName} encountered an error:`, err);
+        this.restartMonitorWorker(rpcName, rpcUrl);
+      });
+
+      newWorker.on('exit', (code) => {
+        if (code !== 0) {
+          console.error(`Monitor worker for ${rpcName} exited with code ${code}`);
+          this.restartMonitorWorker(rpcName, rpcUrl);
+        }
+      });
+
+      this.monitorWorkers.set(rpcName, newWorker);
+      console.log(`Restarted monitor worker for RPC endpoint ${rpcName}`);
+    } catch (error) {
+      console.error(`Failed to restart monitor worker for RPC endpoint ${rpcName}:`, error);
+      // Try again after a longer delay
+      setTimeout(() => this.restartMonitorWorker(rpcName, rpcUrl), 10000);
     }
   }
 
@@ -184,13 +278,37 @@ class TransactionWorkerPool {
    */
   getWorkersStatus() {
     const list = [];
-    for (const [name, worker] of this.workers.entries()) {
+    
+    // Add historical workers
+    for (const [name, worker] of this.historicalWorkers.entries()) {
       list.push({
-        name,
+        name: `${name}-historical`,
+        type: 'historical',
         threadId: worker.threadId,
         isRunning: worker.threadId != null,
       });
     }
+    
+    // Add monitor workers
+    for (const [name, worker] of this.monitorWorkers.entries()) {
+      list.push({
+        name: `${name}-monitor`,
+        type: 'monitor',
+        threadId: worker.threadId,
+        isRunning: worker.threadId != null,
+      });
+    }
+    
+    // Add legacy workers for backward compatibility
+    for (const [name, worker] of this.workers.entries()) {
+      list.push({
+        name,
+        type: 'legacy',
+        threadId: worker.threadId,
+        isRunning: worker.threadId != null,
+      });
+    }
+    
     return list;
   }
 
@@ -221,12 +339,28 @@ class TransactionWorkerPool {
     }
     
     const promises = [];
+    
+    // Shutdown historical workers
+    for (const [name, worker] of this.historicalWorkers.entries()) {
+      console.log(`Terminating historical worker for ${name}...`);
+      promises.push(worker.terminate());
+    }
+    
+    // Shutdown monitor workers
+    for (const [name, worker] of this.monitorWorkers.entries()) {
+      console.log(`Terminating monitor worker for ${name}...`);
+      promises.push(worker.terminate());
+    }
+    
+    // Shutdown legacy workers
     for (const [name, worker] of this.workers.entries()) {
-      console.log(`Terminating worker for ${name}...`);
+      console.log(`Terminating legacy worker for ${name}...`);
       promises.push(worker.terminate());
     }
     
     await Promise.all(promises);
+    this.historicalWorkers.clear();
+    this.monitorWorkers.clear();
     this.workers.clear();
     console.log('All transaction workers have been terminated');
   }

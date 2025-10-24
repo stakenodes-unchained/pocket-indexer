@@ -1,0 +1,38 @@
+# Use the official Node.js image as base
+FROM node:18
+
+# Install PostgreSQL client tools
+RUN apt-get update && apt-get install -y postgresql-client && rm -rf /var/lib/apt/lists/*
+
+# Set the working directory inside the container
+WORKDIR /usr/src/app
+
+# Copy package.json and package-lock.json to the working directory
+COPY package*.json ./
+
+# Install dependencies with legacy-peer-deps flag to bypass dependency conflicts
+RUN npm install --legacy-peer-deps
+
+# Copy the rest of the application code to the working directory
+COPY . .
+
+# Make the startup script executable
+RUN chmod +x start_api_server.sh
+
+# Set Node.js environment to production
+ENV NODE_ENV=production
+
+# Increase Node.js memory limit for larger datasets
+ENV NODE_OPTIONS="--max-old-space-size=8192"
+
+# Change ownership of the working directory to the 'node' user
+RUN chown -R node:node .
+
+# Switch to the 'node' user for security
+USER node
+
+# Expose the port your app runs on
+EXPOSE 3006
+
+# Command to run the startup script
+CMD ["./start_api_server.sh"]

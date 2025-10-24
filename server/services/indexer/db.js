@@ -507,6 +507,63 @@ async function getSnapshotProcessedHeight(chain) {
 }
 
 /**
+ * Find gaps in block sequence for a chain
+ */
+async function findGaps(chain, startHeight, endHeight, limit = 100) {
+  await connectClients();
+  const res = await pgClient.query(
+    `WITH RECURSIVE height_sequence AS (
+       SELECT $1 as height
+       UNION ALL
+       SELECT height + 1 FROM height_sequence WHERE height < $2
+     ),
+     existing_heights AS (
+       SELECT height FROM blocks WHERE chain = $3 AND height BETWEEN $1 AND $2
+     )
+     SELECT hs.height as missing_height
+     FROM height_sequence hs
+     LEFT JOIN existing_heights eh ON hs.height = eh.height
+     WHERE eh.height IS NULL
+     ORDER BY hs.height
+     LIMIT $4`,
+    [startHeight, endHeight, chain, limit]
+  );
+  return res.rows.map(r => parseInt(r.missing_height, 10));
+}
+
+/**
+ * Get the next gap to fill for historical sync
+ */
+async function getNextGapToFill(chain) {
+  await connectClients();
+  
+  // Get historical checkpoint
+  const histRes = await pgClient.query('SELECT last_height FROM historical_sync WHERE chain = $1', [chain]);
+  const historical_checkpoint = histRes.rows[0]?.last_height ? parseInt(histRes.rows[0].last_height, 10) : 0;
+  
+  // Get monitoring height (highest processed block)
+  const monitorRes = await pgClient.query('SELECT MAX(height) as max_height FROM blocks WHERE chain = $1', [chain]);
+  const monitoring_height = monitorRes.rows[0]?.max_height ? parseInt(monitorRes.rows[0].max_height, 10) : 0;
+  
+  if (historical_checkpoint >= monitoring_height) {
+    return null; // No gaps to fill
+  }
+  
+  // Find the first gap
+  const gaps = await findGaps(chain, historical_checkpoint + 1, monitoring_height, 1);
+  return gaps.length > 0 ? gaps[0] : null;
+}
+
+/**
+ * Check if a specific height exists for a chain
+ */
+async function blockExists(chain, height) {
+  await connectClients();
+  const res = await pgClient.query('SELECT 1 FROM blocks WHERE chain = $1 AND height = $2 LIMIT 1', [chain, height]);
+  return res.rows.length > 0;
+}
+
+/**
  * Get a block by height and chain (cache first)
  */
 async function getBlock(height, chain) {
@@ -546,6 +603,7 @@ async function upsertSupplier(supplier) {
   
   // Handle incremental staking/unstaking
   if (supplier.stake_change) {
+    const stakeChange = parseFloat(supplier.stake_change) || 0;
     await pgClient.query(
       `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -563,12 +621,12 @@ async function upsertSupplier(supplier) {
         supplier.address,
         supplier.chain,
         supplier.public_key,
-        supplier.staked_amount,
+        parseFloat(supplier.staked_amount) || 0,
         supplier.status,
         supplier.service_url,
         supplier.last_seen,
         supplier.geo,
-        supplier.stake_change, // This is the incremental change
+        stakeChange, // This is the incremental change
       ]
     );
   } else {
@@ -587,7 +645,7 @@ async function upsertSupplier(supplier) {
         supplier.address,
         supplier.chain,
         supplier.public_key,
-        supplier.staked_amount,
+        parseFloat(supplier.staked_amount) || 0,
         supplier.status,
         supplier.service_url,
         supplier.last_seen,
@@ -605,6 +663,7 @@ async function upsertApplication(app) {
   
   // Handle incremental staking/unstaking
   if (app.stake_change) {
+    const stakeChange = parseFloat(app.stake_change) || 0;
     await pgClient.query(
       `INSERT INTO applications (address, chain, public_key, staked_amount, status, chains, last_seen)
        VALUES ($1,$2,$3,$4,$5,$6,$7)
@@ -621,11 +680,11 @@ async function upsertApplication(app) {
         app.address,
         app.chain,
         app.public_key,
-        app.staked_amount,
+        parseFloat(app.staked_amount) || 0,
         app.status,
         app.chains,
         app.last_seen,
-        app.stake_change, // This is the incremental change
+        stakeChange, // This is the incremental change
       ]
     );
   } else {
@@ -643,7 +702,7 @@ async function upsertApplication(app) {
         app.address,
         app.chain,
         app.public_key,
-        app.staked_amount,
+        parseFloat(app.staked_amount) || 0,
         app.status,
         app.chains,
         app.last_seen,
@@ -725,6 +784,7 @@ async function upsertNode(node) {
   
   // Handle incremental staking/unstaking
   if (node.stake_change) {
+    const stakeChange = parseFloat(node.stake_change) || 0;
     await pgClient.query(
       `INSERT INTO nodes (address, chain, public_key, staked_amount, status, geo, last_seen, service_url)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -742,12 +802,12 @@ async function upsertNode(node) {
         node.address,
         node.chain,
         node.public_key,
-        node.staked_amount,
+        parseFloat(node.staked_amount) || 0,
         node.status,
         node.geo,
         node.last_seen,
         node.service_url,
-        node.stake_change, // This is the incremental change
+        stakeChange, // This is the incremental change
       ]
     );
   } else {
@@ -766,7 +826,7 @@ async function upsertNode(node) {
         node.address,
         node.chain,
         node.public_key,
-        node.staked_amount,
+        parseFloat(node.staked_amount) || 0,
         node.status,
         node.geo,
         node.last_seen,
@@ -784,6 +844,7 @@ async function upsertGateway(gateway) {
   
   // Handle incremental staking/unstaking
   if (gateway.stake_change) {
+    const stakeChange = parseFloat(gateway.stake_change) || 0;
     await pgClient.query(
       `INSERT INTO gateways (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -801,12 +862,12 @@ async function upsertGateway(gateway) {
         gateway.address,
         gateway.chain,
         gateway.public_key,
-        gateway.staked_amount,
+        parseFloat(gateway.staked_amount) || 0,
         gateway.status,
         gateway.service_url,
         gateway.last_seen,
         gateway.geo,
-        gateway.stake_change, // This is the incremental change
+        stakeChange, // This is the incremental change
       ]
     );
   } else {
@@ -825,7 +886,7 @@ async function upsertGateway(gateway) {
         gateway.address,
         gateway.chain,
         gateway.public_key,
-        gateway.staked_amount,
+        parseFloat(gateway.staked_amount) || 0,
         gateway.status,
         gateway.service_url,
         gateway.last_seen,
@@ -855,5 +916,8 @@ module.exports = {
   getHistoricalCheckpoint,
   setHistoricalCheckpoint,
   upsertWorkerHeartbeat,
-  getSnapshotProcessedHeight
+  getSnapshotProcessedHeight,
+  findGaps,
+  getNextGapToFill,
+  blockExists
 }; 

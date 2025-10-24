@@ -9,10 +9,6 @@ done
 
 echo "Database is ready!"
 
-# Run migrations
-echo "Running database migrations..."
-node migrate.js
-
 # Start the application
 echo "Starting the application..."
-node index.js 
+node api-server.js 

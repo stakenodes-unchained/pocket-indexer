@@ -3,10 +3,8 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const path = require('path');
-const indexerPool = require('./services/indexer/pool');
 const transactionService = require('./services/transactionService');
 const metricsCollector = require('./services/metricsCollector');
-const { Client } = require('pg');
 
 // Load environment variables
 dotenv.config();
@@ -17,6 +15,26 @@ const PORT = process.env.PORT || 3006;
 // Middleware
 app.use(bodyParser.json());
 app.use(cors());
+
+// Request logging middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  const timestamp = new Date().toISOString();
+  
+  // Log the incoming request
+  console.log(`[${timestamp}] ${req.method} ${req.url} - ${req.ip}`);
+  
+  // Override res.end to log the response
+  const originalEnd = res.end;
+  res.end = function(chunk, encoding) {
+    const duration = Date.now() - start;
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] ${req.method} ${req.url} - ${res.statusCode} - ${duration}ms`);
+    originalEnd.call(this, chunk, encoding);
+  };
+  
+  next();
+});
 
 // API endpoints
 app.get('/api/v1/transactions', async (req, res) => {
@@ -384,47 +402,10 @@ app.post('/api/v1/jobs/:id/cancel', async (req, res) => {
 // Health endpoints
 app.get('/api/v1/health/workers', async (req, res) => {
   try {
-    await transactionService.connectDB();
-    const client = transactionService.pgClient;
-    const heartbeats = await client.query(`SELECT * FROM worker_heartbeats ORDER BY last_seen DESC`);
-    const workers = indexerPool.getWorkersStatus();
-    const processInfo = {
-      pid: process.pid,
-      uptime_s: Math.round(process.uptime()),
-      memory: process.memoryUsage(),
-      cpu_usage: process.cpuUsage(),
-      node: process.version,
-      argv: process.argv,
-      env: {
-        WORKER_CONCURRENCY: process.env.WORKER_CONCURRENCY,
-        HISTORICAL_BATCH_SIZE: process.env.HISTORICAL_BATCH_SIZE,
-      }
-    };
-    const redis = await indexerPool.getRedisStats();
-    // Per-chain lag/backlog view (monitoring vs historical)
-    const histRes = await client.query(`SELECT chain, last_height FROM historical_sync`);
-    const historyMap = new Map(histRes.rows.map(r => [r.chain, parseInt(r.last_height || 0, 10)]));
-    // Use the same data source as metrics endpoint: latest snapshot per chain
-    const snapRes = await client.query(`SELECT DISTINCT ON (chain) chain, processed_height, latest_height FROM metrics_snapshots ORDER BY chain, ts DESC`);
-    const snapMap = new Map(snapRes.rows.map(r => [r.chain, { processed: parseInt(r.processed_height || 0, 10), latest: parseInt(r.latest_height || 0, 10) }]));
-    const chains = transactionService.getAvailableChains();
-    const chainHealth = chains.map(chain => {
-      const snap = snapMap.get(chain) || { processed: 0, latest: 0 };
-      const processed_height = snap.processed || 0;
-      const history_checkpoint = historyMap.get(chain) || 0;
-      const latest_height = snap.latest || 0;
-      const monitor_lag = Math.max(latest_height - processed_height, 0);
-      const history_backlog = Math.max(processed_height - history_checkpoint, 0);
-      return {
-        chain,
-        history_checkpoint,
-        processed_height,
-        latest_height,
-        monitor_lag,
-        history_backlog,
-      };
-    });
-    res.json({ data: { heartbeats: heartbeats.rows, workers, process: processInfo, redis, chains: chainHealth } });
+    // proxy to 3007 - indexer service
+    const response = await fetch(`http://pocket_indexer_service:3007/api/v1/health/workers`);
+    const data = await response.json();
+    res.json({ data: data.data });
   } catch (error) {
     console.error('Error fetching workers health:', error);
     res.status(500).json({ error: error.message });
@@ -433,23 +414,12 @@ app.get('/api/v1/health/workers', async (req, res) => {
 
 app.get('/api/v1/health/rpc', async (req, res) => {
   try {
-    const workers = indexerPool.getWorkersStatus();
-    // Include per-chain simple lag view from snapshots if present
-    await transactionService.connectDB();
-    const client = transactionService.pgClient;
-    const snapRes = await client.query(`SELECT DISTINCT ON (chain) chain, processed_height, latest_height FROM metrics_snapshots ORDER BY chain, ts DESC`);
-    const chains = snapRes.rows.map(r => {
-      const latest = parseInt(r.latest_height || 0, 10);
-      const processed = parseInt(r.processed_height || 0, 10);
-      return {
-        chain: r.chain,
-        latest_height: latest,
-        processed_height: processed,
-        monitor_lag: Math.max(latest - processed, 0),
-      };
-    });
-    res.json({ data: { status: 'ok', workers, chains } });
+    // proxy to 3007 - indexer service
+    const response = await fetch(`http://pocket_indexer_service:3007/api/v1/health/rpc`);
+    const data = await response.json();
+    res.json({ data: data.data });
   } catch (error) {
+    console.error('Error fetching rpc health:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -598,28 +568,20 @@ app.get('/api/v1/staking', async (req, res) => {
 // Start the server and initialize the worker pool
 const startServer = async () => {
   try {
-    // Initialize worker pool
-    await indexerPool.initialize();
     
     // Start the HTTP server
     app.listen(PORT, () => {
       console.log(`Server is running on http://localhost:${PORT}`);
     });
-    // Start metrics collector
-    metricsCollector.start();
     
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
       console.log('Shutting down server...');
-      await indexerPool.shutdown();
-      await metricsCollector.stop();
       process.exit(0);
     });
     
     process.on('SIGTERM', async () => {
       console.log('Shutting down server...');
-      await indexerPool.shutdown();
-      await metricsCollector.stop();
       process.exit(0);
     });
   } catch (error) {

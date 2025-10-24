@@ -59,7 +59,7 @@ services:
     container_name: pocket_indexer_api
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.api
     ports:
       - "3006:3006"
     env_file:
@@ -89,6 +89,39 @@ services:
       - default
       - pocket_indexer_network
 
+  indexer:
+    container_name: pocket_indexer_service
+    build:
+      context: .
+      dockerfile: Dockerfile.indexer
+    ports:
+      - "3007:3007"
+    env_file:
+      - .env
+    environment:
+      - RPC_ENDPOINTS=${RPC_ENDPOINTS}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - PORT=${PORT:-3007}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_DB=${REDIS_DB:-0}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
+      - HISTORICAL_BATCH_SIZE=${HISTORICAL_BATCH_SIZE:-50}
+      - HISTORY_CACHE_TTL=${HISTORY_CACHE_TTL:-3600}  # Cache TTL for historical data (1 hour default)
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+    networks:
+      - default
+      - pocket_indexer_network
 
 networks:
   default:
