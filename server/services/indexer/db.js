@@ -61,6 +61,21 @@ async function connectClients() {
  */
 async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
   await connectClients();
+  
+  const blockHeight = parseInt(blockData.block?.header?.height, 10);
+  const lockKey = `block_lock:${chain}:${blockHeight}`;
+  const lockValue = `${process.pid}:${Date.now()}`;
+  const lockTimeout = 300; // 5 minutes timeout
+  
+  // Try to acquire a distributed lock for this block
+  const lockAcquired = await redis.set(lockKey, lockValue, 'EX', lockTimeout, 'NX');
+  
+  if (!lockAcquired) {
+    console.log(`Block ${blockHeight} for chain ${chain} is already being processed by another worker, skipping...`);
+    return null; // Block is being processed by another worker
+  }
+  
+  try {
   const client = pgClient;
 
   // Extract block information from the new format
@@ -164,36 +179,59 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
             };
             txType = existingTx.type || 'unknown';
           } else {
-            // Fetch from RPC only if not found in cache/database
-            txResponse = await fetchTransactionByHash(txHash, rpcUrl);
+            // Check if transaction is currently being fetched by another worker
+            const txLockKey = `tx_fetch_lock:${txHash}`;
+            const txLockValue = `${process.pid}:${Date.now()}`;
+            const txLockAcquired = await redis.set(txLockKey, txLockValue, 'EX', 60, 'NX'); // 1 minute timeout
             
-            // Safely classify transaction with error handling
-            try {
-              txType = classifyTransaction(txResponse.tx);
-            } catch (classificationError) {
-              console.warn(`Failed to classify transaction ${txHash}:`, classificationError.message);
+            if (!txLockAcquired) {
+              console.log(`Transaction ${txHash} is already being fetched by another worker, skipping...`);
+              // Use default transaction data
               txType = 'unknown';
+            } else {
+              try {
+                // Fetch from RPC only if not found in cache/database
+                txResponse = await fetchTransactionByHash(txHash, rpcUrl);
+              } finally {
+                // Release the transaction fetch lock
+                try {
+                  await redis.del(txLockKey);
+                } catch (lockError) {
+                  console.warn(`Failed to release tx fetch lock for ${txHash}:`, lockError.message);
+                }
+              }
             }
+            
+            // Process transaction response if we have one
+            if (txResponse) {
+              // Safely classify transaction with error handling
+              try {
+                txType = classifyTransaction(txResponse.tx);
+              } catch (classificationError) {
+                console.warn(`Failed to classify transaction ${txHash}:`, classificationError.message);
+                txType = 'unknown';
+              }
 
-            const rpcDetails = extractTransactionDetails(txResponse, timestamp);
-            // Use RPC details to populate transaction info
-            tx = {
-              hash: rpcDetails.hash || txHash,
-              sender: rpcDetails.sender || '',
-              recipient: rpcDetails.recipient || '',
-              amount: rpcDetails.amount || '0',
-              fee: rpcDetails.fee_amount || rpcDetails.fee?.amount?.[0]?.amount || '0',
-              amount_denom: rpcDetails.amount_denom || null,
-              fee_denom: rpcDetails.fee_denom || null,
-              memo: rpcDetails.memo || '',
-              type: txType,
-              status: rpcDetails.status || 'pending',
-              timestamp: rpcDetails.timestamp || timestamp,
-              messages: rpcDetails.messages || [],
-              gas_wanted: rpcDetails.gas_wanted || '0',
-              gas_used: rpcDetails.gas_used || '0',
-              tx_data: JSON.stringify(txResponse)
-            };
+              const rpcDetails = extractTransactionDetails(txResponse, timestamp);
+              // Use RPC details to populate transaction info
+              tx = {
+                hash: rpcDetails.hash || txHash,
+                sender: rpcDetails.sender || '',
+                recipient: rpcDetails.recipient || '',
+                amount: rpcDetails.amount || '0',
+                fee: rpcDetails.fee_amount || rpcDetails.fee?.amount?.[0]?.amount || '0',
+                amount_denom: rpcDetails.amount_denom || null,
+                fee_denom: rpcDetails.fee_denom || null,
+                memo: rpcDetails.memo || '',
+                type: txType,
+                status: rpcDetails.status || 'pending',
+                timestamp: rpcDetails.timestamp || timestamp,
+                messages: rpcDetails.messages || [],
+                gas_wanted: rpcDetails.gas_wanted || '0',
+                gas_used: rpcDetails.gas_used || '0',
+                tx_data: JSON.stringify(txResponse)
+              };
+            }
           }
         }
       } catch (rpcError) {
@@ -322,7 +360,19 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
 
   // Update latest processed height
   await redis.set(`chain:${chain}:latest_height`, height.toString());
-  return blockForCache
+  return blockForCache;
+  
+  } catch (error) {
+    console.error(`Error processing block ${blockHeight} for chain ${chain}:`, error.message);
+    throw error;
+  } finally {
+    // Release the lock
+    try {
+      await redis.del(lockKey);
+    } catch (lockError) {
+      console.warn(`Failed to release lock for block ${blockHeight}:`, lockError.message);
+    }
+  }
 }
 
 /**
