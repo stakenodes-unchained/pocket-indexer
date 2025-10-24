@@ -140,35 +140,61 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
       try {
         // Get RPC URL for this chain
         if (rpcUrl) {
-          txResponse = await fetchTransactionByHash(txHash, rpcUrl);
+          // First check if transaction is already cached or in database
+          let existingTx = await getTransaction(txHash);
           
-          // Safely classify transaction with error handling
-          try {
-            txType = classifyTransaction(txResponse.tx);
-          } catch (classificationError) {
-            console.warn(`Failed to classify transaction ${txHash}:`, classificationError.message);
-            txType = 'unknown';
-          }
+          if (existingTx) {
+            // Use existing transaction data
+            tx = {
+              hash: existingTx.hash,
+              sender: existingTx.sender || '',
+              recipient: existingTx.recipient || '',
+              amount: existingTx.amount || '0',
+              fee: existingTx.fee || '0',
+              amount_denom: existingTx.amount_denom || null,
+              fee_denom: existingTx.fee_denom || null,
+              memo: existingTx.memo || '',
+              type: existingTx.type || 'unknown',
+              status: existingTx.status || 'pending',
+              timestamp: existingTx.timestamp || timestamp,
+              messages: [],
+              gas_wanted: '0',
+              gas_used: '0',
+              tx_data: existingTx.tx_data
+            };
+            txType = existingTx.type || 'unknown';
+          } else {
+            // Fetch from RPC only if not found in cache/database
+            txResponse = await fetchTransactionByHash(txHash, rpcUrl);
+            
+            // Safely classify transaction with error handling
+            try {
+              txType = classifyTransaction(txResponse.tx);
+            } catch (classificationError) {
+              console.warn(`Failed to classify transaction ${txHash}:`, classificationError.message);
+              txType = 'unknown';
+            }
 
-          const rpcDetails = extractTransactionDetails(txResponse, timestamp);
-          // Use RPC details to populate transaction info
-          tx = {
-            hash: rpcDetails.hash || txHash,
-            sender: rpcDetails.sender || '',
-            recipient: rpcDetails.recipient || '',
-            amount: rpcDetails.amount || '0',
-            fee: rpcDetails.fee_amount || rpcDetails.fee?.amount?.[0]?.amount || '0',
-            amount_denom: rpcDetails.amount_denom || null,
-            fee_denom: rpcDetails.fee_denom || null,
-            memo: rpcDetails.memo || '',
-            type: txType,
-            status: rpcDetails.status || 'pending',
-            timestamp: rpcDetails.timestamp || timestamp,
-            messages: rpcDetails.messages || [],
-            gas_wanted: rpcDetails.gas_wanted || '0',
-            gas_used: rpcDetails.gas_used || '0',
-            tx_data: JSON.stringify(txResponse)
-          };
+            const rpcDetails = extractTransactionDetails(txResponse, timestamp);
+            // Use RPC details to populate transaction info
+            tx = {
+              hash: rpcDetails.hash || txHash,
+              sender: rpcDetails.sender || '',
+              recipient: rpcDetails.recipient || '',
+              amount: rpcDetails.amount || '0',
+              fee: rpcDetails.fee_amount || rpcDetails.fee?.amount?.[0]?.amount || '0',
+              amount_denom: rpcDetails.amount_denom || null,
+              fee_denom: rpcDetails.fee_denom || null,
+              memo: rpcDetails.memo || '',
+              type: txType,
+              status: rpcDetails.status || 'pending',
+              timestamp: rpcDetails.timestamp || timestamp,
+              messages: rpcDetails.messages || [],
+              gas_wanted: rpcDetails.gas_wanted || '0',
+              gas_used: rpcDetails.gas_used || '0',
+              tx_data: JSON.stringify(txResponse)
+            };
+          }
         }
       } catch (rpcError) {
         console.warn(`Failed to fetch transaction details for ${txHash}:`, rpcError.message);
@@ -304,36 +330,54 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
  */
 async function saveTransaction(tx) {
   await connectClients();
-  await pgClient.query(
-    `INSERT INTO transactions (id, hash, block_id, sender, recipient, amount, fee, memo, type, status, timestamp, tx_data, chain, amount_denom, fee_denom)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-     ON CONFLICT (id) DO UPDATE SET
-       type=EXCLUDED.type,
-       status=EXCLUDED.status,
-       tx_data=EXCLUDED.tx_data,
-       chain=EXCLUDED.chain,
-       amount=EXCLUDED.amount,
-       fee=EXCLUDED.fee,
-       amount_denom=EXCLUDED.amount_denom,
-       fee_denom=EXCLUDED.fee_denom`,
-    [
-      tx.hash,
-      tx.hash,
-      tx.block_id || tx.block_height, // Use block_id if available, fallback to block_height
-      tx.sender,
-      tx.recipient,
-      tx.amount,
-      tx.fee,
-      tx.memo,
-      tx.type,
-      tx.status,
-      tx.timestamp,
-      tx.tx_data || null,
-      tx.chain || null,
-      tx.amount_denom || null,
-      tx.fee_denom || null
-    ]
-  );
+  
+  try {
+    await pgClient.query(
+      `INSERT INTO transactions (id, hash, block_id, sender, recipient, amount, fee, memo, type, status, timestamp, tx_data, chain, amount_denom, fee_denom)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       ON CONFLICT (id) DO UPDATE SET
+         type=EXCLUDED.type,
+         status=EXCLUDED.status,
+         tx_data=EXCLUDED.tx_data,
+         chain=EXCLUDED.chain,
+         amount=EXCLUDED.amount,
+         fee=EXCLUDED.fee,
+         amount_denom=EXCLUDED.amount_denom,
+         fee_denom=EXCLUDED.fee_denom`,
+      [
+        tx.hash,
+        tx.hash,
+        tx.block_id || tx.block_height, // Use block_id if available, fallback to block_height
+        tx.sender,
+        tx.recipient,
+        parseFloat(tx.amount) || 0,
+        parseFloat(tx.fee) || 0,
+        tx.memo,
+        tx.type,
+        tx.status,
+        tx.timestamp,
+        tx.tx_data || null,
+        tx.chain || null,
+        tx.amount_denom || null,
+        tx.fee_denom || null
+      ]
+    );
+  } catch (error) {
+    console.error('Error in saveTransaction:', {
+      error: error.message,
+      stack: error.stack,
+      transaction: {
+        hash: tx.hash,
+        amount: tx.amount,
+        fee: tx.fee,
+        amount_type: typeof tx.amount,
+        fee_type: typeof tx.fee,
+        block_id: tx.block_id,
+        block_height: tx.block_height
+      }
+    });
+    throw error;
+  }
 }
 
 /**
@@ -396,8 +440,8 @@ async function saveClaim(claim) {
       claim.application_address,
       claim.service_id,
       claim.session_id,
-      claim.session_start_block_height,
-      claim.session_end_block_height,
+      parseInt(claim.session_start_block_height) || 0,
+      parseInt(claim.session_end_block_height) || 0,
       claim.root_hash,
       claim.proof,
       claim.status,
@@ -425,8 +469,8 @@ async function bulkSaveClaims(claims) {
         c.application_address,
         c.service_id,
         c.session_id,
-        c.session_start_block_height,
-        c.session_end_block_height,
+        parseInt(c.session_start_block_height) || 0,
+        parseInt(c.session_end_block_height) || 0,
         c.root_hash,
         c.proof || null,
         c.status || 'claimed',
@@ -601,57 +645,73 @@ async function getTransaction(hash) {
 async function upsertSupplier(supplier) {
   await connectClients();
   
-  // Handle incremental staking/unstaking
-  if (supplier.stake_change) {
-    const stakeChange = parseFloat(supplier.stake_change) || 0;
-    await pgClient.query(
-      `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (address, chain) DO UPDATE SET
-         public_key=EXCLUDED.public_key,
-         staked_amount=GREATEST(0, suppliers.staked_amount + $9),
-         status=CASE 
-           WHEN suppliers.staked_amount + $9 <= 0 THEN 'unstaked'
-           ELSE COALESCE(EXCLUDED.status, suppliers.status)
-         END,
-         service_url=COALESCE(EXCLUDED.service_url, suppliers.service_url),
-         last_seen=EXCLUDED.last_seen,
-         geo=COALESCE(EXCLUDED.geo, suppliers.geo)`,
-      [
-        supplier.address,
-        supplier.chain,
-        supplier.public_key,
-        parseFloat(supplier.staked_amount) || 0,
-        supplier.status,
-        supplier.service_url,
-        supplier.last_seen,
-        supplier.geo,
-        stakeChange, // This is the incremental change
-      ]
-    );
-  } else {
-    // Original behavior for non-staking operations
-    await pgClient.query(
-      `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (address, chain) DO UPDATE SET
-         public_key=EXCLUDED.public_key,
-         staked_amount=EXCLUDED.staked_amount,
-         status=EXCLUDED.status,
-         service_url=EXCLUDED.service_url,
-         last_seen=EXCLUDED.last_seen,
-         geo=EXCLUDED.geo`,
-      [
-        supplier.address,
-        supplier.chain,
-        supplier.public_key,
-        parseFloat(supplier.staked_amount) || 0,
-        supplier.status,
-        supplier.service_url,
-        supplier.last_seen,
-        supplier.geo,
-      ]
-    );
+  try {
+    // Handle incremental staking/unstaking
+    if (supplier.stake_change) {
+      const stakeChange = parseFloat(supplier.stake_change) || 0;
+      await pgClient.query(
+        `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (address, chain) DO UPDATE SET
+           public_key=EXCLUDED.public_key,
+           staked_amount=GREATEST(0, suppliers.staked_amount + $9),
+           status=CASE 
+             WHEN suppliers.staked_amount + $9 <= 0 THEN 'unstaked'
+             ELSE COALESCE(EXCLUDED.status, suppliers.status)
+           END,
+           service_url=COALESCE(EXCLUDED.service_url, suppliers.service_url),
+           last_seen=EXCLUDED.last_seen,
+           geo=COALESCE(EXCLUDED.geo, suppliers.geo)`,
+        [
+          supplier.address,
+          supplier.chain,
+          supplier.public_key,
+          parseFloat(supplier.staked_amount) || 0,
+          supplier.status,
+          supplier.service_url,
+          supplier.last_seen,
+          supplier.geo,
+          stakeChange, // This is the incremental change
+        ]
+      );
+    } else {
+      // Original behavior for non-staking operations
+      await pgClient.query(
+        `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (address, chain) DO UPDATE SET
+           public_key=EXCLUDED.public_key,
+           staked_amount=EXCLUDED.staked_amount,
+           status=EXCLUDED.status,
+           service_url=EXCLUDED.service_url,
+           last_seen=EXCLUDED.last_seen,
+           geo=EXCLUDED.geo`,
+        [
+          supplier.address,
+          supplier.chain,
+          supplier.public_key,
+          parseFloat(supplier.staked_amount) || 0,
+          supplier.status,
+          supplier.service_url,
+          supplier.last_seen,
+          supplier.geo,
+        ]
+      );
+    }
+  } catch (error) {
+    console.error('Error in upsertSupplier:', {
+      error: error.message,
+      stack: error.stack,
+      supplier: {
+        address: supplier.address,
+        chain: supplier.chain,
+        staked_amount: supplier.staked_amount,
+        stake_change: supplier.stake_change,
+        staked_amount_type: typeof supplier.staked_amount,
+        stake_change_type: typeof supplier.stake_change
+      }
+    });
+    throw error;
   }
 }
 
@@ -661,53 +721,69 @@ async function upsertSupplier(supplier) {
 async function upsertApplication(app) {
   await connectClients();
   
-  // Handle incremental staking/unstaking
-  if (app.stake_change) {
-    const stakeChange = parseFloat(app.stake_change) || 0;
-    await pgClient.query(
-      `INSERT INTO applications (address, chain, public_key, staked_amount, status, chains, last_seen)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
-       ON CONFLICT (address, chain) DO UPDATE SET
-         public_key=EXCLUDED.public_key,
-         staked_amount=GREATEST(0, applications.staked_amount + $8),
-         status=CASE 
-           WHEN applications.staked_amount + $8 <= 0 THEN 'unstaked'
-           ELSE COALESCE(EXCLUDED.status, applications.status)
-         END,
-         chains=COALESCE(EXCLUDED.chains, applications.chains),
-         last_seen=EXCLUDED.last_seen`,
-      [
-        app.address,
-        app.chain,
-        app.public_key,
-        parseFloat(app.staked_amount) || 0,
-        app.status,
-        app.chains,
-        app.last_seen,
-        stakeChange, // This is the incremental change
-      ]
-    );
-  } else {
-    // Original behavior for non-staking operations
-    await pgClient.query(
-      `INSERT INTO applications (address, chain, public_key, staked_amount, status, chains, last_seen)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
-       ON CONFLICT (address, chain) DO UPDATE SET
-         public_key=EXCLUDED.public_key,
-         staked_amount=EXCLUDED.staked_amount,
-         status=EXCLUDED.status,
-         chains=EXCLUDED.chains,
-         last_seen=EXCLUDED.last_seen`,
-      [
-        app.address,
-        app.chain,
-        app.public_key,
-        parseFloat(app.staked_amount) || 0,
-        app.status,
-        app.chains,
-        app.last_seen,
-      ]
-    );
+  try {
+    // Handle incremental staking/unstaking
+    if (app.stake_change) {
+      const stakeChange = parseFloat(app.stake_change) || 0;
+      await pgClient.query(
+        `INSERT INTO applications (address, chain, public_key, staked_amount, status, chains, last_seen)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (address, chain) DO UPDATE SET
+           public_key=EXCLUDED.public_key,
+           staked_amount=GREATEST(0, applications.staked_amount + $8),
+           status=CASE 
+             WHEN applications.staked_amount + $8 <= 0 THEN 'unstaked'
+             ELSE COALESCE(EXCLUDED.status, applications.status)
+           END,
+           chains=COALESCE(EXCLUDED.chains, applications.chains),
+           last_seen=EXCLUDED.last_seen`,
+        [
+          app.address,
+          app.chain,
+          app.public_key,
+          parseFloat(app.staked_amount) || 0,
+          app.status,
+          app.chains,
+          app.last_seen,
+          stakeChange, // This is the incremental change
+        ]
+      );
+    } else {
+      // Original behavior for non-staking operations
+      await pgClient.query(
+        `INSERT INTO applications (address, chain, public_key, staked_amount, status, chains, last_seen)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (address, chain) DO UPDATE SET
+           public_key=EXCLUDED.public_key,
+           staked_amount=EXCLUDED.staked_amount,
+           status=EXCLUDED.status,
+           chains=EXCLUDED.chains,
+           last_seen=EXCLUDED.last_seen`,
+        [
+          app.address,
+          app.chain,
+          app.public_key,
+          parseFloat(app.staked_amount) || 0,
+          app.status,
+          app.chains,
+          app.last_seen,
+        ]
+      );
+    }
+  } catch (error) {
+    console.error('Error in upsertApplication:', {
+      error: error.message,
+      stack: error.stack,
+      application: {
+        address: app.address,
+        chain: app.chain,
+        staked_amount: app.staked_amount,
+        stake_change: app.stake_change,
+        staked_amount_type: typeof app.staked_amount,
+        stake_change_type: typeof app.stake_change
+      }
+    });
+    throw error;
   }
 }
 
@@ -716,18 +792,36 @@ async function upsertApplication(app) {
  */
 async function insertStakingEvent(event) {
   await connectClients();
-  await pgClient.query(
-    `INSERT INTO staking (address, chain, type, amount, event, timestamp)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
-    [
-      event.address,
-      event.chain || null,
-      event.type,
-      event.amount,
-      event.event,
-      event.timestamp,
-    ]
-  );
+  
+  try {
+    await pgClient.query(
+      `INSERT INTO staking (address, chain, type, amount, event, timestamp)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [
+        event.address,
+        event.chain || null,
+        event.type,
+        parseFloat(event.amount) || 0,
+        event.event,
+        event.timestamp,
+      ]
+    );
+  } catch (error) {
+    console.error('Error in insertStakingEvent:', {
+      error: error.message,
+      stack: error.stack,
+      event: {
+        address: event.address,
+        chain: event.chain,
+        type: event.type,
+        amount: event.amount,
+        amount_type: typeof event.amount,
+        event: event.event,
+        timestamp: event.timestamp
+      }
+    });
+    throw error;
+  }
 }
 
 /**
@@ -782,57 +876,73 @@ async function upsertNetworkService(service) {
 async function upsertNode(node) {
   await connectClients();
   
-  // Handle incremental staking/unstaking
-  if (node.stake_change) {
-    const stakeChange = parseFloat(node.stake_change) || 0;
-    await pgClient.query(
-      `INSERT INTO nodes (address, chain, public_key, staked_amount, status, geo, last_seen, service_url)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (address, chain) DO UPDATE SET
-         public_key=EXCLUDED.public_key,
-         staked_amount=GREATEST(0, nodes.staked_amount + $9),
-         status=CASE 
-           WHEN nodes.staked_amount + $9 <= 0 THEN 'unstaked'
-           ELSE COALESCE(EXCLUDED.status, nodes.status)
-         END,
-         geo=COALESCE(EXCLUDED.geo, nodes.geo),
-         last_seen=EXCLUDED.last_seen,
-         service_url=COALESCE(EXCLUDED.service_url, nodes.service_url)`,
-      [
-        node.address,
-        node.chain,
-        node.public_key,
-        parseFloat(node.staked_amount) || 0,
-        node.status,
-        node.geo,
-        node.last_seen,
-        node.service_url,
-        stakeChange, // This is the incremental change
-      ]
-    );
-  } else {
-    // Original behavior for non-staking operations
-    await pgClient.query(
-      `INSERT INTO nodes (address, chain, public_key, staked_amount, status, geo, last_seen, service_url)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (address, chain) DO UPDATE SET
-         public_key=EXCLUDED.public_key,
-         staked_amount=EXCLUDED.staked_amount,
-         status=EXCLUDED.status,
-         geo=EXCLUDED.geo,
-         last_seen=EXCLUDED.last_seen,
-         service_url=EXCLUDED.service_url`,
-      [
-        node.address,
-        node.chain,
-        node.public_key,
-        parseFloat(node.staked_amount) || 0,
-        node.status,
-        node.geo,
-        node.last_seen,
-        node.service_url,
-      ]
-    );
+  try {
+    // Handle incremental staking/unstaking
+    if (node.stake_change) {
+      const stakeChange = parseFloat(node.stake_change) || 0;
+      await pgClient.query(
+        `INSERT INTO nodes (address, chain, public_key, staked_amount, status, geo, last_seen, service_url)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (address, chain) DO UPDATE SET
+           public_key=EXCLUDED.public_key,
+           staked_amount=GREATEST(0, nodes.staked_amount + $9),
+           status=CASE 
+             WHEN nodes.staked_amount + $9 <= 0 THEN 'unstaked'
+             ELSE COALESCE(EXCLUDED.status, nodes.status)
+           END,
+           geo=COALESCE(EXCLUDED.geo, nodes.geo),
+           last_seen=EXCLUDED.last_seen,
+           service_url=COALESCE(EXCLUDED.service_url, nodes.service_url)`,
+        [
+          node.address,
+          node.chain,
+          node.public_key,
+          parseFloat(node.staked_amount) || 0,
+          node.status,
+          node.geo,
+          node.last_seen,
+          node.service_url,
+          stakeChange, // This is the incremental change
+        ]
+      );
+    } else {
+      // Original behavior for non-staking operations
+      await pgClient.query(
+        `INSERT INTO nodes (address, chain, public_key, staked_amount, status, geo, last_seen, service_url)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (address, chain) DO UPDATE SET
+           public_key=EXCLUDED.public_key,
+           staked_amount=EXCLUDED.staked_amount,
+           status=EXCLUDED.status,
+           geo=EXCLUDED.geo,
+           last_seen=EXCLUDED.last_seen,
+           service_url=EXCLUDED.service_url`,
+        [
+          node.address,
+          node.chain,
+          node.public_key,
+          parseFloat(node.staked_amount) || 0,
+          node.status,
+          node.geo,
+          node.last_seen,
+          node.service_url,
+        ]
+      );
+    }
+  } catch (error) {
+    console.error('Error in upsertNode:', {
+      error: error.message,
+      stack: error.stack,
+      node: {
+        address: node.address,
+        chain: node.chain,
+        staked_amount: node.staked_amount,
+        stake_change: node.stake_change,
+        staked_amount_type: typeof node.staked_amount,
+        stake_change_type: typeof node.stake_change
+      }
+    });
+    throw error;
   }
 }
 
@@ -842,57 +952,73 @@ async function upsertNode(node) {
 async function upsertGateway(gateway) {
   await connectClients();
   
-  // Handle incremental staking/unstaking
-  if (gateway.stake_change) {
-    const stakeChange = parseFloat(gateway.stake_change) || 0;
-    await pgClient.query(
-      `INSERT INTO gateways (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (address, chain) DO UPDATE SET
-         public_key=EXCLUDED.public_key,
-         staked_amount=GREATEST(0, gateways.staked_amount + $9),
-         status=CASE 
-           WHEN gateways.staked_amount + $9 <= 0 THEN 'unstaked'
-           ELSE COALESCE(EXCLUDED.status, gateways.status)
-         END,
-         service_url=COALESCE(EXCLUDED.service_url, gateways.service_url),
-         last_seen=EXCLUDED.last_seen,
-         geo=COALESCE(EXCLUDED.geo, gateways.geo)`,
-      [
-        gateway.address,
-        gateway.chain,
-        gateway.public_key,
-        parseFloat(gateway.staked_amount) || 0,
-        gateway.status,
-        gateway.service_url,
-        gateway.last_seen,
-        gateway.geo,
-        stakeChange, // This is the incremental change
-      ]
-    );
-  } else {
-    // Original behavior for non-staking operations
-    await pgClient.query(
-      `INSERT INTO gateways (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (address, chain) DO UPDATE SET
-         public_key=EXCLUDED.public_key,
-         staked_amount=EXCLUDED.staked_amount,
-         status=EXCLUDED.status,
-         service_url=EXCLUDED.service_url,
-         last_seen=EXCLUDED.last_seen,
-         geo=EXCLUDED.geo`,
-      [
-        gateway.address,
-        gateway.chain,
-        gateway.public_key,
-        parseFloat(gateway.staked_amount) || 0,
-        gateway.status,
-        gateway.service_url,
-        gateway.last_seen,
-        gateway.geo,
-      ]
-    );
+  try {
+    // Handle incremental staking/unstaking
+    if (gateway.stake_change) {
+      const stakeChange = parseFloat(gateway.stake_change) || 0;
+      await pgClient.query(
+        `INSERT INTO gateways (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (address, chain) DO UPDATE SET
+           public_key=EXCLUDED.public_key,
+           staked_amount=GREATEST(0, gateways.staked_amount + $9),
+           status=CASE 
+             WHEN gateways.staked_amount + $9 <= 0 THEN 'unstaked'
+             ELSE COALESCE(EXCLUDED.status, gateways.status)
+           END,
+           service_url=COALESCE(EXCLUDED.service_url, gateways.service_url),
+           last_seen=EXCLUDED.last_seen,
+           geo=COALESCE(EXCLUDED.geo, gateways.geo)`,
+        [
+          gateway.address,
+          gateway.chain,
+          gateway.public_key,
+          parseFloat(gateway.staked_amount) || 0,
+          gateway.status,
+          gateway.service_url,
+          gateway.last_seen,
+          gateway.geo,
+          stakeChange, // This is the incremental change
+        ]
+      );
+    } else {
+      // Original behavior for non-staking operations
+      await pgClient.query(
+        `INSERT INTO gateways (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (address, chain) DO UPDATE SET
+           public_key=EXCLUDED.public_key,
+           staked_amount=EXCLUDED.staked_amount,
+           status=EXCLUDED.status,
+           service_url=EXCLUDED.service_url,
+           last_seen=EXCLUDED.last_seen,
+           geo=EXCLUDED.geo`,
+        [
+          gateway.address,
+          gateway.chain,
+          gateway.public_key,
+          parseFloat(gateway.staked_amount) || 0,
+          gateway.status,
+          gateway.service_url,
+          gateway.last_seen,
+          gateway.geo,
+        ]
+      );
+    }
+  } catch (error) {
+    console.error('Error in upsertGateway:', {
+      error: error.message,
+      stack: error.stack,
+      gateway: {
+        address: gateway.address,
+        chain: gateway.chain,
+        staked_amount: gateway.staked_amount,
+        stake_change: gateway.stake_change,
+        staked_amount_type: typeof gateway.staked_amount,
+        stake_change_type: typeof gateway.stake_change
+      }
+    });
+    throw error;
   }
 }
 
