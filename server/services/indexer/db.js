@@ -605,14 +605,24 @@ async function getSnapshotProcessedHeight(chain) {
  */
 async function findGaps(chain, startHeight, endHeight, limit = 100) {
   await connectClients();
+  
+  // Ensure we have valid integer parameters
+  const start = parseInt(startHeight, 10);
+  const end = parseInt(endHeight, 10);
+  
+  // If no valid range, return empty array
+  if (isNaN(start) || isNaN(end) || start > end) {
+    return [];
+  }
+  
   const res = await pgClient.query(
     `WITH RECURSIVE height_sequence AS (
-       SELECT $1 as height
+       SELECT $1::integer as height
        UNION ALL
-       SELECT height + 1 FROM height_sequence WHERE height < $2
+       SELECT height + 1 FROM height_sequence WHERE height < $2::integer
      ),
      existing_heights AS (
-       SELECT height FROM blocks WHERE chain = $3 AND height BETWEEN $1 AND $2
+       SELECT height FROM blocks WHERE chain = $3 AND height BETWEEN $1::integer AND $2::integer
      )
      SELECT hs.height as missing_height
      FROM height_sequence hs
@@ -620,7 +630,7 @@ async function findGaps(chain, startHeight, endHeight, limit = 100) {
      WHERE eh.height IS NULL
      ORDER BY hs.height
      LIMIT $4`,
-    [startHeight, endHeight, chain, limit]
+    [start, end, chain, limit]
   );
   return res.rows.map(r => parseInt(r.missing_height, 10));
 }
@@ -639,8 +649,14 @@ async function getNextGapToFill(chain) {
   const monitorRes = await pgClient.query('SELECT MAX(height) as max_height FROM blocks WHERE chain = $1', [chain]);
   const monitoring_height = monitorRes.rows[0]?.max_height ? parseInt(monitorRes.rows[0].max_height, 10) : 0;
   
+  // If no blocks exist yet, return null (no gaps to fill)
+  if (monitoring_height === 0) {
+    return null;
+  }
+  
+  // If historical checkpoint is at or beyond monitoring height, no gaps to fill
   if (historical_checkpoint >= monitoring_height) {
-    return null; // No gaps to fill
+    return null;
   }
   
   // Find the first gap
