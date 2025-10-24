@@ -568,24 +568,56 @@ app.get('/api/v1/staking', async (req, res) => {
 // Start the server and initialize the worker pool
 const startServer = async () => {
   try {
+    // Log startup banner
+    console.log('='.repeat(80));
+    console.log('🚀 POCKET NETWORK API SERVER STARTING');
+    console.log('='.repeat(80));
+    console.log(`📅 Start Time: ${new Date().toISOString()}`);
+    console.log(`🆔 Process ID: ${process.pid}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🔌 Port: ${PORT}`);
+    console.log(`📊 Node Version: ${process.version}`);
+    console.log(`💾 Memory Usage: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
+    console.log('='.repeat(80));
     
     // Start the HTTP server
     app.listen(PORT, () => {
-      console.log(`Server is running on http://localhost:${PORT}`);
+      console.log(`🌐 API server running on http://localhost:${PORT}`);
     });
+    
+    console.log('='.repeat(80));
+    console.log('🎉 API SERVER STARTED SUCCESSFULLY');
+    console.log('='.repeat(80));
     
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
-      console.log('Shutting down server...');
+      console.log('='.repeat(80));
+      console.log('🛑 API SERVER SHUTTING DOWN (SIGINT)');
+      console.log(`📅 Shutdown Time: ${new Date().toISOString()}`);
+      console.log(`⏱️  Uptime: ${Math.round(process.uptime())} seconds`);
+      console.log('='.repeat(80));
+      console.log('👋 API SERVER SHUTDOWN COMPLETE');
       process.exit(0);
     });
     
     process.on('SIGTERM', async () => {
-      console.log('Shutting down server...');
+      console.log('='.repeat(80));
+      console.log('🛑 API SERVER SHUTTING DOWN (SIGTERM)');
+      console.log(`📅 Shutdown Time: ${new Date().toISOString()}`);
+      console.log(`⏱️  Uptime: ${Math.round(process.uptime())} seconds`);
+      console.log('='.repeat(80));
+      console.log('👋 API SERVER SHUTDOWN COMPLETE');
       process.exit(0);
     });
   } catch (error) {
-    console.error('Failed to start server:', error);
+    console.log('='.repeat(80));
+    console.log('❌ API SERVER STARTUP FAILED');
+    console.log(`📅 Failure Time: ${new Date().toISOString()}`);
+    console.log(`🆔 Process ID: ${process.pid}`);
+    console.log(`💥 Error: ${error.message}`);
+    console.log(`📋 Stack Trace:`);
+    console.error(error.stack);
+    console.log('='.repeat(80));
     process.exit(1);
   }
 };
