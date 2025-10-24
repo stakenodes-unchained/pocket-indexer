@@ -202,10 +202,10 @@ async function syncHistoricalBlocks() {
   } = require('./db');
   
   // Get the highest processed height from monitoring (this is our target)
-  const monitoringHeight = await getLastProcessedHeight(rpcName);
+  const monitoringHeight = parseInt(await getLastProcessedHeight(rpcName), 10) || 0;
   
   // Get the current historical sync checkpoint
-  let currentHeight = await getHistoricalCheckpoint(rpcName);
+  let currentHeight = parseInt(await getHistoricalCheckpoint(rpcName), 10) || 0;
   
   // If no checkpoint exists, start from the beginning
   if (!currentHeight || currentHeight <= 0) {
@@ -314,27 +314,28 @@ async function continuousGapFilling() {
   
   setInterval(async () => {
     try {
-      const monitoringHeight = await getLastProcessedHeight(rpcName);
+      const monitoringHeight = parseInt(await getLastProcessedHeight(rpcName), 10) || 0;
       let nextGap = await getNextGapToFill(rpcName);
       
       if (nextGap) {
-        log(`Found gap at height ${nextGap}, filling...`);
+        const gapHeight = parseInt(nextGap, 10);
+        log(`Found gap at height ${gapHeight}, filling...`);
         try {
-          await processBlock(await fetchBlockByHeight(nextGap, rpcUrl));
-          log(`Filled gap at height ${nextGap}`);
+          await processBlock(await fetchBlockByHeight(gapHeight, rpcUrl));
+          log(`Filled gap at height ${gapHeight}`);
           
           // Update heartbeat
           try {
             await upsertWorkerHeartbeat(`${rpcName}-historical`, { 
               threadId: workerData.id, 
               type: 'historical', 
-              currentHeight: nextGap,
+              currentHeight: gapHeight,
               targetHeight: monitoringHeight,
               status: 'continuous_gap_filling'
             });
           } catch (_) {}
         } catch (error) {
-          console.error(`[Worker ${workerData.id}] Error filling gap at height ${nextGap}:`, error.message);
+          console.error(`[Worker ${workerData.id}] Error filling gap at height ${gapHeight}:`, error.message);
         }
       } else {
         // No gaps found, update heartbeat to show we're monitoring
