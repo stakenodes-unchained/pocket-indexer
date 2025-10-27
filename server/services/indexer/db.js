@@ -360,7 +360,9 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
 
   // Update latest processed height
   await redis.set(`chain:${chain}:latest_height`, height.toString());
-  return processedTxs;
+
+  blockForCache.transactions = [...processedTxs];
+  return blockForCache;
   
   } catch (error) {
     console.error(`Error processing block ${blockHeight} for chain ${chain}:`, error.message);
