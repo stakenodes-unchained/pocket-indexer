@@ -13,6 +13,7 @@ All endpoints are prefixed with `/api/v1`
 Retrieve proof submissions with optional filters.
 
 **Query Parameters:**
+- `chain` (string, optional): Filter by chain identifier (e.g., "mainnet", "testnet")
 - `supplier_address` (string, optional): Filter by supplier operator address
 - `application_address` (string, optional): Filter by application address
 - `service_id` (string, optional): Filter by service ID (e.g., "iotex", "avax", "blast")
@@ -30,6 +31,7 @@ Retrieve proof submissions with optional filters.
       "transaction_hash": "711EF830537F468B61C0C7BFDBFACAC4B2DF49A63A46F4D67AE9F5070C2CAFD3",
       "block_height": 412104,
       "timestamp": "2025-09-27T22:50:10Z",
+      "chain": "mainnet",
       "supplier_operator_address": "pokt183lm40qjafypys95g52szszxk8pqe7tnphpphc",
       "application_address": "pokt17w6jtw7q02398afx7urfgma3mwv5wtw9nm7a48",
       "service_id": "iotex",
@@ -58,6 +60,10 @@ Retrieve proof submissions with optional filters.
 
 **Curl Example:**
 ```bash
+# Get submissions for a specific chain
+curl "http://localhost:3006/api/v1/proof-submissions?chain=mainnet&service_id=iotex&page=1&limit=50"
+
+# Get submissions for all chains
 curl "http://localhost:3006/api/v1/proof-submissions?service_id=iotex&page=1&limit=50"
 ```
 
@@ -69,6 +75,7 @@ curl "http://localhost:3006/api/v1/proof-submissions?service_id=iotex&page=1&lim
 Retrieve hourly aggregated reward and performance metrics.
 
 **Query Parameters:**
+- `chain` (string, optional): Filter by chain identifier
 - `supplier_address` (string, optional): Filter by supplier operator address
 - `application_address` (string, optional): Filter by application address
 - `service_id` (string, optional): Filter by service ID
@@ -108,6 +115,10 @@ Retrieve hourly aggregated reward and performance metrics.
 
 **Curl Example:**
 ```bash
+# Get rewards for a specific chain
+curl "http://localhost:3006/api/v1/proof-submissions/rewards?chain=mainnet&service_id=fuse&start_date=2025-09-27T00:00:00Z"
+
+# Get rewards for all chains
 curl "http://localhost:3006/api/v1/proof-submissions/rewards?service_id=fuse&start_date=2025-09-27T00:00:00Z"
 ```
 
@@ -215,6 +226,7 @@ curl "http://localhost:3006/api/v1/applications/pokt17w6jtw7q02398oshfx7urfgma3m
 Get aggregated summary statistics for proof submissions.
 
 **Query Parameters:**
+- `chain` (string, optional): Filter by chain identifier
 - `start_date` (datetime, optional): Filter from this date
 - `end_date` (datetime, optional): Filter to this date
 - `supplier_address` (string, optional): Filter by supplier
@@ -243,6 +255,10 @@ Get aggregated summary statistics for proof submissions.
 
 **Curl Example:**
 ```bash
+# Get summary for a specific chain
+curl "http://localhost:3006/api/v1/proof-submissions/summary?chain=mainnet&service_id=iotex"
+
+# Get summary for all chains
 curl "http://localhost:3006/api/v1/proof-submissions/summary?service_id=iotex"
 ```
 
@@ -251,6 +267,7 @@ curl "http://localhost:3006/api/v1/proof-submissions/summary?service_id=iotex"
 ## Data Fields Explanation
 
 ### Core Fields
+- `chain`: The chain identifier (e.g., "mainnet", "testnet") - used for filtering data by specific chain
 - `supplier_operator_address`: The Pocket Network supplier that submitted the proof
 - `application_address`: The application that the relays were served for
 - `service_id`: The blockchain service ID (e.g., "iotex", "avax", "blast", "fuse")
