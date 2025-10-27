@@ -205,21 +205,9 @@ class ProofParserService {
     try {
       await this.connectDB();
       
-      // Get total count of unprocessed transactions for this chain
-      const countResult = await this.pgClient.query(
-        `SELECT COUNT(*) as count 
-         FROM transactions 
-         WHERE chain = $1 AND (tx_data->>'tx') IS NOT NULL`,
-        [this.chain]
-      );
-      
-      const totalCount = parseInt(countResult.rows[0].count, 10);
-      console.log(`[ProofParser] Found ${totalCount} transactions to process for chain: ${this.chain}`);
-      
-      if (totalCount === 0) {
-        console.log(`[ProofParser] No transactions to process for chain: ${this.chain}`);
-        return;
-      }
+      // Skip the expensive COUNT query - we'll process in batches until no more rows
+      let totalCount = null;
+      console.log(`[ProofParser] Starting batch processing for chain: ${this.chain}`);
       
       let offset = 0;
       let hasMore = true;
@@ -259,7 +247,11 @@ class ProofParserService {
         
         // Progress update every 10 batches
         if (batchCount % 10 === 0) {
-          console.log(`[ProofParser] Progress: ${offset} / ${totalCount} transactions processed`);
+          if (totalCount !== null) {
+            console.log(`[ProofParser] Progress: ${offset} / ${totalCount} transactions processed`);
+          } else {
+            console.log(`[ProofParser] Progress: ${offset} transactions processed`);
+          }
         }
       }
       
