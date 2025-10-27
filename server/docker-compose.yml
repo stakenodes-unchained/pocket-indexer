@@ -113,6 +113,12 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 3007 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     logging:
       driver: "json-file"
       options:
@@ -123,43 +129,39 @@ services:
       - default
       - pocket_indexer_network
 
-  proof-parser:
-    container_name: pocket_proof_parser
-    build:
-      context: .
-      dockerfile: Dockerfile.proof-parser
-    ports:
-      - "3008:3008"
-    env_file:
-      - .env
-    environment:
-      - DB_HOST=${DB_HOST:-postgres}
-      - DB_PORT=${DB_PORT:-5432}
-      - DB_USER=${DB_USER:-postgres}
-      - DB_PASS=${DB_PASS:-somestringpassword}
-      - DB_NAME=${DB_NAME:-pocket_indexer}
-      - RPC_ENDPOINTS=${RPC_ENDPOINTS}
-      - PROOF_PARSER_PORT=${PROOF_PARSER_PORT:-3008}
-      - PROOF_PARSER_POLL_INTERVAL=${PROOF_PARSER_POLL_INTERVAL:-10000}
-      - PROOF_PARSER_BATCH_SIZE=${PROOF_PARSER_BATCH_SIZE:-100}
-      - PROOF_PARSER_HEALTH_CHECK_INTERVAL=${PROOF_PARSER_HEALTH_CHECK_INTERVAL:-5000}
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      indexer:
-        condition: service_healthy
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-        compress: "true"
-    networks:
-      - default
-      - pocket_indexer_network
+  # proof-parser:
+  #   container_name: pocket_proof_parser
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.proof-parser
+  #   ports:
+  #     - "3008:3008"
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     - DB_HOST=${DB_HOST:-postgres}
+  #     - DB_PORT=${DB_PORT:-5432}
+  #     - DB_USER=${DB_USER:-postgres}
+  #     - DB_PASS=${DB_PASS:-somestringpassword}
+  #     - DB_NAME=${DB_NAME:-pocket_indexer}
+  #     - RPC_ENDPOINTS=${RPC_ENDPOINTS}
+  #     - PROOF_PARSER_PORT=${PROOF_PARSER_PORT:-3008}
+  #     - PROOF_PARSER_POLL_INTERVAL=${PROOF_PARSER_POLL_INTERVAL:-10000}
+  #     - PROOF_PARSER_BATCH_SIZE=${PROOF_PARSER_BATCH_SIZE:-100}
+  #     - PROOF_PARSER_HEALTH_CHECK_INTERVAL=${PROOF_PARSER_HEALTH_CHECK_INTERVAL:-5000}
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
+  #       compress: "true"
+  #   networks:
+  #     - default
+  #     - pocket_indexer_network
 
 networks:
   default:

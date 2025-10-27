@@ -14,7 +14,7 @@ const { bulkSaveProofSubmissions } = require('./proofParserDB');
  */
 class ProofParserService {
   constructor(options = {}) {
-    this.chain = options.chain || process.env.CHAIN || 'mainnet';
+    this.chain = options.chain || process.env.CHAIN || 'pocket-mainnet';
     this.pollInterval = options.pollInterval || 10000; // 10 seconds default
     this.batchSize = options.batchSize || 100; // Process 100 transactions at a time
     this.healthCheckInterval = options.healthCheckInterval || 5000; // 5 seconds
@@ -275,29 +275,22 @@ class ProofParserService {
       let hasMore = true;
       
       while (hasMore) {
-        // Build WHERE clause with progress-based filtering
-        let whereClause = `t.chain = $1 
-             AND t.type IN ('MsgSubmitProof (proof)', 'MsgCreateClaim (proof)', 'unknown')
-             AND NOT EXISTS (
-               SELECT 1 FROM proof_submissions ps 
-               WHERE ps.transaction_hash = t.hash AND ps.chain = t.chain
-             )`;
-        
         const params = [this.chain];
+        let whereClause = '';
         
         // If we have saved progress, use it to skip already processed transactions
         if (this.lastProcessedTimestamp) {
           whereClause = `t.chain = $1 
              AND t.type IN ('MsgSubmitProof (proof)', 'MsgCreateClaim (proof)', 'unknown')
-             AND (t.timestamp > $2 OR (t.timestamp = $2 AND t.id > $3))
-             AND NOT EXISTS (
-               SELECT 1 FROM proof_submissions ps 
-               WHERE ps.transaction_hash = t.hash AND ps.chain = t.chain
-             )`;
-          params.push(this.lastProcessedTimestamp, this.lastProcessedTxId || '', this.batchSize);
+             AND (t.timestamp > $2 OR (t.timestamp = $2 AND t.id::text > $3))`;
+          params.push(this.lastProcessedTimestamp, this.lastProcessedTxId || '');
         } else {
-          params.push(this.batchSize);
+          whereClause = `t.chain = $1 
+             AND t.type IN ('MsgSubmitProof (proof)', 'MsgCreateClaim (proof)', 'unknown')`;
         }
+        
+        // Add LIMIT parameter
+        params.push(this.batchSize);
         
         // Fetch a batch of unprocessed transactions
         const result = await this.pgClient.query(
