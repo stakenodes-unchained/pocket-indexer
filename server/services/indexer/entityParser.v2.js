@@ -463,7 +463,7 @@ function parseProofSubmissions(txEnvelope, block, chain) {
         } catch (eventError) {
           // Skip invalid events
           // continue;
-          console.error(eventError)
+          console.log(eventError)
         }
       }
     }
