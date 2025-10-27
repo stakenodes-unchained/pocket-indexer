@@ -46,7 +46,7 @@ async function connectClients() {
     if (!redisConnectingPromise) {
       redisConnectingPromise = (async () => {
         if (!redis.status || redis.status !== 'ready') {
-          try { await redis.connect(); } catch (_) {}
+          try { await redis.connect(); } catch (_) { }
         }
         redisConnectingPromise = null;
       })();
@@ -61,309 +61,327 @@ async function connectClients() {
  */
 async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
   await connectClients();
-  
+
   const blockHeight = parseInt(blockData.block?.header?.height, 10);
   const lockKey = `block_lock:${chain}:${blockHeight}`;
   const lockValue = `${process.pid}:${Date.now()}`;
   const lockTimeout = 300; // 5 minutes timeout
-  
+
   // Try to acquire a distributed lock for this block
   const lockAcquired = await redis.set(lockKey, lockValue, 'EX', lockTimeout, 'NX');
-  
+
   if (!lockAcquired) {
     console.log(`Block ${blockHeight} for chain ${chain} is already being processed by another worker, skipping...`);
     return null; // Block is being processed by another worker
   }
-  
+
   try {
-  const client = pgClient;
+    const client = pgClient;
 
-  // Extract block information from the new format
-  const blockId = blockData.block_id?.hash || blockData.block?.header?.hash;
-  const height = parseInt(blockData.block?.header?.height || blockData.sdk_block?.header?.height, 10);
-  const hash = blockData.block?.header?.hash || blockData.sdk_block?.header?.hash;
-  const timestamp = blockData.block?.header?.time || blockData.sdk_block?.header?.time;
-  const proposer = blockData.block?.header?.proposer_address || blockData.sdk_block?.header?.proposer_address;
+    // Extract block information from the new format
+    const blockId = blockData.block_id?.hash || blockData.block?.header?.hash;
+    const height = parseInt(blockData.block?.header?.height || blockData.sdk_block?.header?.height, 10);
+    const hash = blockData.block?.header?.hash || blockData.sdk_block?.header?.hash;
+    const timestamp = blockData.block?.header?.time || blockData.sdk_block?.header?.time;
+    const proposer = blockData.block?.header?.proposer_address || blockData.sdk_block?.header?.proposer_address;
 
-  // Create a unique block ID per chain to avoid primary key conflicts
-  const uniqueBlockId = `${chain}:${blockId}`;
+    // Create a unique block ID per chain to avoid primary key conflicts
+    const uniqueBlockId = `${chain}:${blockId}`;
 
-  // Extract transactions from the block data
-  const rawTxs = blockData.block?.data?.txs || blockData.sdk_block?.data?.txs || [];
+    // Extract transactions from the block data
+    const rawTxs = blockData.block?.data?.txs || blockData.sdk_block?.data?.txs || [];
 
-  // Save block in DB with conflict handling (update metadata on conflict)
-  try {
-    const result = await client.query(
-      `INSERT INTO blocks (id, height, hash, timestamp, proposer, chain)
+    // Save block in DB with conflict handling (update metadata on conflict)
+    try {
+      const result = await client.query(
+        `INSERT INTO blocks (id, height, hash, timestamp, proposer, chain)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (chain, height) DO UPDATE SET
          hash = EXCLUDED.hash,
          timestamp = EXCLUDED.timestamp,
          proposer = EXCLUDED.proposer
        RETURNING id`,
-      [uniqueBlockId, height, hash, timestamp, proposer, chain]
-    );
-    // Use the returned id (inserted or existing)
-    const persistedBlockId = result.rows[0]?.id || uniqueBlockId;
-    // Ensure we reference the persisted id for downstream inserts
-    // Note: uniqueBlockId is already used consistently for new inserts
-    // but if historical data had a different id scheme, RETURNING id covers it.
-    // Override uniqueBlockId for this scope
-    // eslint-disable-next-line no-param-reassign
-    chain && persistedBlockId; // no-op to satisfy linter if present
-  } catch (error) {
-    // Handle unique constraint violations
-    if (error.code === '23505') {
-      if (error.constraint === 'blocks_pkey') {
-        console.log(`Block ${uniqueBlockId} already exists (primary key conflict), skipping...`);
-        return null;
-      } else if (error.constraint === 'blocks_chain_height_key') {
-        console.log(`Block at height ${height} for chain ${chain} already exists (height conflict), skipping...`);
-        return null;
+        [uniqueBlockId, height, hash, timestamp, proposer, chain]
+      );
+      // Use the returned id (inserted or existing)
+      const persistedBlockId = result.rows[0]?.id || uniqueBlockId;
+      // Ensure we reference the persisted id for downstream inserts
+      // Note: uniqueBlockId is already used consistently for new inserts
+      // but if historical data had a different id scheme, RETURNING id covers it.
+      // Override uniqueBlockId for this scope
+      // eslint-disable-next-line no-param-reassign
+      chain && persistedBlockId; // no-op to satisfy linter if present
+    } catch (error) {
+      // Handle unique constraint violations
+      if (error.code === '23505') {
+        if (error.constraint === 'blocks_pkey') {
+          console.log(`Block ${uniqueBlockId} already exists (primary key conflict), skipping...`);
+          return null;
+        } else if (error.constraint === 'blocks_chain_height_key') {
+          console.log(`Block at height ${height} for chain ${chain} already exists (height conflict), skipping...`);
+          return null;
+        }
       }
+      throw error;
     }
-    throw error;
-  }
 
-  // Process and save transactions
-  const processedTxs = [];
-  for (const rawTx of rawTxs) {
-    try {
-      // Get transaction hash from raw transaction
-      const txHash = hashTx(rawTx);
-
-      // Default transaction object with basic info
-      let tx = {
-        hash: txHash,
-        sender: '',
-        recipient: '',
-        amount: '0',
-        fee: '0',
-        memo: '',
-        type: 'unknown',
-        status: 'pending',
-        timestamp: timestamp,
-        messages: [],
-        gas_wanted: '0',
-        gas_used: '0',
-        tx_data: null
-      };
-
-      let txResponse = null;
-      let txType = 'unknown';
-
+    // Process and save transactions
+    const processedTxs = [];
+    const rawResponseTxs = [];
+    for (const rawTx of rawTxs) {
       try {
-        // Get RPC URL for this chain
-        if (rpcUrl) {
-          // First check if transaction is already cached or in database
-          let existingTx = await getTransaction(txHash);
-          
-          if (existingTx) {
-            // Use existing transaction data
-            tx = {
-              hash: existingTx.hash,
-              sender: existingTx.sender || '',
-              recipient: existingTx.recipient || '',
-              amount: existingTx.amount || '0',
-              fee: existingTx.fee || '0',
-              amount_denom: existingTx.amount_denom || null,
-              fee_denom: existingTx.fee_denom || null,
-              memo: existingTx.memo || '',
-              type: existingTx.type || 'unknown',
-              status: existingTx.status || 'pending',
-              timestamp: existingTx.timestamp || timestamp,
-              messages: [],
-              gas_wanted: '0',
-              gas_used: '0',
-              tx_data: existingTx.tx_data
-            };
-            txType = existingTx.type || 'unknown';
-          } else {
-            // Check if transaction is currently being fetched by another worker
-            const txLockKey = `tx_fetch_lock:${txHash}`;
-            const txLockValue = `${process.pid}:${Date.now()}`;
-            const txLockAcquired = await redis.set(txLockKey, txLockValue, 'EX', 60, 'NX'); // 1 minute timeout
-            
-            if (!txLockAcquired) {
-              console.log(`Transaction ${txHash} is already being fetched by another worker, skipping...`);
-              // Use default transaction data
-              txType = 'unknown';
+        // Get transaction hash from raw transaction
+        const txHash = hashTx(rawTx);
+
+        // Default transaction object with basic info
+        let tx = {
+          hash: txHash,
+          sender: '',
+          recipient: '',
+          amount: '0',
+          fee: '0',
+          memo: '',
+          type: 'unknown',
+          status: 'pending',
+          timestamp: timestamp,
+          messages: [],
+          gas_wanted: '0',
+          gas_used: '0',
+          tx_data: null
+        };
+
+        let txResponse = null;
+        let txType = 'unknown';
+
+        try {
+          // Get RPC URL for this chain
+          if (rpcUrl) {
+            // First check if transaction is already cached or in database
+            let existingTx = await getTransaction(txHash);
+
+            if (existingTx) {
+              // Use existing transaction data
+              tx = {
+                hash: existingTx.hash,
+                sender: existingTx.sender || '',
+                recipient: existingTx.recipient || '',
+                amount: existingTx.amount || '0',
+                fee: existingTx.fee || '0',
+                amount_denom: existingTx.amount_denom || null,
+                fee_denom: existingTx.fee_denom || null,
+                memo: existingTx.memo || '',
+                type: existingTx.type || 'unknown',
+                status: existingTx.status || 'pending',
+                timestamp: existingTx.timestamp || timestamp,
+                messages: existingTx.messages || [],
+                gas_wanted: existingTx.gas_wanted || '0',
+                gas_used: existingTx.gas_used || '0',
+                tx_data: existingTx.tx_data || null
+              };
+              txType = existingTx.type || 'unknown';
             } else {
-              try {
-                // Fetch from RPC only if not found in cache/database
-                txResponse = await fetchTransactionByHash(txHash, rpcUrl);
-              } finally {
-                // Release the transaction fetch lock
+              // Check if transaction is currently being fetched by another worker
+              const txLockKey = `tx_fetch_lock:${txHash}`;
+              const txLockValue = `${process.pid}:${Date.now()}`;
+              const txLockAcquired = await redis.set(txLockKey, txLockValue, 'EX', 60, 'NX'); // 1 minute timeout
+
+              if (!txLockAcquired) {
+                console.log(`Transaction ${txHash} is already being fetched by another worker, skipping...`);
+                // Use default transaction data
+                txType = 'unknown';
+              } else {
                 try {
-                  await redis.del(txLockKey);
-                } catch (lockError) {
-                  console.warn(`Failed to release tx fetch lock for ${txHash}:`, lockError.message);
+                  // Fetch from RPC only if not found in cache/database
+                  txResponse = await fetchTransactionByHash(txHash, rpcUrl);
+                  rawResponseTxs.push(txResponse);
+                } finally {
+                  // Release the transaction fetch lock
+                  try {
+                    await redis.del(txLockKey);
+                  } catch (lockError) {
+                    console.warn(`Failed to release tx fetch lock for ${txHash}:`, lockError.message);
+                  }
                 }
               }
-            }
-            
-            // Process transaction response if we have one
-            if (txResponse) {
-              // Safely classify transaction with error handling
-              try {
-                txType = classifyTransaction(txResponse.tx);
-              } catch (classificationError) {
-                console.warn(`Failed to classify transaction ${txHash}:`, classificationError.message);
-                txType = 'unknown';
+
+              // Process transaction response if we have one
+              if (txResponse) {
+                // Safely classify transaction with error handling
+                try {
+                  txType = classifyTransaction(txResponse.tx);
+                } catch (classificationError) {
+                  console.warn(`Failed to classify transaction ${txHash}:`, classificationError.message);
+                  txType = 'unknown';
+                }
+
+                const rpcDetails = extractTransactionDetails(txResponse, timestamp);
+                // Use RPC details to populate transaction info
+                tx = {
+                  hash: rpcDetails.hash || txHash,
+                  sender: rpcDetails.sender || '',
+                  recipient: rpcDetails.recipient || '',
+                  amount: rpcDetails.amount || '0',
+                  fee: rpcDetails.fee_amount || rpcDetails.fee?.amount?.[0]?.amount || '0',
+                  amount_denom: rpcDetails.amount_denom || null,
+                  fee_denom: rpcDetails.fee_denom || null,
+                  memo: rpcDetails.memo || '',
+                  type: txType,
+                  status: rpcDetails.status || 'pending',
+                  timestamp: rpcDetails.timestamp || timestamp,
+                  messages: rpcDetails.messages || [],
+                  gas_wanted: rpcDetails.gas_wanted || '0',
+                  gas_used: rpcDetails.gas_used || '0',
+                  tx_data: JSON.stringify(txResponse)
+                };
               }
-
-              const rpcDetails = extractTransactionDetails(txResponse, timestamp);
-              // Use RPC details to populate transaction info
-              tx = {
-                hash: rpcDetails.hash || txHash,
-                sender: rpcDetails.sender || '',
-                recipient: rpcDetails.recipient || '',
-                amount: rpcDetails.amount || '0',
-                fee: rpcDetails.fee_amount || rpcDetails.fee?.amount?.[0]?.amount || '0',
-                amount_denom: rpcDetails.amount_denom || null,
-                fee_denom: rpcDetails.fee_denom || null,
-                memo: rpcDetails.memo || '',
-                type: txType,
-                status: rpcDetails.status || 'pending',
-                timestamp: rpcDetails.timestamp || timestamp,
-                messages: rpcDetails.messages || [],
-                gas_wanted: rpcDetails.gas_wanted || '0',
-                gas_used: rpcDetails.gas_used || '0',
-                tx_data: JSON.stringify(txResponse)
-              };
             }
           }
+        } catch (rpcError) {
+          console.warn(`Failed to fetch transaction details for ${txHash}:`, rpcError.message);
+          // Keep the default transaction object - it will still be saved
         }
-      } catch (rpcError) {
-        console.warn(`Failed to fetch transaction details for ${txHash}:`, rpcError.message);
-        // Keep the default transaction object - it will still be saved
-      }
 
-      // ALWAYS save the transaction, even if RPC failed or classification failed
-      try {
-        await saveTransaction({
-          ...tx,
-          type: txType,
-          block_id: uniqueBlockId,
-          timestamp: blockData.block?.header?.time || blockData.timestamp,
-          chain: chain
-        });
-
-        processedTxs.push({
-          ...tx,
-          type: txType,
-          block_id: uniqueBlockId,
-          timestamp: blockData.block?.header?.time || blockData.timestamp,
-          chain: chain
-        });
-
-        // Cache transaction in Redis (optional & lightweight)
+        // ALWAYS save the transaction, even if RPC failed or classification failed
         try {
-          if (REDIS_CACHE_TX_DETAIL) {
-            const key = `tx:${chain}:${txHash}`;
-            await redis.hset(key, {
-              hash: tx.hash,
-              height: height.toString(),
-              sender: tx.sender,
-              recipient: tx.recipient,
-              amount: tx.amount,
-              fee: typeof tx.fee === 'object' ? JSON.stringify(tx.fee) : tx.fee,
-              memo: tx.memo,
-              type: tx.type,
-              status: tx.status,
-              timestamp: tx.timestamp,
-              gas_wanted: tx.gas_wanted || '0',
-              gas_used: tx.gas_used || '0'
-            });
-            if (REDIS_TX_TTL_SEC > 0) {
-              await redis.expire(key, REDIS_TX_TTL_SEC);
-            }
-          }
+          await saveTransaction({
+            ...tx,
+            type: txType,
+            block_id: uniqueBlockId,
+            timestamp: blockData.block?.header?.time || blockData.timestamp,
+            chain: chain
+          });
 
-          // Optional sorted index for pagination
-          if (REDIS_INDEX_TXS) {
-            await redis.zadd(`chain:${chain}:txs`, height, txHash);
-          }
-        } catch (cacheError) {
-          console.warn(`Failed to cache transaction ${txHash}:`, cacheError.message);
-          // Continue processing - caching failure shouldn't stop the process
-        }
+          processedTxs.push({
+            ...tx,
+            type: txType,
+            block_id: uniqueBlockId,
+            timestamp: blockData.block?.header?.time || blockData.timestamp,
+            chain: chain
+          });
 
-        // Parse and save claims if this is a proof transaction and we have tx data
-        if (txType.includes('proof') && txResponse) {
+          // Cache transaction in Redis (optional & lightweight)
           try {
-            const claims = parseClaims(txResponse.tx, blockData);
-            for (const claim of claims) {
-              await saveClaim(claim);
+            if (REDIS_CACHE_TX_DETAIL) {
+              const key = `tx:${chain}:${txHash}`;
+              await redis.hset(key, {
+                hash: tx.hash,
+                height: height.toString(),
+                sender: tx.sender,
+                recipient: tx.recipient,
+                amount: tx.amount,
+                fee: typeof tx.fee === 'object' ? JSON.stringify(tx.fee) : tx.fee,
+                memo: tx.memo,
+                type: tx.type,
+                status: tx.status,
+                timestamp: tx.timestamp,
+                gas_wanted: tx.gas_wanted || '0',
+                gas_used: tx.gas_used || '0'
+              });
+              if (REDIS_TX_TTL_SEC > 0) {
+                await redis.expire(key, REDIS_TX_TTL_SEC);
+              }
             }
-          } catch (claimError) {
-            console.warn(`Failed to parse claims for transaction ${txHash}:`, claimError.message);
-            // Continue processing - claim parsing failure shouldn't stop the process
+
+            // Optional sorted index for pagination
+            if (REDIS_INDEX_TXS) {
+              await redis.zadd(`chain:${chain}:txs`, height, txHash);
+            }
+          } catch (cacheError) {
+            console.warn(`Failed to cache transaction ${txHash}:`, cacheError.message);
+            // Continue processing - caching failure shouldn't stop the process
           }
+
+          // // Parse and save claims if this is a proof transaction and we have tx data
+          // if (txType.includes('proof') && txResponse) {
+          //   try {
+
+          //     // Parse proof submissions for reward tracking
+          //     const proofSubmissions = parseProofSubmissions(tx, blockData, chain);
+          //     if (Array.isArray(proofSubmissions) && proofSubmissions.length) {
+          //       proofSubmissionsBuffer.push(...proofSubmissions);
+          //     }
+
+          //     const claims = parseClaims(txResponse, blockData);
+          //     for (const claim of claims) {
+          //       await saveClaim(claim);
+          //     }
+          //   } catch (claimError) {
+          //     console.warn(`Failed to parse claims for transaction ${txHash}:`, claimError.message);
+          //     // Continue processing - claim parsing failure shouldn't stop the process
+          //   }
+          // }
+        } catch (saveError) {
+          console.error(`Failed to save transaction ${txHash} to database:`, saveError.message);
+          // This is a critical error - log it but continue with other transactions
         }
-      } catch (saveError) {
-        console.error(`Failed to save transaction ${txHash} to database:`, saveError.message);
-        // This is a critical error - log it but continue with other transactions
+
+      } catch (error) {
+        console.error(`Error processing transaction in block ${height}:`, error);
+        // Continue with next transaction - don't let one bad transaction stop the whole block
       }
-
-    } catch (error) {
-      console.error(`Error processing transaction in block ${height}:`, error);
-      // Continue with next transaction - don't let one bad transaction stop the whole block
     }
-  }
 
-  // Prepare lightweight data for caching (avoid huge payloads in Redis)
-  const lightweightTxs = processedTxs.map(tx => ({
-    hash: tx.hash,
-    height: height,
-    sender: tx.sender,
-    recipient: tx.recipient,
-    amount: tx.amount,
-    fee: typeof tx.fee === 'object' ? tx.fee?.amount?.[0]?.amount || '0' : tx.fee,
-    amount_denom: tx.amount_denom || null,
-    fee_denom: tx.fee_denom || null,
-    memo: tx.memo,
-    type: tx.type,
-    status: tx.status,
-    timestamp: tx.timestamp,
-  }));
+    // Flush buffered proof submissions in bulk for this block
+    // try {
+    //   if (proofSubmissionsBuffer.length) {
+    //     await bulkSaveProofSubmissions(proofSubmissionsBuffer);
+    //   }
+    // } catch (e) {
+    //   console.error(`Error bulk saving proof submissions:`, e.message);
+    // }
 
-  const blockForCache = {
-    height,
-    hash,
-    timestamp,
-    proposer,
-    chain,
-    transactions: lightweightTxs.map(t => ({
-      hash: t.hash,
-      type: t.type,
-      status: t.status,
-      timestamp: t.timestamp,
-    })),
-  };
+    // Prepare lightweight data for caching (avoid huge payloads in Redis)
+    const lightweightTxs = processedTxs.map(tx => ({
+      hash: tx.hash,
+      height: height,
+      sender: tx.sender,
+      recipient: tx.recipient,
+      amount: tx.amount,
+      fee: typeof tx.fee === 'object' ? tx.fee?.amount?.[0]?.amount || '0' : tx.fee,
+      amount_denom: tx.amount_denom || null,
+      fee_denom: tx.fee_denom || null,
+      memo: tx.memo,
+      type: tx.type,
+      status: tx.status,
+      timestamp: tx.timestamp,
+    }));
 
-  // Cache block in Redis (list: recent:blocks) with max len trim on push
-  await redis.lpush('recent:blocks', JSON.stringify(blockForCache));
-  await redis.ltrim('recent:blocks', 0, PAGE_SIZE - 1);
-  if (REDIS_RECENT_TTL_SEC > 0) {
-    await redis.expire('recent:blocks', REDIS_RECENT_TTL_SEC);
-  }
+    const blockForCache = {
+      height,
+      hash,
+      timestamp,
+      proposer,
+      chain,
+      transactions: lightweightTxs.map(t => ({
+        hash: t.hash,
+        type: t.type,
+        status: t.status,
+        timestamp: t.timestamp,
+      })),
+    };
 
-  // Cache transactions in Redis (list: recent:txs) - lightweight only
-  for (const tx of lightweightTxs) {
-    await redis.lpush('recent:txs', JSON.stringify(tx));
-  }
-  await redis.ltrim('recent:txs', 0, PAGE_SIZE - 1);
-  if (REDIS_RECENT_TTL_SEC > 0) {
-    await redis.expire('recent:txs', REDIS_RECENT_TTL_SEC);
-  }
+    // Cache block in Redis (list: recent:blocks) with max len trim on push
+    await redis.lpush('recent:blocks', JSON.stringify(blockForCache));
+    await redis.ltrim('recent:blocks', 0, PAGE_SIZE - 1);
+    if (REDIS_RECENT_TTL_SEC > 0) {
+      await redis.expire('recent:blocks', REDIS_RECENT_TTL_SEC);
+    }
 
-  // Update latest processed height
-  await redis.set(`chain:${chain}:latest_height`, height.toString());
+    // Cache transactions in Redis (list: recent:txs) - lightweight only
+    for (const tx of lightweightTxs) {
+      await redis.lpush('recent:txs', JSON.stringify(tx));
+    }
+    await redis.ltrim('recent:txs', 0, PAGE_SIZE - 1);
+    if (REDIS_RECENT_TTL_SEC > 0) {
+      await redis.expire('recent:txs', REDIS_RECENT_TTL_SEC);
+    }
 
-  blockForCache.transactions = [...processedTxs];
-  return blockForCache;
-  
+    // Update latest processed height
+    await redis.set(`chain:${chain}:latest_height`, height.toString());
+
+    blockForCache.transactions = [...rawResponseTxs];
+    return blockForCache;
+
   } catch (error) {
     console.error(`Error processing block ${blockHeight} for chain ${chain}:`, error.message);
     throw error;
@@ -382,7 +400,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
  */
 async function saveTransaction(tx) {
   await connectClients();
-  
+
   try {
     await pgClient.query(
       `INSERT INTO transactions (id, hash, block_id, sender, recipient, amount, fee, memo, type, status, timestamp, tx_data, chain, amount_denom, fee_denom)
@@ -589,14 +607,14 @@ async function saveProofSubmission(submission) {
 async function bulkSaveProofSubmissions(submissions) {
   await connectClients();
   if (!Array.isArray(submissions) || submissions.length === 0) return;
-  
+
   const chunkSize = 500;
   for (let i = 0; i < submissions.length; i += chunkSize) {
     const chunk = submissions.slice(i, i + chunkSize);
     const values = [];
     const params = [];
     let p = 1;
-    
+
     for (const s of chunk) {
       values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
       params.push(
@@ -617,7 +635,7 @@ async function bulkSaveProofSubmissions(submissions) {
         s.msg_index
       );
     }
-    
+
     const sql = `INSERT INTO proof_submissions (
       transaction_hash, block_height, timestamp, chain, supplier_operator_address, 
       application_address, service_id, session_id, session_end_block_height,
@@ -635,7 +653,7 @@ async function bulkSaveProofSubmissions(submissions) {
       num_claimed_compute_units=EXCLUDED.num_claimed_compute_units,
       num_estimated_compute_units=EXCLUDED.num_estimated_compute_units,
       num_relays=EXCLUDED.num_relays`;
-    
+
     await pgClient.query(sql, params);
   }
 }
@@ -707,16 +725,16 @@ async function getSnapshotProcessedHeight(chain) {
  */
 async function findGaps(chain, startHeight, endHeight, limit = 100) {
   await connectClients();
-  
+
   // Ensure we have valid integer parameters
   const start = parseInt(startHeight, 10);
   const end = parseInt(endHeight, 10);
-  
+
   // If no valid range, return empty array
   if (isNaN(start) || isNaN(end) || start > end) {
     return [];
   }
-  
+
   const res = await pgClient.query(
     `WITH RECURSIVE height_sequence AS (
        SELECT $1::integer as height
@@ -742,25 +760,25 @@ async function findGaps(chain, startHeight, endHeight, limit = 100) {
  */
 async function getNextGapToFill(chain) {
   await connectClients();
-  
+
   // Get historical checkpoint
   const histRes = await pgClient.query('SELECT last_height FROM historical_sync WHERE chain = $1', [chain]);
   const historical_checkpoint = histRes.rows[0]?.last_height ? parseInt(histRes.rows[0].last_height, 10) : 0;
-  
+
   // Get monitoring height (highest processed block)
   const monitorRes = await pgClient.query('SELECT MAX(height) as max_height FROM blocks WHERE chain = $1', [chain]);
   const monitoring_height = monitorRes.rows[0]?.max_height ? parseInt(monitorRes.rows[0].max_height, 10) : 0;
-  
+
   // If no blocks exist yet, return null (no gaps to fill)
   if (monitoring_height === 0) {
     return null;
   }
-  
+
   // If historical checkpoint is at or beyond monitoring height, no gaps to fill
   if (historical_checkpoint >= monitoring_height) {
     return null;
   }
-  
+
   // Find the first gap
   const gaps = await findGaps(chain, historical_checkpoint + 1, monitoring_height, 1);
   return gaps.length > 0 ? gaps[0] : null;
@@ -812,7 +830,7 @@ async function getTransaction(hash) {
  */
 async function upsertSupplier(supplier) {
   await connectClients();
-  
+
   try {
     // Handle incremental staking/unstaking
     if (supplier.stake_change) {
@@ -888,7 +906,7 @@ async function upsertSupplier(supplier) {
  */
 async function upsertApplication(app) {
   await connectClients();
-  
+
   try {
     // Handle incremental staking/unstaking
     if (app.stake_change) {
@@ -960,7 +978,7 @@ async function upsertApplication(app) {
  */
 async function insertStakingEvent(event) {
   await connectClients();
-  
+
   try {
     await pgClient.query(
       `INSERT INTO staking (address, chain, type, amount, event, timestamp)
@@ -1043,7 +1061,7 @@ async function upsertNetworkService(service) {
  */
 async function upsertNode(node) {
   await connectClients();
-  
+
   try {
     // Handle incremental staking/unstaking
     if (node.stake_change) {
@@ -1119,7 +1137,7 @@ async function upsertNode(node) {
  */
 async function upsertGateway(gateway) {
   await connectClients();
-  
+
   try {
     // Handle incremental staking/unstaking
     if (gateway.stake_change) {

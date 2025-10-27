@@ -367,12 +367,10 @@ function parseProofSubmissions(txEnvelope, block, chain) {
         }
       } catch (parseError) {
         // If parsing fails, events remains empty array
-        console.error("Error parsing events from tx_data:", parseError.message);
       }
     }
     
     if (!Array.isArray(events) || events.length === 0) {
-      console.error("No events found in tx_response or tx_data");
       return proofSubmissions;
     }
     
@@ -470,19 +468,17 @@ function parseProofSubmissions(txEnvelope, block, chain) {
           }
         } catch (eventError) {
           // Skip invalid events
-          console.error("Error parsing event:", eventError.message);
-          console.error("Event:", event);
-          console.error("Attributes:", event.attributes);
-          continue;
+          // continue;
+          console.error(eventError)
         }
       }
     }
-    console.log("Proof submissions:", proofSubmissions);
-    console.log("Proof submissions length:", proofSubmissions.length);
+    console.log("proofSubmissions", proofSubmissions)
     return proofSubmissions;
   } catch (error) { 
     // log error
     console.error(error)
+    
     return []; 
   }
 }

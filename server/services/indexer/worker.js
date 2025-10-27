@@ -58,8 +58,6 @@ async function processBlock(blockData) {
 
     for (const tx of block.transactions) {
       try {
-
-
         let suppliers = [];
         let applications = [];
         let stakingEvents = [];
