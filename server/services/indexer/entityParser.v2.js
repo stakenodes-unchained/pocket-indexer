@@ -350,8 +350,8 @@ function parseProofSubmissions(txEnvelope, block, chain) {
     if (!txEnvelope) return proofSubmissions;
     
     // Get events from tx_response or from tx_data (which stores the full JSON stringified response)
-    let events = txEnvelope?.tx_response?.events || [];
-    let transactionHash = txEnvelope.hash || txEnvelope.txhash || '';
+    let events = txEnvelope.tx_response?.events || [];
+    let transactionHash = txEnvelope.tx_response?.hash || txEnvelope.txhash || '';
     
     // If no events in tx_response, try to parse from tx_data
     // The tx_data field contains the full transaction response object with nested tx_response
@@ -376,7 +376,6 @@ function parseProofSubmissions(txEnvelope, block, chain) {
     
     const timestamp = getTimestamp(block);
     const blockHeight = parseInt(block?.block?.header?.height || block?.height || 0);
-    console.log("events", events.length)
     // Look for EventProofSubmitted events
     for (const event of events) {
       if (event.type === 'pocket.proof.EventProofSubmitted') {
@@ -467,7 +466,6 @@ function parseProofSubmissions(txEnvelope, block, chain) {
         }
       }
     }
-    console.log("proofSubmissions", proofSubmissions)
     return proofSubmissions;
   } catch (error) { 
     // log error
