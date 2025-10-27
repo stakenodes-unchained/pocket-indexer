@@ -643,7 +643,7 @@ async function bulkSaveProofSubmissions(submissions) {
       num_estimated_compute_units, num_relays, msg_index
     )
     VALUES ${values.join(',')}
-    ON CONFLICT (chain, transaction_hash, supplier_operator_address, application_address, service_id, session_id, msg_index) 
+    ON CONFLICT ON CONSTRAINT idx_proof_submissions_unique
     DO UPDATE SET
       block_height=EXCLUDED.block_height,
       timestamp=EXCLUDED.timestamp,
