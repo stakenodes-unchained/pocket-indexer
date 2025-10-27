@@ -457,7 +457,7 @@ function parseProofSubmissions(txEnvelope, block, chain) {
               submission.session_id = messages[submission.msg_index].session_header.session_id;
             }
           }
-          console.log("submission", submission)
+
           proofSubmissions.push(submission);
         } catch (eventError) {
           // Skip invalid events
