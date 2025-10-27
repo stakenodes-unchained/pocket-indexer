@@ -55,8 +55,9 @@ async function processBlock(blockData) {
     // Buffer claims for bulk upsert per block
     const claimsBuffer = [];
     const proofSubmissionsBuffer = [];
-
+console.log("block.transactions", block.transactions)
     for (const tx of block.transactions) {
+      console.log("Processing transaction:", tx.tx.hash);
       try {
         let suppliers = [];
         let applications = [];
