@@ -8,6 +8,14 @@
 const { parseProofSubmissions } = require('./services/indexer/entityParser');
 const { bulkSaveProofSubmissions } = require('./services/indexer/db');
 
+// Test with tx_data format (as stored in database)
+function createTxWithTxData(txResponse) {
+  return {
+    hash: txResponse.tx_response.txhash,
+    tx_data: JSON.stringify(txResponse) // This is how it's stored in the DB
+  };
+}
+
 // Sample transaction data from the user
 const sampleTx = {
   "hash": "711EF830537F468B61C0C7BFDBFACAC4B2DF49A63A46F4D67AE9F5070C2CAFD3",
@@ -270,13 +278,41 @@ async function testProofSubmissionsParsing() {
   console.log('🧪 Testing proof submissions parsing...');
   
   try {
-    // Test parsing
-    const proofSubmissions = parseProofSubmissions(sampleTx, sampleBlock);
+// Test parsing with tx_response format
+    console.log('📝 Testing parsing with tx_response format...');
+    const proofSubmissions = parseProofSubmissions(sampleTx, sampleBlock, 'mainnet');
+    console.log(`✅ Parsed ${proofSubmissions.length} proof submissions from tx_response format`);
     
-    console.log(`✅ Parsed ${proofSubmissions.length} proof submissions`);
+    // Test parsing with tx_data format (as stored in database)
+    console.log('\n📝 Testing parsing with tx_data format (DB format)...');
+    const fullTxResponse = {
+      tx: sampleTx.tx,
+      tx_response: sampleTx.tx_response
+    };
+    const txWithTxData = createTxWithTxData(fullTxResponse);
+    const proofSubmissionsFromTxData = parseProofSubmissions(txWithTxData, sampleBlock, 'mainnet');
+    console.log(`✅ Parsed ${proofSubmissionsFromTxData.length} proof submissions from tx_data format`);
+    
+    if (proofSubmissionsFromTxData.length !== proofSubmissions.length) {
+      throw new Error(`Mismatch: parsed ${proofSubmissions.length} from tx_response but ${proofSubmissionsFromTxData.length} from tx_data`);
+    }
+    
+    // Verify chain parameter is set correctly
+    const allHaveChain = proofSubmissions.every(s => s.chain === 'mainnet');
+    const txDataAllHaveChain = proofSubmissionsFromTxData.every(s => s.chain === 'mainnet');
+    
+    if (!allHaveChain || !txDataAllHaveChain) {
+      throw new Error(`Chain parameter not set correctly: expected 'mainnet'`);
+    }
+    
+    console.log('✅ Both formats produce the same results');
+    console.log('✅ Chain parameter correctly set to "mainnet"');
+    
+    // Use the results from the first parsing
+    const finalProofSubmissions = proofSubmissions;
     
     // Calculate computed fields for display (these would be computed columns in the database)
-    proofSubmissions.forEach((submission) => {
+    finalProofSubmissions.forEach((submission) => {
       // Extract numeric value from claimed_upokt string
       const claimedAmount = submission.claimed_upokt.replace('upokt', '');
       submission.claimed_upokt_amount = parseInt(claimedAmount) || 0;
@@ -297,8 +333,9 @@ async function testProofSubmissionsParsing() {
     });
     
     // Display parsed data
-    proofSubmissions.forEach((submission, index) => {
+    finalProofSubmissions.forEach((submission, index) => {
       console.log(`\n📊 Proof Submission ${index + 1}:`);
+      console.log(`   Chain: ${submission.chain}`);
       console.log(`   Supplier: ${submission.supplier_operator_address}`);
       console.log(`   Application: ${submission.application_address}`);
       console.log(`   Service: ${submission.service_id}`);
@@ -314,7 +351,7 @@ async function testProofSubmissionsParsing() {
     // Test database storage (if database is available)
     try {
       console.log('\n💾 Testing database storage...');
-      await bulkSaveProofSubmissions(proofSubmissions);
+      await bulkSaveProofSubmissions(finalProofSubmissions);
       console.log('✅ Successfully saved proof submissions to database');
     } catch (dbError) {
       console.log('⚠️  Database not available or error:', dbError.message);
@@ -322,12 +359,12 @@ async function testProofSubmissionsParsing() {
     }
     
     // Calculate summary statistics
-    const totalRewards = proofSubmissions.reduce((sum, sub) => sum + sub.claimed_upokt_amount, 0);
-    const totalRelays = proofSubmissions.reduce((sum, sub) => sum + sub.num_relays, 0);
-    const totalClaimedComputeUnits = proofSubmissions.reduce((sum, sub) => sum + sub.num_claimed_compute_units, 0);
-    const totalEstimatedComputeUnits = proofSubmissions.reduce((sum, sub) => sum + sub.num_estimated_compute_units, 0);
-    const avgEfficiency = proofSubmissions.reduce((sum, sub) => sum + sub.compute_unit_efficiency, 0) / proofSubmissions.length;
-    const avgRewardPerRelay = proofSubmissions.reduce((sum, sub) => sum + sub.reward_per_relay, 0) / proofSubmissions.length;
+    const totalRewards = finalProofSubmissions.reduce((sum, sub) => sum + sub.claimed_upokt_amount, 0);
+    const totalRelays = finalProofSubmissions.reduce((sum, sub) => sum + sub.num_relays, 0);
+    const totalClaimedComputeUnits = finalProofSubmissions.reduce((sum, sub) => sum + sub.num_claimed_compute_units, 0);
+    const totalEstimatedComputeUnits = finalProofSubmissions.reduce((sum, sub) => sum + sub.num_estimated_compute_units, 0);
+    const avgEfficiency = finalProofSubmissions.reduce((sum, sub) => sum + sub.compute_unit_efficiency, 0) / finalProofSubmissions.length;
+    const avgRewardPerRelay = finalProofSubmissions.reduce((sum, sub) => sum + sub.reward_per_relay, 0) / finalProofSubmissions.length;
     
     console.log('\n📈 Summary Statistics:');
     console.log(`   Total Rewards: ${totalRewards} upokt`);
@@ -336,8 +373,8 @@ async function testProofSubmissionsParsing() {
     console.log(`   Total Estimated Compute Units: ${totalEstimatedComputeUnits}`);
     console.log(`   Average Efficiency: ${avgEfficiency.toFixed(2)}%`);
     console.log(`   Average Reward per Relay: ${avgRewardPerRelay.toFixed(2)} upokt`);
-    console.log(`   Unique Services: ${new Set(proofSubmissions.map(s => s.service_id)).size}`);
-    console.log(`   Unique Applications: ${new Set(proofSubmissions.map(s => s.application_address)).size}`);
+    console.log(`   Unique Services: ${new Set(finalProofSubmissions.map(s => s.service_id)).size}`);
+    console.log(`   Unique Applications: ${new Set(finalProofSubmissions.map(s => s.application_address)).size}`);
     
     console.log('\n🎉 Test completed successfully!');
     

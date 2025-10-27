@@ -26,6 +26,7 @@ const {
   parseRelays,
   parseGateways,
   parseProofSubmissions,
+  parseClaims
 } = require('./entityParser.v2');
 
 const { rpcName, rpcUrl, batchSize, processType } = workerData;
@@ -76,7 +77,7 @@ async function processBlock(blockData) {
         if (hasProofOrClaim) {
           // Claims fast-path: only parse claims/relays and proof submissions
           relays = parseRelays(tx, blockData, rpcName);
-          const claims = require('./entityParser.v2').parseClaims(tx, blockData, rpcName);
+          const claims = parseClaims(tx, blockData, rpcName);
           if (Array.isArray(claims) && claims.length) {
             claimsBuffer.push(...claims);
           }

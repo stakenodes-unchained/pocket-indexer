@@ -1098,8 +1098,24 @@ function parseProofSubmissions(tx, block, chain) {
       return proofSubmissions;
     }
     
-    // Get events from tx_response
-    const events = tx.tx_response?.events || [];
+    // Get events from tx_response or from tx_data (which stores the full JSON stringified response)
+    let events = tx.tx_response?.events || [];
+    
+    // If no events in tx_response, try to parse from tx_data
+    // The tx_data field contains the full transaction response object with nested tx_response
+    if (!Array.isArray(events) || events.length === 0) {
+      try {
+        if (tx.tx_data) {
+          const txData = typeof tx.tx_data === 'string' ? JSON.parse(tx.tx_data) : tx.tx_data;
+          // Events are nested in tx_response within the stored data
+          events = txData?.tx_response?.events || txData?.events || [];
+        }
+      } catch (parseError) {
+        // If parsing fails, events remains empty array
+        console.warn("Error parsing events from tx_data:", parseError.message);
+      }
+    }
+    
     if (!Array.isArray(events) || events.length === 0) {
       return proofSubmissions;
     }
