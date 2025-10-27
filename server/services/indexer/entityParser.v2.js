@@ -379,7 +379,6 @@ function parseProofSubmissions(txEnvelope, block, chain) {
     console.log("events", events.length)
     // Look for EventProofSubmitted events
     for (const event of events) {
-      console.log("event", event.type)
       if (event.type === 'pocket.proof.EventProofSubmitted') {
         try {
           // Extract attributes from the event
@@ -459,14 +458,8 @@ function parseProofSubmissions(txEnvelope, block, chain) {
               submission.session_id = messages[submission.msg_index].session_header.session_id;
             }
           }
-          
-          // Validate required fields
-          if (submission.supplier_operator_address && 
-              submission.application_address && 
-              submission.service_id &&
-              submission.transaction_hash) {
-            proofSubmissions.push(submission);
-          }
+          console.log("submission", submission)
+          proofSubmissions.push(submission);
         } catch (eventError) {
           // Skip invalid events
           // continue;
