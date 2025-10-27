@@ -76,6 +76,7 @@ async function processBlock(blockData) {
 
         // Parse proof submissions for reward tracking
         const proofSubmissions = parseProofSubmissions(tx, blockData, rpcName);
+        console.log("proofSubmissions", proofSubmissions.length)
         if (Array.isArray(proofSubmissions) && proofSubmissions.length) {
           proofSubmissionsBuffer.push(...proofSubmissions);
         }
@@ -188,6 +189,7 @@ async function processBlock(blockData) {
 
     // Flush buffered proof submissions in bulk for this block
     try {
+      console.log("proofSubmissionsBuffer", proofSubmissionsBuffer.length)
       if (proofSubmissionsBuffer.length) {
         await bulkSaveProofSubmissions(proofSubmissionsBuffer);
         console.log(`[Worker ${workerData.id}] Saved ${proofSubmissionsBuffer.length} proof submissions for reward tracking`);
