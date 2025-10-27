@@ -342,6 +342,146 @@ function parseClaims(txEnvelope, block, chain) {
   } catch (_) { return []; }
 }
 
+// Proof Submissions - parse proof submission events from transaction events
+function parseProofSubmissions(txEnvelope, block, chain) {
+  try {
+    const proofSubmissions = [];
+    
+    if (!txEnvelope) return proofSubmissions;
+    
+    // Get events from tx_response or from tx_data (which stores the full JSON stringified response)
+    let events = txEnvelope?.tx_response?.events || [];
+    let transactionHash = txEnvelope.hash || txEnvelope.txhash || '';
+    
+    // If no events in tx_response, try to parse from tx_data
+    // The tx_data field contains the full transaction response object with nested tx_response
+    if (!Array.isArray(events) || events.length === 0) {
+      try {
+        if (txEnvelope.tx_data) {
+          const txData = typeof txEnvelope.tx_data === 'string' ? JSON.parse(txEnvelope.tx_data) : txEnvelope.tx_data;
+          // Events are nested in tx_response within the stored data
+          events = txData?.tx_response?.events || txData?.events || [];
+          if (!transactionHash && txData?.tx_response?.txhash) {
+            transactionHash = txData.tx_response.txhash;
+          }
+        }
+      } catch (parseError) {
+        // If parsing fails, events remains empty array
+      }
+    }
+    
+    if (!Array.isArray(events) || events.length === 0) {
+      return proofSubmissions;
+    }
+    
+    const timestamp = getTimestamp(block);
+    const blockHeight = parseInt(block?.block?.header?.height || block?.height || 0);
+    
+    // Look for EventProofSubmitted events
+    for (const event of events) {
+      if (event.type === 'pocket.proof.EventProofSubmitted') {
+        try {
+          // Extract attributes from the event
+          const attributes = event.attributes || [];
+          const submission = {
+            transaction_hash: transactionHash,
+            block_height: blockHeight,
+            timestamp: timestamp,
+            chain: chain || '',
+            supplier_operator_address: '',
+            application_address: '',
+            service_id: '',
+            session_id: '',
+            session_end_block_height: 0,
+            claim_proof_status_int: 0,
+            claimed_upokt: '',
+            num_claimed_compute_units: 0,
+            num_estimated_compute_units: 0,
+            num_relays: 0,
+            msg_index: 0
+          };
+          
+          // Parse attributes
+          for (const attr of attributes) {
+            if (!attr.key || !attr.value) continue;
+            
+            switch (attr.key) {
+              case 'supplier_operator_address':
+                submission.supplier_operator_address = attr.value.replace(/"/g, '');
+                break;
+              case 'application_address':
+                submission.application_address = attr.value.replace(/"/g, '');
+                break;
+              case 'service_id':
+                submission.service_id = attr.value.replace(/"/g, '');
+                break;
+              case 'session_end_block_height':
+                submission.session_end_block_height = parseInt(attr.value.replace(/"/g, '')) || 0;
+                break;
+              case 'claim_proof_status_int':
+                submission.claim_proof_status_int = parseInt(attr.value) || 0;
+                break;
+              case 'claimed_upokt':
+                // Handle both formats: "252upokt" or {"denom":"upokt","amount":"252"}
+                let claimedValue = attr.value.replace(/"/g, '');
+                try {
+                  // Try to parse as JSON first
+                  const parsed = JSON.parse(attr.value);
+                  if (parsed.amount && parsed.denom) {
+                    claimedValue = parsed.amount + parsed.denom;
+                  }
+                } catch (e) {
+                  // Not JSON, use as is
+                }
+                submission.claimed_upokt = claimedValue;
+                break;
+              case 'num_claimed_compute_units':
+                submission.num_claimed_compute_units = parseInt(attr.value.replace(/"/g, '')) || 0;
+                break;
+              case 'num_estimated_compute_units':
+                submission.num_estimated_compute_units = parseInt(attr.value.replace(/"/g, '')) || 0;
+                break;
+              case 'num_relays':
+                submission.num_relays = parseInt(attr.value.replace(/"/g, '')) || 0;
+                break;
+              case 'msg_index':
+                submission.msg_index = parseInt(attr.value) || 0;
+                break;
+            }
+          }
+          
+          // Get session_id from the transaction messages if not found in events
+          const tx = txEnvelope.tx || txEnvelope;
+          if (!submission.session_id && tx?.body?.messages) {
+            const messages = tx.body.messages;
+            if (messages[submission.msg_index]?.session_header?.session_id) {
+              submission.session_id = messages[submission.msg_index].session_header.session_id;
+            }
+          }
+          
+          // Validate required fields
+          if (submission.supplier_operator_address && 
+              submission.application_address && 
+              submission.service_id &&
+              submission.transaction_hash) {
+            proofSubmissions.push(submission);
+          }
+        } catch (eventError) {
+          // Skip invalid events
+          continue;
+        }
+      }
+    }
+    
+    return proofSubmissions;
+  } catch (error) { 
+    // log error
+    console.error(error)
+    
+    return []; 
+  }
+}
+
 // Staking events (high-level rollup, minimal)
 function parseStakingEvents(txEnvelope, block, chain) {
   try {
@@ -481,6 +621,7 @@ module.exports = {
   parseNodes,
   parseStakingEvents,
   parseRelationships,
+  parseProofSubmissions,
 };
 
 

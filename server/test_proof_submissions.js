@@ -5,7 +5,7 @@
  * This script tests the implementation with the provided sample data
  */
 
-const { parseProofSubmissions } = require('./services/indexer/entityParser');
+const { parseProofSubmissions } = require('./services/indexer/entityParser.v2');
 const { bulkSaveProofSubmissions } = require('./services/indexer/db');
 
 // Test with tx_data format (as stored in database)
