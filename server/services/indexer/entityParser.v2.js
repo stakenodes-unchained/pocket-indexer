@@ -376,9 +376,10 @@ function parseProofSubmissions(txEnvelope, block, chain) {
     
     const timestamp = getTimestamp(block);
     const blockHeight = parseInt(block?.block?.header?.height || block?.height || 0);
-    
+    console.log("events", events.length)
     // Look for EventProofSubmitted events
     for (const event of events) {
+      console.log("event", event.type)
       if (event.type === 'pocket.proof.EventProofSubmitted') {
         try {
           // Extract attributes from the event
