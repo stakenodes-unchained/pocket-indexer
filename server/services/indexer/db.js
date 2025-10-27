@@ -545,13 +545,13 @@ async function saveProofSubmission(submission) {
   await connectClients();
   await pgClient.query(
     `INSERT INTO proof_submissions (
-      transaction_hash, block_height, timestamp, supplier_operator_address, 
+      transaction_hash, block_height, timestamp, chain, supplier_operator_address, 
       application_address, service_id, session_id, session_end_block_height,
       claim_proof_status_int, claimed_upokt, num_claimed_compute_units,
       num_estimated_compute_units, num_relays, msg_index
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-    ON CONFLICT (transaction_hash, supplier_operator_address, application_address, service_id, session_id, msg_index) 
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+    ON CONFLICT (chain, transaction_hash, supplier_operator_address, application_address, service_id, session_id, msg_index) 
     DO UPDATE SET
       block_height=EXCLUDED.block_height,
       timestamp=EXCLUDED.timestamp,
@@ -565,6 +565,7 @@ async function saveProofSubmission(submission) {
       submission.transaction_hash,
       submission.block_height,
       submission.timestamp,
+      submission.chain,
       submission.supplier_operator_address,
       submission.application_address,
       submission.service_id,
@@ -595,11 +596,12 @@ async function bulkSaveProofSubmissions(submissions) {
     let p = 1;
     
     for (const s of chunk) {
-      values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+      values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
       params.push(
         s.transaction_hash,
         s.block_height,
         s.timestamp,
+        s.chain,
         s.supplier_operator_address,
         s.application_address,
         s.service_id,
@@ -615,13 +617,13 @@ async function bulkSaveProofSubmissions(submissions) {
     }
     
     const sql = `INSERT INTO proof_submissions (
-      transaction_hash, block_height, timestamp, supplier_operator_address, 
+      transaction_hash, block_height, timestamp, chain, supplier_operator_address, 
       application_address, service_id, session_id, session_end_block_height,
       claim_proof_status_int, claimed_upokt, num_claimed_compute_units,
       num_estimated_compute_units, num_relays, msg_index
     )
     VALUES ${values.join(',')}
-    ON CONFLICT (transaction_hash, supplier_operator_address, application_address, service_id, session_id, msg_index) 
+    ON CONFLICT (chain, transaction_hash, supplier_operator_address, application_address, service_id, session_id, msg_index) 
     DO UPDATE SET
       block_height=EXCLUDED.block_height,
       timestamp=EXCLUDED.timestamp,

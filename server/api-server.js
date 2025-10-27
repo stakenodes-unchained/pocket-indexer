@@ -572,7 +572,7 @@ app.get('/api/v1/staking', async (req, res) => {
 // Get proof submissions with filters
 app.get('/api/v1/proof-submissions', async (req, res) => {
   try {
-    const { supplier_address, application_address, service_id, start_date, end_date, page = 1, limit = 100 } = req.query;
+    const { supplier_address, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
@@ -580,6 +580,10 @@ app.get('/api/v1/proof-submissions', async (req, res) => {
     const values = [];
     let idx = 1;
     
+    if (chain) {
+      conditions.push(`chain = $${idx++}`);
+      values.push(chain);
+    }
     if (supplier_address) {
       conditions.push(`supplier_operator_address = $${idx++}`);
       values.push(supplier_address);
@@ -613,7 +617,7 @@ app.get('/api/v1/proof-submissions', async (req, res) => {
     
     // Get paginated results
     const listSql = `SELECT 
-      id, transaction_hash, block_height, timestamp,
+      id, transaction_hash, block_height, timestamp, chain,
       supplier_operator_address, application_address, service_id, session_id,
       session_end_block_height, claim_proof_status_int, claimed_upokt,
       claimed_upokt_amount, num_claimed_compute_units, num_estimated_compute_units,
@@ -642,7 +646,7 @@ app.get('/api/v1/proof-submissions', async (req, res) => {
 // Get reward analytics aggregated view (hourly)
 app.get('/api/v1/proof-submissions/rewards', async (req, res) => {
   try {
-    const { supplier_address, application_address, service_id, start_date, end_date, page = 1, limit = 100 } = req.query;
+    const { supplier_address, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
@@ -650,6 +654,10 @@ app.get('/api/v1/proof-submissions/rewards', async (req, res) => {
     const values = [];
     let idx = 1;
     
+    if (chain) {
+      conditions.push(`chain = $${idx++}`);
+      values.push(chain);
+    }
     if (supplier_address) {
       conditions.push(`supplier_operator_address = $${idx++}`);
       values.push(supplier_address);
@@ -812,7 +820,7 @@ app.get('/api/v1/applications/:address/usage', async (req, res) => {
 // Get summary statistics for proof submissions
 app.get('/api/v1/proof-submissions/summary', async (req, res) => {
   try {
-    const { start_date, end_date, supplier_address, application_address, service_id } = req.query;
+    const { start_date, end_date, supplier_address, application_address, service_id, chain } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
@@ -820,6 +828,10 @@ app.get('/api/v1/proof-submissions/summary', async (req, res) => {
     const values = [];
     let idx = 1;
     
+    if (chain) {
+      conditions.push(`chain = $${idx++}`);
+      values.push(chain);
+    }
     if (start_date) {
       conditions.push(`timestamp >= $${idx++}`);
       values.push(start_date);

@@ -82,7 +82,7 @@ async function processBlock(blockData) {
           }
           
           // Parse proof submissions for reward tracking
-          const proofSubmissions = parseProofSubmissions(tx, blockData);
+          const proofSubmissions = parseProofSubmissions(tx, blockData, rpcName);
           if (Array.isArray(proofSubmissions) && proofSubmissions.length) {
             proofSubmissionsBuffer.push(...proofSubmissions);
           }

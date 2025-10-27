@@ -1087,9 +1087,10 @@ function parseClaims(tx, block) {
  * Parse proof submission events from transaction events
  * @param {any} tx
  * @param {any} block
+ * @param {string} chain - The chain identifier
  * @returns {Array}
  */
-function parseProofSubmissions(tx, block) {
+function parseProofSubmissions(tx, block, chain) {
   try {
     const proofSubmissions = [];
     
@@ -1116,6 +1117,7 @@ function parseProofSubmissions(tx, block) {
             transaction_hash: tx.hash || '',
             block_height: blockHeight,
             timestamp: timestamp,
+            chain: chain || '',
             supplier_operator_address: '',
             application_address: '',
             service_id: '',

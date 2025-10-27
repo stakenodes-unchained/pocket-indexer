@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS proof_submissions (
   transaction_hash TEXT NOT NULL,
   block_height BIGINT NOT NULL,
   timestamp TIMESTAMP NOT NULL,
+  chain TEXT NOT NULL,
   
   -- Entity relationships
   supplier_operator_address TEXT NOT NULL,
@@ -81,8 +82,12 @@ CREATE INDEX IF NOT EXISTS idx_proof_submissions_performance ON proof_submission
 -- Index for timeseries queries
 CREATE INDEX IF NOT EXISTS idx_proof_submissions_timeseries ON proof_submissions(timestamp DESC, service_id, supplier_operator_address);
 
--- Add unique constraint to prevent duplicates
+-- Index on chain for filtering by chain
+CREATE INDEX IF NOT EXISTS idx_proof_submissions_chain ON proof_submissions(chain);
+
+-- Add unique constraint to prevent duplicates (including chain)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_proof_submissions_unique ON proof_submissions(
+  chain,
   transaction_hash, 
   supplier_operator_address, 
   application_address, 
