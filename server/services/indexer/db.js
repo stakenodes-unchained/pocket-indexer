@@ -290,7 +290,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
         }
 
         // Parse and save claims if this is a proof transaction and we have tx data
-        if (txType === 'proof' && txResponse) {
+        if (txType.includes('proof') && txResponse) {
           try {
             const claims = parseClaims(txResponse.tx, blockData);
             for (const claim of claims) {
@@ -360,7 +360,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
 
   // Update latest processed height
   await redis.set(`chain:${chain}:latest_height`, height.toString());
-  return blockForCache;
+  return processedTxs;
   
   } catch (error) {
     console.error(`Error processing block ${blockHeight} for chain ${chain}:`, error.message);
