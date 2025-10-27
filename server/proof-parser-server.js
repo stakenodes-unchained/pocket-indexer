@@ -166,14 +166,16 @@ app.listen(PORT, () => {
 async function shutdown() {
   console.log('\n[ProofParserServer] Shutting down...');
   
-  // Stop all services
-  for (const [chain, service] of services) {
+  // Stop all services in parallel
+  const stopPromises = Array.from(services.entries()).map(async ([chain, service]) => {
     try {
       await service.stop();
     } catch (error) {
       console.error(`[ProofParserServer] Error stopping service for ${chain}:`, error.message);
     }
-  }
+  });
+  
+  await Promise.all(stopPromises);
   
   // Close server
   process.exit(0);
@@ -182,11 +184,12 @@ async function shutdown() {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
-// Auto-start all services
+// Auto-start all services in parallel
 async function startAllServices() {
   console.log(`[ProofParserServer] Auto-starting services for ${chainsToProcess.length} chain(s)...`);
   
-  for (const [chain, service] of services) {
+  // Start all services in parallel
+  const startPromises = Array.from(services.entries()).map(async ([chain, service]) => {
     try {
       console.log(`[ProofParserServer] Starting service for chain: ${chain}`);
       await service.start();
@@ -194,7 +197,10 @@ async function startAllServices() {
     } catch (error) {
       console.error(`[ProofParserServer] Error starting service for ${chain}:`, error.message);
     }
-  }
+  });
+  
+  // Wait for all services to start
+  await Promise.all(startPromises);
   
   console.log(`[ProofParserServer] All services started`);
 }

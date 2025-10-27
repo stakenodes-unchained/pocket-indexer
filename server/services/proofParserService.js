@@ -30,6 +30,10 @@ class ProofParserService {
     this.lastProcessTime = null;
     this.startTime = null;
     
+    // Progress tracking
+    this.lastProcessedHash = null;
+    this.lastProcessedTimestamp = null;
+    
     // Database connection
     this.pgClient = new Client({
       host: process.env.DB_HOST,
@@ -58,6 +62,62 @@ class ProofParserService {
         console.error(`[ProofParser] Database connection failed:`, error.message);
         throw error;
       }
+    }
+  }
+
+  /**
+   * Load saved progress for this chain
+   */
+  async loadProgress() {
+    try {
+      const result = await this.pgClient.query(
+        `SELECT last_processed_transaction_id, last_processed_hash, 
+                last_processed_timestamp, processed_count
+         FROM proof_parser_progress 
+         WHERE chain = $1`,
+        [this.chain]
+      );
+      
+      if (result.rows.length > 0) {
+        const progress = result.rows[0];
+        this.lastProcessedTxId = progress.last_processed_transaction_id;
+        this.lastProcessedHash = progress.last_processed_hash;
+        this.lastProcessedTimestamp = progress.last_processed_timestamp;
+        this.processedCount = parseInt(progress.processed_count || 0, 10);
+        console.log(`[ProofParser] Loaded progress for chain ${this.chain}: 
+          Last processed: ${this.lastProcessedHash} 
+          Timestamp: ${this.lastProcessedTimestamp}
+          Processed count: ${this.processedCount}`);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.warn(`[ProofParser] Could not load progress, starting fresh:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Save progress for this chain
+   */
+  async saveProgress(txId, hash, timestamp) {
+    try {
+      await this.pgClient.query(
+        `INSERT INTO proof_parser_progress 
+         (chain, last_processed_transaction_id, last_processed_hash, 
+          last_processed_timestamp, processed_count, last_updated)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT (chain) DO UPDATE SET
+           last_processed_transaction_id = EXCLUDED.last_processed_transaction_id,
+           last_processed_hash = EXCLUDED.last_processed_hash,
+           last_processed_timestamp = EXCLUDED.last_processed_timestamp,
+           processed_count = EXCLUDED.processed_count,
+           last_updated = NOW()`,
+        [this.chain, txId, hash, timestamp, this.processedCount]
+      );
+    } catch (error) {
+      console.error(`[ProofParser] Error saving progress:`, error.message);
+      // Don't throw - progress saving shouldn't block processing
     }
   }
 
@@ -205,23 +265,48 @@ class ProofParserService {
     try {
       await this.connectDB();
       
-      // Skip the expensive COUNT query - we'll process in batches until no more rows
+      // Load previous progress
+      await this.loadProgress();
+      
       let totalCount = null;
       console.log(`[ProofParser] Starting batch processing for chain: ${this.chain}`);
       
-      let offset = 0;
-      let hasMore = true;
       let batchCount = 0;
+      let hasMore = true;
       
       while (hasMore) {
-        // Fetch a batch of transactions
+        // Build WHERE clause with progress-based filtering
+        let whereClause = `t.chain = $1 
+             AND t.type IN ('MsgSubmitProof (proof)', 'MsgCreateClaim (proof)', 'unknown')
+             AND NOT EXISTS (
+               SELECT 1 FROM proof_submissions ps 
+               WHERE ps.transaction_hash = t.hash AND ps.chain = t.chain
+             )`;
+        
+        const params = [this.chain];
+        
+        // If we have saved progress, use it to skip already processed transactions
+        if (this.lastProcessedTimestamp) {
+          whereClause = `t.chain = $1 
+             AND t.type IN ('MsgSubmitProof (proof)', 'MsgCreateClaim (proof)', 'unknown')
+             AND (t.timestamp > $2 OR (t.timestamp = $2 AND t.id > $3))
+             AND NOT EXISTS (
+               SELECT 1 FROM proof_submissions ps 
+               WHERE ps.transaction_hash = t.hash AND ps.chain = t.chain
+             )`;
+          params.push(this.lastProcessedTimestamp, this.lastProcessedTxId || '', this.batchSize);
+        } else {
+          params.push(this.batchSize);
+        }
+        
+        // Fetch a batch of unprocessed transactions
         const result = await this.pgClient.query(
-          `SELECT id, hash, block_id, chain, tx_data, timestamp
-           FROM transactions 
-           WHERE chain = $1 AND (tx_data->>'tx') IS NOT NULL
-           ORDER BY timestamp ASC, id ASC
-           LIMIT $2 OFFSET $3`,
-          [this.chain, this.batchSize, offset]
+          `SELECT t.id, t.hash, t.block_id, t.chain, t.tx_data, t.timestamp
+           FROM transactions t
+           WHERE ${whereClause}
+           ORDER BY t.timestamp ASC, t.id ASC
+           LIMIT $${params.length}`,
+          params
         );
         
         const transactions = result.rows;
@@ -236,6 +321,11 @@ class ProofParserService {
         try {
           const batchResult = await this.processBatch(transactions);
           console.log(`[ProofParser] Batch ${batchCount + 1} completed - Processed: ${batchResult.processed}, Proofs: ${batchResult.proofs}, Claims: ${batchResult.claims}`);
+          
+          // Save progress after each batch
+          const lastTx = transactions[transactions.length - 1];
+          await this.saveProgress(lastTx.id, lastTx.hash, lastTx.timestamp);
+          
         } catch (error) {
           console.error(`[ProofParser] Error processing batch ${batchCount + 1}:`, error.message);
           this.errorCount++;
@@ -243,15 +333,10 @@ class ProofParserService {
         }
         
         batchCount++;
-        offset += this.batchSize;
         
         // Progress update every 10 batches
         if (batchCount % 10 === 0) {
-          if (totalCount !== null) {
-            console.log(`[ProofParser] Progress: ${offset} / ${totalCount} transactions processed`);
-          } else {
-            console.log(`[ProofParser] Progress: ${offset} transactions processed`);
-          }
+          console.log(`[ProofParser] Progress: ${this.processedCount} total transactions processed`);
         }
       }
       
@@ -300,14 +385,18 @@ class ProofParserService {
       
       this.watchTimer = setInterval(async () => {
         try {
-          // Fetch new transactions
+          // Fetch new unprocessed transactions of relevant types
           const result = await this.pgClient.query(
-            `SELECT id, hash, block_id, chain, tx_data, timestamp
-             FROM transactions 
-             WHERE chain = $1 
-               AND timestamp > $2 
-               AND (tx_data->>'tx') IS NOT NULL
-             ORDER BY timestamp ASC
+            `SELECT t.id, t.hash, t.block_id, t.chain, t.tx_data, t.timestamp
+             FROM transactions t
+             WHERE t.chain = $1 
+               AND t.timestamp > $2 
+               AND t.type IN ('MsgSubmitProof (proof)', 'MsgCreateClaim (proof)', 'unknown')
+               AND NOT EXISTS (
+                 SELECT 1 FROM proof_submissions ps 
+                 WHERE ps.transaction_hash = t.hash AND ps.chain = t.chain
+               )
+             ORDER BY t.timestamp ASC
              LIMIT $3`,
             [this.chain, lastTimestamp, this.batchSize]
           );

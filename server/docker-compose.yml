@@ -148,6 +148,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      indexer:
+        condition: service_healthy
     restart: unless-stopped
     logging:
       driver: "json-file"
