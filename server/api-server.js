@@ -565,6 +565,308 @@ app.get('/api/v1/staking', async (req, res) => {
   }
 });
 
+// ============================================================================
+// PROOF SUBMISSIONS ENDPOINTS
+// ============================================================================
+
+// Get proof submissions with filters
+app.get('/api/v1/proof-submissions', async (req, res) => {
+  try {
+    const { supplier_address, application_address, service_id, start_date, end_date, page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+    
+    if (supplier_address) {
+      conditions.push(`supplier_operator_address = $${idx++}`);
+      values.push(supplier_address);
+    }
+    if (application_address) {
+      conditions.push(`application_address = $${idx++}`);
+      values.push(application_address);
+    }
+    if (service_id) {
+      conditions.push(`service_id = $${idx++}`);
+      values.push(service_id);
+    }
+    if (start_date) {
+      conditions.push(`timestamp >= $${idx++}`);
+      values.push(start_date);
+    }
+    if (end_date) {
+      conditions.push(`timestamp <= $${idx++}`);
+      values.push(end_date);
+    }
+    
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+    
+    // Get total count
+    const countSql = `SELECT COUNT(*) AS total FROM proof_submissions ${where}`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows[0].total, 10);
+    
+    // Get paginated results
+    const listSql = `SELECT 
+      id, transaction_hash, block_height, timestamp,
+      supplier_operator_address, application_address, service_id, session_id,
+      session_end_block_height, claim_proof_status_int, claimed_upokt,
+      claimed_upokt_amount, num_claimed_compute_units, num_estimated_compute_units,
+      num_relays, compute_unit_efficiency, reward_per_relay, msg_index, created_at
+      FROM proof_submissions ${where}
+      ORDER BY timestamp DESC, block_height DESC
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+    
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    
+    res.json({
+      data: listRes.rows,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching proof submissions:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get reward analytics aggregated view (hourly)
+app.get('/api/v1/proof-submissions/rewards', async (req, res) => {
+  try {
+    const { supplier_address, application_address, service_id, start_date, end_date, page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+    
+    if (supplier_address) {
+      conditions.push(`supplier_operator_address = $${idx++}`);
+      values.push(supplier_address);
+    }
+    if (application_address) {
+      conditions.push(`application_address = $${idx++}`);
+      values.push(application_address);
+    }
+    if (service_id) {
+      conditions.push(`service_id = $${idx++}`);
+      values.push(service_id);
+    }
+    if (start_date) {
+      conditions.push(`hour_bucket >= $${idx++}`);
+      values.push(start_date);
+    }
+    if (end_date) {
+      conditions.push(`hour_bucket <= $${idx++}`);
+      values.push(end_date);
+    }
+    
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+    
+    // Get total count
+    const countSql = `SELECT COUNT(*) AS total FROM proof_submission_rewards ${where}`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows[0].total, 10);
+    
+    // Get paginated results
+    const listSql = `SELECT * FROM proof_submission_rewards ${where}
+      ORDER BY hour_bucket DESC
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+    
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    
+    res.json({
+      data: listRes.rows,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching reward analytics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get supplier performance analytics (daily)
+app.get('/api/v1/suppliers/:address/performance', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { start_date, end_date, page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const conditions = [`supplier_operator_address = $1`];
+    const values = [address];
+    let idx = 2;
+    
+    if (start_date) {
+      conditions.push(`day_bucket >= $${idx++}`);
+      values.push(start_date);
+    }
+    if (end_date) {
+      conditions.push(`day_bucket <= $${idx++}`);
+      values.push(end_date);
+    }
+    
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+    
+    // Get total count
+    const countSql = `SELECT COUNT(*) AS total FROM supplier_performance ${where}`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows[0].total, 10);
+    
+    // Get paginated results
+    const listSql = `SELECT * FROM supplier_performance ${where}
+      ORDER BY day_bucket DESC
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+    
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    
+    res.json({
+      data: listRes.rows,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching supplier performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get application usage analytics (daily)
+app.get('/api/v1/applications/:address/usage', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { start_date, end_date, page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const conditions = [`application_address = $1`];
+    const values = [address];
+    let idx = 2;
+    
+    if (start_date) {
+      conditions.push(`day_bucket >= $${idx++}`);
+      values.push(start_date);
+    }
+    if (end_date) {
+      conditions.push(`day_bucket <= $${idx++}`);
+      values.push(end_date);
+    }
+    
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+    
+    // Get total count
+    const countSql = `SELECT COUNT(*) AS total FROM application_usage ${where}`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows[0].total, 10);
+    
+    // Get paginated results
+    const listSql = `SELECT * FROM application_usage ${where}
+      ORDER BY day_bucket DESC
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+    
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    
+    res.json({
+      data: listRes.rows,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching application usage:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get summary statistics for proof submissions
+app.get('/api/v1/proof-submissions/summary', async (req, res) => {
+  try {
+    const { start_date, end_date, supplier_address, application_address, service_id } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+    
+    if (start_date) {
+      conditions.push(`timestamp >= $${idx++}`);
+      values.push(start_date);
+    }
+    if (end_date) {
+      conditions.push(`timestamp <= $${idx++}`);
+      values.push(end_date);
+    }
+    if (supplier_address) {
+      conditions.push(`supplier_operator_address = $${idx++}`);
+      values.push(supplier_address);
+    }
+    if (application_address) {
+      conditions.push(`application_address = $${idx++}`);
+      values.push(application_address);
+    }
+    if (service_id) {
+      conditions.push(`service_id = $${idx++}`);
+      values.push(service_id);
+    }
+    
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    
+    const summarySql = `SELECT 
+      COUNT(*) as total_submissions,
+      COUNT(DISTINCT supplier_operator_address) as unique_suppliers,
+      COUNT(DISTINCT application_address) as unique_applications,
+      COUNT(DISTINCT service_id) as unique_services,
+      SUM(claimed_upokt_amount) as total_rewards_upokt,
+      SUM(num_relays) as total_relays,
+      SUM(num_claimed_compute_units) as total_claimed_compute_units,
+      SUM(num_estimated_compute_units) as total_estimated_compute_units,
+      AVG(compute_unit_efficiency) as avg_efficiency_percent,
+      AVG(reward_per_relay) as avg_reward_per_relay,
+      MIN(timestamp) as first_submission,
+      MAX(timestamp) as last_submission
+      FROM proof_submissions ${where}`;
+    
+    const result = await client.query(summarySql, values);
+    
+    res.json({ data: result.rows[0] });
+  } catch (error) {
+    console.error('Error fetching proof submissions summary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start the server and initialize the worker pool
 const startServer = async () => {
   try {

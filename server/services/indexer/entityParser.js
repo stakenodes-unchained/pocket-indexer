@@ -1084,6 +1084,119 @@ function parseClaims(tx, block) {
 }
 
 /**
+ * Parse proof submission events from transaction events
+ * @param {any} tx
+ * @param {any} block
+ * @returns {Array}
+ */
+function parseProofSubmissions(tx, block) {
+  try {
+    const proofSubmissions = [];
+    
+    if (!tx) {
+      return proofSubmissions;
+    }
+    
+    // Get events from tx_response
+    const events = tx.tx_response?.events || [];
+    if (!Array.isArray(events) || events.length === 0) {
+      return proofSubmissions;
+    }
+    
+    const timestamp = block?.block?.header?.time || block?.timestamp || new Date().toISOString();
+    const blockHeight = parseInt(block?.block?.header?.height || block?.height || 0);
+    
+    // Look for EventProofSubmitted events
+    for (const event of events) {
+      if (event.type === 'pocket.proof.EventProofSubmitted') {
+        try {
+          // Extract attributes from the event
+          const attributes = event.attributes || [];
+          const submission = {
+            transaction_hash: tx.hash || '',
+            block_height: blockHeight,
+            timestamp: timestamp,
+            supplier_operator_address: '',
+            application_address: '',
+            service_id: '',
+            session_id: '',
+            session_end_block_height: 0,
+            claim_proof_status_int: 0,
+            claimed_upokt: '',
+            num_claimed_compute_units: 0,
+            num_estimated_compute_units: 0,
+            num_relays: 0,
+            msg_index: 0
+          };
+          
+          // Parse attributes
+          for (const attr of attributes) {
+            if (!attr.key || !attr.value) continue;
+            
+            switch (attr.key) {
+              case 'supplier_operator_address':
+                submission.supplier_operator_address = attr.value.replace(/"/g, '');
+                break;
+              case 'application_address':
+                submission.application_address = attr.value.replace(/"/g, '');
+                break;
+              case 'service_id':
+                submission.service_id = attr.value.replace(/"/g, '');
+                break;
+              case 'session_end_block_height':
+                submission.session_end_block_height = parseInt(attr.value.replace(/"/g, '')) || 0;
+                break;
+              case 'claim_proof_status_int':
+                submission.claim_proof_status_int = parseInt(attr.value) || 0;
+                break;
+              case 'claimed_upokt':
+                submission.claimed_upokt = attr.value.replace(/"/g, '');
+                break;
+              case 'num_claimed_compute_units':
+                submission.num_claimed_compute_units = parseInt(attr.value.replace(/"/g, '')) || 0;
+                break;
+              case 'num_estimated_compute_units':
+                submission.num_estimated_compute_units = parseInt(attr.value.replace(/"/g, '')) || 0;
+                break;
+              case 'num_relays':
+                submission.num_relays = parseInt(attr.value.replace(/"/g, '')) || 0;
+                break;
+              case 'msg_index':
+                submission.msg_index = parseInt(attr.value) || 0;
+                break;
+            }
+          }
+          
+          // Get session_id from the transaction messages if not found in events
+          if (!submission.session_id && tx.tx?.body?.messages) {
+            const messages = tx.tx.body.messages;
+            if (messages[submission.msg_index]?.session_header?.session_id) {
+              submission.session_id = messages[submission.msg_index].session_header.session_id;
+            }
+          }
+          
+          // Validate required fields
+          if (submission.supplier_operator_address && 
+              submission.application_address && 
+              submission.service_id &&
+              submission.transaction_hash) {
+            proofSubmissions.push(submission);
+          }
+        } catch (eventError) {
+          console.warn("Error processing EventProofSubmitted:", eventError.message);
+          continue;
+        }
+      }
+    }
+    
+    return proofSubmissions;
+  } catch (error) {
+    console.error("Error in parseProofSubmissions:", error.message);
+    return [];
+  }
+}
+
+/**
  * Parse services from a transaction
  * @param {any} tx
  * @param {any} block
@@ -1777,6 +1890,7 @@ module.exports = {
   parseApplications,
   parseStakingEvents,
   parseClaims,
+  parseProofSubmissions,
   parseServices,
   parseNodes,
   parseRelays,

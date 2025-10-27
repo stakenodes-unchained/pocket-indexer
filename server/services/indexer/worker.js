@@ -11,7 +11,8 @@ const {
   saveRelay,
   saveGovernance,
   upsertGateway,
-  upsertNetworkService
+  upsertNetworkService,
+  bulkSaveProofSubmissions
 } = require('./db');
 const { transformBlock } = require('./transformer');
 const { fetchBlockByHeight, fetchLatestBlock } = require('./rpc');
@@ -24,6 +25,7 @@ const {
   parseNodes,
   parseRelays,
   parseGateways,
+  parseProofSubmissions,
 } = require('./entityParser.v2');
 
 const { rpcName, rpcUrl, batchSize, processType } = workerData;
@@ -51,6 +53,8 @@ async function processBlock(blockData) {
     
     // Buffer claims for bulk upsert per block
     const claimsBuffer = [];
+    const proofSubmissionsBuffer = [];
+    
     for (const tx of block.transactions) {
       try {
         // Light message-type check to short-circuit non-relevant parsers
@@ -70,11 +74,17 @@ async function processBlock(blockData) {
         const governance = [];
 
         if (hasProofOrClaim) {
-          // Claims fast-path: only parse claims/relays
+          // Claims fast-path: only parse claims/relays and proof submissions
           relays = parseRelays(tx, blockData, rpcName);
           const claims = require('./entityParser.v2').parseClaims(tx, blockData, rpcName);
           if (Array.isArray(claims) && claims.length) {
             claimsBuffer.push(...claims);
+          }
+          
+          // Parse proof submissions for reward tracking
+          const proofSubmissions = parseProofSubmissions(tx, blockData);
+          if (Array.isArray(proofSubmissions) && proofSubmissions.length) {
+            proofSubmissionsBuffer.push(...proofSubmissions);
           }
         } else {
           // Full parsing for non-claim transactions
@@ -181,6 +191,16 @@ async function processBlock(blockData) {
       }
     } catch (e) {
       console.error(`[Worker ${workerData.id}] Error bulk saving claims:`, e.message);
+    }
+    
+    // Flush buffered proof submissions in bulk for this block
+    try {
+      if (proofSubmissionsBuffer.length) {
+        await bulkSaveProofSubmissions(proofSubmissionsBuffer);
+        console.log(`[Worker ${workerData.id}] Saved ${proofSubmissionsBuffer.length} proof submissions for reward tracking`);
+      }
+    } catch (e) {
+      console.error(`[Worker ${workerData.id}] Error bulk saving proof submissions:`, e.message);
     }
     console.log(`[Worker ${workerData.id}] Successfully processed block ${blockData.block?.header?.height || 'unknown'}`);
   } catch (error) {
@@ -428,7 +448,14 @@ async function continuousGapFilling() {
 
 async function monitorNewBlocks() {
   log('Starting new block monitor...');
-  let lastProcessedHeight = await getLastProcessedHeight(rpcName);
+  
+  // In monitoring mode, start from the current block height on the node
+  // The lag monitor will fill in any missing blocks later
+  const initialBlock = await fetchLatestBlock(rpcUrl);
+  let lastProcessedHeight = parseInt(initialBlock.block.header.height, 10);
+  
+  log(`Monitoring mode: Starting from current block height ${lastProcessedHeight} on node`);
+  
   const { upsertWorkerHeartbeat } = require('./db');
   const monitorIntervalMs = parseInt(process.env.MONITOR_INTERVAL_MS || '30000', 10);
 

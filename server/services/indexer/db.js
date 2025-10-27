@@ -539,6 +539,104 @@ async function bulkSaveClaims(claims) {
 }
 
 /**
+ * Save a proof submission
+ */
+async function saveProofSubmission(submission) {
+  await connectClients();
+  await pgClient.query(
+    `INSERT INTO proof_submissions (
+      transaction_hash, block_height, timestamp, supplier_operator_address, 
+      application_address, service_id, session_id, session_end_block_height,
+      claim_proof_status_int, claimed_upokt, num_claimed_compute_units,
+      num_estimated_compute_units, num_relays, msg_index
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+    ON CONFLICT (transaction_hash, supplier_operator_address, application_address, service_id, session_id, msg_index) 
+    DO UPDATE SET
+      block_height=EXCLUDED.block_height,
+      timestamp=EXCLUDED.timestamp,
+      session_end_block_height=EXCLUDED.session_end_block_height,
+      claim_proof_status_int=EXCLUDED.claim_proof_status_int,
+      claimed_upokt=EXCLUDED.claimed_upokt,
+      num_claimed_compute_units=EXCLUDED.num_claimed_compute_units,
+      num_estimated_compute_units=EXCLUDED.num_estimated_compute_units,
+      num_relays=EXCLUDED.num_relays`,
+    [
+      submission.transaction_hash,
+      submission.block_height,
+      submission.timestamp,
+      submission.supplier_operator_address,
+      submission.application_address,
+      submission.service_id,
+      submission.session_id,
+      submission.session_end_block_height,
+      submission.claim_proof_status_int,
+      submission.claimed_upokt,
+      submission.num_claimed_compute_units,
+      submission.num_estimated_compute_units,
+      submission.num_relays,
+      submission.msg_index
+    ]
+  );
+}
+
+/**
+ * Bulk save proof submissions with one statement per chunk for throughput
+ */
+async function bulkSaveProofSubmissions(submissions) {
+  await connectClients();
+  if (!Array.isArray(submissions) || submissions.length === 0) return;
+  
+  const chunkSize = 500;
+  for (let i = 0; i < submissions.length; i += chunkSize) {
+    const chunk = submissions.slice(i, i + chunkSize);
+    const values = [];
+    const params = [];
+    let p = 1;
+    
+    for (const s of chunk) {
+      values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+      params.push(
+        s.transaction_hash,
+        s.block_height,
+        s.timestamp,
+        s.supplier_operator_address,
+        s.application_address,
+        s.service_id,
+        s.session_id,
+        s.session_end_block_height,
+        s.claim_proof_status_int,
+        s.claimed_upokt,
+        s.num_claimed_compute_units,
+        s.num_estimated_compute_units,
+        s.num_relays,
+        s.msg_index
+      );
+    }
+    
+    const sql = `INSERT INTO proof_submissions (
+      transaction_hash, block_height, timestamp, supplier_operator_address, 
+      application_address, service_id, session_id, session_end_block_height,
+      claim_proof_status_int, claimed_upokt, num_claimed_compute_units,
+      num_estimated_compute_units, num_relays, msg_index
+    )
+    VALUES ${values.join(',')}
+    ON CONFLICT (transaction_hash, supplier_operator_address, application_address, service_id, session_id, msg_index) 
+    DO UPDATE SET
+      block_height=EXCLUDED.block_height,
+      timestamp=EXCLUDED.timestamp,
+      session_end_block_height=EXCLUDED.session_end_block_height,
+      claim_proof_status_int=EXCLUDED.claim_proof_status_int,
+      claimed_upokt=EXCLUDED.claimed_upokt,
+      num_claimed_compute_units=EXCLUDED.num_claimed_compute_units,
+      num_estimated_compute_units=EXCLUDED.num_estimated_compute_units,
+      num_relays=EXCLUDED.num_relays`;
+    
+    await pgClient.query(sql, params);
+  }
+}
+
+/**
  * Get the last processed block height from the database for a specific chain
  * @param {string} chain Chain name
  * @returns {Promise<number>}
@@ -1104,6 +1202,8 @@ module.exports = {
   saveGovernance,
   saveClaim,
   bulkSaveClaims,
+  saveProofSubmission,
+  bulkSaveProofSubmissions,
   upsertGateway,
   getHistoricalCheckpoint,
   setHistoricalCheckpoint,
