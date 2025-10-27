@@ -99,12 +99,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_proof_submissions_unique ON proof_submissi
 -- Index on transaction hash for easy retrieval (no foreign key constraint)
 -- Note: We rely on application logic to maintain referential integrity
 
--- Create a view for reward analytics
-CREATE OR REPLACE VIEW proof_submission_rewards AS
+-- Drop and recreate views with chain column included
+DROP VIEW IF EXISTS proof_submission_rewards;
+CREATE VIEW proof_submission_rewards AS
 SELECT 
   supplier_operator_address,
   application_address,
   service_id,
+  chain,
   DATE_TRUNC('hour', timestamp) as hour_bucket,
   COUNT(*) as submission_count,
   SUM(claimed_upokt_amount) as total_rewards_upokt,
@@ -117,13 +119,15 @@ SELECT
   MIN(claimed_upokt_amount) as min_reward_per_submission
 FROM proof_submissions
 WHERE claim_proof_status_int = 0  -- Only successful submissions
-GROUP BY supplier_operator_address, application_address, service_id, hour_bucket
+GROUP BY supplier_operator_address, application_address, service_id, hour_bucket, chain
 ORDER BY hour_bucket DESC, total_rewards_upokt DESC;
 
--- Create a view for supplier performance analytics
-CREATE OR REPLACE VIEW supplier_performance AS
+-- Drop and recreate supplier performance view
+DROP VIEW IF EXISTS supplier_performance;
+CREATE VIEW supplier_performance AS
 SELECT 
   supplier_operator_address,
+  chain,
   DATE_TRUNC('day', timestamp) as day_bucket,
   COUNT(DISTINCT application_address) as unique_applications,
   COUNT(DISTINCT service_id) as unique_services,
@@ -136,13 +140,15 @@ SELECT
   SUM(num_estimated_compute_units) as total_estimated_compute_units
 FROM proof_submissions
 WHERE claim_proof_status_int = 0  -- Only successful submissions
-GROUP BY supplier_operator_address, day_bucket
+GROUP BY supplier_operator_address, chain, day_bucket
 ORDER BY day_bucket DESC, total_rewards_upokt DESC;
 
--- Create a view for application usage analytics
-CREATE OR REPLACE VIEW application_usage AS
+-- Drop and recreate application usage view
+DROP VIEW IF EXISTS application_usage;
+CREATE VIEW application_usage AS
 SELECT 
   application_address,
+  chain,
   DATE_TRUNC('day', timestamp) as day_bucket,
   COUNT(DISTINCT supplier_operator_address) as unique_suppliers,
   COUNT(DISTINCT service_id) as unique_services,
@@ -155,7 +161,7 @@ SELECT
   SUM(num_estimated_compute_units) as total_estimated_compute_units
 FROM proof_submissions
 WHERE claim_proof_status_int = 0  -- Only successful submissions
-GROUP BY application_address, day_bucket
+GROUP BY application_address, chain, day_bucket
 ORDER BY day_bucket DESC, total_rewards_upokt DESC;
 
 -- Add comments for documentation
