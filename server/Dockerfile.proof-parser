@@ -1,0 +1,23 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install --legacy-peer-deps
+
+# Copy application files
+COPY . .
+
+# Make start script executable and set correct permissions
+RUN chmod +x start_proof_parser.sh && \
+    chown -R node:node /app
+
+USER node
+
+EXPOSE 3008
+
+CMD ["./start_proof_parser.sh"]
+

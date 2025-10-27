@@ -424,6 +424,44 @@ app.get('/api/v1/health/rpc', async (req, res) => {
   }
 });
 
+// Proof parser service health endpoints
+app.get('/api/v1/health/proof-parser', async (req, res) => {
+  try {
+    // proxy to proof parser service on port 3008
+    const response = await fetch(`http://pocket_proof_parser:3008/health`);
+    const data = await response.json();
+    res.json({ data });
+  } catch (error) {
+    console.error('Error fetching proof parser health:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/v1/health/proof-parser/:chain', async (req, res) => {
+  try {
+    const chain = req.params.chain;
+    // proxy to proof parser service on port 3008
+    const response = await fetch(`http://pocket_proof_parser:3008/health/${chain}`);
+    const data = await response.json();
+    res.json({ data });
+  } catch (error) {
+    console.error(`Error fetching proof parser health for chain ${req.params.chain}:`, error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/v1/health/proof-parser/stats', async (req, res) => {
+  try {
+    // proxy to proof parser service on port 3008
+    const response = await fetch(`http://pocket_proof_parser:3008/stats`);
+    const data = await response.json();
+    res.json({ data });
+  } catch (error) {
+    console.error('Error fetching proof parser stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // --- Health history helpers ---
 function parseWindow(req) {
   const now = Date.now();

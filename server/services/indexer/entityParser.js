@@ -1152,6 +1152,29 @@ function parseProofSubmissions(tx, block, chain) {
             if (!attr.key || !attr.value) continue;
             
             switch (attr.key) {
+              case 'claim':
+                // Parse claim JSON to extract nested data
+                try {
+                  const claimData = JSON.parse(attr.value);
+                  if (!submission.supplier_operator_address && claimData.supplier_operator_address) {
+                    submission.supplier_operator_address = claimData.supplier_operator_address;
+                  }
+                  if (!submission.application_address && claimData.session_header?.application_address) {
+                    submission.application_address = claimData.session_header.application_address;
+                  }
+                  if (!submission.service_id && claimData.session_header?.service_id) {
+                    submission.service_id = claimData.session_header.service_id;
+                  }
+                  if (!submission.session_id && claimData.session_header?.session_id) {
+                    submission.session_id = claimData.session_header.session_id;
+                  }
+                  if (!submission.session_end_block_height && claimData.session_header?.session_end_block_height) {
+                    submission.session_end_block_height = parseInt(claimData.session_header.session_end_block_height) || 0;
+                  }
+                } catch (e) {
+                  // Not valid JSON, skip
+                }
+                break;
               case 'supplier_operator_address':
                 submission.supplier_operator_address = attr.value.replace(/"/g, '');
                 break;
@@ -1168,7 +1191,18 @@ function parseProofSubmissions(tx, block, chain) {
                 submission.claim_proof_status_int = parseInt(attr.value) || 0;
                 break;
               case 'claimed_upokt':
-                submission.claimed_upokt = attr.value.replace(/"/g, '');
+                // Handle both formats: "252upokt" or {"denom":"upokt","amount":"252"}
+                let claimedValue = attr.value.replace(/"/g, '');
+                try {
+                  // Try to parse as JSON first
+                  const parsed = JSON.parse(attr.value);
+                  if (parsed.amount && parsed.denom) {
+                    claimedValue = parsed.amount + parsed.denom;
+                  }
+                } catch (e) {
+                  // Not JSON, use as is
+                }
+                submission.claimed_upokt = claimedValue;
                 break;
               case 'num_claimed_compute_units':
                 submission.num_claimed_compute_units = parseInt(attr.value.replace(/"/g, '')) || 0;
