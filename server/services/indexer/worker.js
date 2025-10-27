@@ -74,6 +74,8 @@ async function processBlock(blockData) {
         let gateways = [];
         const governance = [];
 
+        console.log("hasProofOrClaim:", hasProofOrClaim);
+
         if (hasProofOrClaim) {
           // Claims fast-path: only parse claims/relays and proof submissions
           relays = parseRelays(tx, blockData, rpcName);
