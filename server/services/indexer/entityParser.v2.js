@@ -469,8 +469,7 @@ function parseProofSubmissions(txEnvelope, block, chain) {
     return proofSubmissions;
   } catch (error) { 
     // log error
-    console.error(error)
-    
+    console.log("error", error)
     return []; 
   }
 }
