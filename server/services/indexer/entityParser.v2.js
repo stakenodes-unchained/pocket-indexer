@@ -351,7 +351,7 @@ function parseProofSubmissions(txEnvelope, block, chain) {
     
     // Get events from tx_response or from tx_data (which stores the full JSON stringified response)
     let events = txEnvelope.tx_response?.events || [];
-    let transactionHash = txEnvelope.tx_response?.hash || txEnvelope.txhash || '';
+    let transactionHash = txEnvelope.tx_response?.txhash || txEnvelope.txhash || '';
     
     // If no events in tx_response, try to parse from tx_data
     // The tx_data field contains the full transaction response object with nested tx_response
