@@ -81,7 +81,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
     // Extract block information from the new format
     const blockId = blockData.block_id?.hash || blockData.block?.header?.hash;
     const height = parseInt(blockData.block?.header?.height || blockData.sdk_block?.header?.height, 10);
-    const hash = blockData.block?.header?.hash || blockData.sdk_block?.header?.hash;
+    const hash = blockData.block_id?.hash || blockData.block?.header?.hash;
     const timestamp = blockData.block?.header?.time || blockData.sdk_block?.header?.time;
     const proposer = blockData.block?.header?.proposer_address || blockData.sdk_block?.header?.proposer_address;
 

@@ -151,37 +151,59 @@ app.get('/api/v1/blocks', async (req, res) => {
     const limitNum = Math.min(parseInt(limit, 10) || 100, 1000); // Cap at 1000 for performance
     const offset = (pageNum - 1) * limitNum;
     
-    // Optimized: Get total count (fast with index on chain)
-    const countSql = `SELECT COUNT(*) AS total FROM blocks b ${where}`;
-    const countRes = await client.query(countSql, values);
-    const total = parseInt(countRes.rows[0].total, 10);
+    // OPTIMIZATION: Make COUNT optional - can disable with ?skip_count=true for faster responses
+    // COUNT(*) can be slow on large tables, skip if not needed for pagination
+    const skipCount = req.query.skip_count === 'true';
+    let total = 0;
     
-    // Optimized query with transaction count using LEFT JOIN and aggregation
-    // Uses index on blocks and transactions.block_id for fast performance
-    const listSql = `SELECT 
-      b.id, 
-      b.height, 
-      b.hash, 
-      b.timestamp, 
-      b.proposer, 
-      b.chain,
-      COUNT(t.id)::integer as transaction_count
-      FROM blocks b
-      LEFT JOIN transactions t ON t.block_id = b.id
-      ${where}
-      GROUP BY b.id, b.height, b.hash, b.timestamp, b.proposer, b.chain
-      ORDER BY b.height DESC, b.timestamp DESC
-      LIMIT $${idx} OFFSET $${idx + 1}`;
+    // OPTIMIZATION: Single query approach using CTE
+    // First get the blocks with LIMIT, then join with transaction counts
+    // This is more efficient than separate queries
+    const countPromise = skipCount 
+      ? Promise.resolve({ rows: [{ total: '0' }] })
+      : client.query(`SELECT COUNT(*) AS total FROM blocks b ${where}`, values);
     
-    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    // Single optimized query: Get blocks and their transaction counts in one go
+    // CTE first gets the limited blocks, then we join with aggregated transaction counts
+    const blocksWithTxSql = `
+      WITH paginated_blocks AS (
+        SELECT 
+          id, height, hash, timestamp, proposer, chain
+        FROM blocks b ${where}
+        ORDER BY b.height DESC NULLS LAST
+        LIMIT $${idx} OFFSET $${idx + 1}
+      )
+      SELECT 
+        pb.id,
+        pb.height,
+        pb.hash,
+        pb.timestamp,
+        pb.proposer,
+        pb.chain,
+        COALESCE(COUNT(t.id), 0)::integer as transaction_count
+      FROM paginated_blocks pb
+      LEFT JOIN transactions t ON t.block_id = pb.id
+      GROUP BY pb.id, pb.height, pb.hash, pb.timestamp, pb.proposer, pb.chain
+      ORDER BY pb.height DESC NULLS LAST
+    `;
+    
+    const blocksPromise = client.query(blocksWithTxSql, [...values, limitNum, offset]);
+    
+    // Wait for both queries
+    const [countRes, blocksRes] = await Promise.all([countPromise, blocksPromise]);
+    total = skipCount ? 0 : parseInt(countRes.rows[0].total, 10);
+    
+    if (blocksRes.rows.length === 0) {
+      return res.json({ data: [], meta: { total, page: pageNum, limit: limitNum, totalPages: skipCount ? 0 : Math.ceil(total / limitNum) } });
+    }
     
     res.json({
-      data: listRes.rows,
+      data: blocksRes.rows,
       meta: {
         total,
         page: pageNum,
         limit: limitNum,
-        totalPages: Math.ceil(total / limitNum)
+        totalPages: skipCount ? 0 : Math.ceil(total / limitNum)
       }
     });
   } catch (error) {
