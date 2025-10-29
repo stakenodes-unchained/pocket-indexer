@@ -82,6 +82,180 @@ app.get('/api/v1/transactions/:transaction_id', async (req, res) => {
   }
 });
 
+// ============================================================================
+// BLOCKS ENDPOINTS
+// ============================================================================
+
+/**
+ * GET /api/v1/blocks
+ * 
+ * Retrieve blocks with pagination and optional filters.
+ * 
+ * Query Parameters:
+ * - chain (string, optional): Filter by chain identifier (e.g., "mainnet", "testnet")
+ * - page (integer, default: 1): Page number for pagination
+ * - limit (integer, default: 100): Number of results per page
+ * - start_height (integer, optional): Filter blocks from this height onwards
+ * - end_height (integer, optional): Filter blocks up to this height
+ * - start_date (datetime, optional): Filter blocks from this timestamp onwards
+ * - end_date (datetime, optional): Filter blocks up to this timestamp
+ * 
+ * Returns:
+ * - data: Array of block objects
+ * - meta: Pagination metadata (total, page, limit, totalPages)
+ */
+app.get('/api/v1/blocks', async (req, res) => {
+  try {
+    const { 
+      chain, 
+      page = 1, 
+      limit = 100, 
+      start_height, 
+      end_height, 
+      start_date, 
+      end_date 
+    } = req.query;
+    
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+    
+    // Build conditions with table alias 'b' for blocks (needed for JOIN query)
+    if (chain) {
+      conditions.push(`b.chain = $${idx++}`);
+      values.push(chain);
+    }
+    if (start_height) {
+      conditions.push(`b.height >= $${idx++}`);
+      values.push(parseInt(start_height, 10));
+    }
+    if (end_height) {
+      conditions.push(`b.height <= $${idx++}`);
+      values.push(parseInt(end_height, 10));
+    }
+    if (start_date) {
+      conditions.push(`b.timestamp >= $${idx++}`);
+      values.push(start_date);
+    }
+    if (end_date) {
+      conditions.push(`b.timestamp <= $${idx++}`);
+      values.push(end_date);
+    }
+    
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = Math.min(parseInt(limit, 10) || 100, 1000); // Cap at 1000 for performance
+    const offset = (pageNum - 1) * limitNum;
+    
+    // Optimized: Get total count (fast with index on chain)
+    const countSql = `SELECT COUNT(*) AS total FROM blocks b ${where}`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows[0].total, 10);
+    
+    // Optimized query with transaction count using LEFT JOIN and aggregation
+    // Uses index on blocks and transactions.block_id for fast performance
+    const listSql = `SELECT 
+      b.id, 
+      b.height, 
+      b.hash, 
+      b.timestamp, 
+      b.proposer, 
+      b.chain,
+      COUNT(t.id)::integer as transaction_count
+      FROM blocks b
+      LEFT JOIN transactions t ON t.block_id = b.id
+      ${where}
+      GROUP BY b.id, b.height, b.hash, b.timestamp, b.proposer, b.chain
+      ORDER BY b.height DESC, b.timestamp DESC
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+    
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    
+    res.json({
+      data: listRes.rows,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching blocks:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/v1/blocks/:block_id
+ * 
+ * Retrieve a specific block by ID or height.
+ * 
+ * Path Parameters:
+ * - block_id: Block ID (hash) or height (integer)
+ * 
+ * Query Parameters:
+ * - chain (string, optional): Filter by chain identifier (required if using height)
+ * 
+ * Returns:
+ * - data: Block object with transactions count
+ */
+app.get('/api/v1/blocks/:block_id', async (req, res) => {
+  try {
+    const { block_id } = req.params;
+    const { chain } = req.query;
+    
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    // Try to parse as integer (height) or use as ID (hash)
+    const height = parseInt(block_id, 10);
+    const isHeight = !isNaN(height) && height > 0;
+    
+    let block;
+    if (isHeight && chain) {
+      // Get by height and chain
+      const result = await client.query(
+        'SELECT * FROM blocks WHERE height = $1 AND chain = $2',
+        [height, chain]
+      );
+      block = result.rows[0];
+    } else {
+      // Get by ID (hash)
+      const result = await client.query(
+        'SELECT * FROM blocks WHERE id = $1',
+        [block_id]
+      );
+      block = result.rows[0];
+    }
+    
+    if (!block) {
+      return res.status(404).json({ error: 'Block not found' });
+    }
+    
+    // Get transaction count for this block
+    const txCountResult = await client.query(
+      'SELECT COUNT(*) as count FROM transactions WHERE block_id = $1',
+      [block.id]
+    );
+    const txCount = parseInt(txCountResult.rows[0].count, 10);
+    
+    res.json({
+      data: {
+        ...block,
+        transaction_count: txCount
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching block:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // New endpoint to get chain statistics
 app.get('/api/v1/chains/stats', async (req, res) => {
   try {

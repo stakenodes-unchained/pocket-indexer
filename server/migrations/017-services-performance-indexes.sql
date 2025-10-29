@@ -43,3 +43,32 @@ WHERE claim_proof_status_int = 0;
 -- Ensures PostgreSQL query planner has up-to-date statistics for optimal index selection
 ANALYZE proof_submissions;
 
+-- ============================================================================
+-- BLOCKS ENDPOINT PERFORMANCE INDEXES
+-- ============================================================================
+
+-- Composite index for fast blocks listing with chain filter
+-- Optimizes: WHERE chain = X ORDER BY height DESC, timestamp DESC
+CREATE INDEX IF NOT EXISTS idx_blocks_chain_height_timestamp 
+ON blocks(chain, height DESC, timestamp DESC);
+
+-- Composite index for height range queries
+-- Optimizes: WHERE chain = X AND height >= Y AND height <= Z ORDER BY height DESC
+CREATE INDEX IF NOT EXISTS idx_blocks_chain_height_range 
+ON blocks(chain, height DESC)
+WHERE height IS NOT NULL;
+
+-- Index for timestamp range queries
+-- Optimizes: WHERE chain = X AND timestamp >= Y AND timestamp <= Z
+CREATE INDEX IF NOT EXISTS idx_blocks_chain_timestamp 
+ON blocks(chain, timestamp DESC);
+
+-- Index for transactions.block_id to optimize JOIN with blocks
+-- Optimizes: LEFT JOIN transactions t ON t.block_id = b.id (for transaction count)
+CREATE INDEX IF NOT EXISTS idx_transactions_block_id 
+ON transactions(block_id);
+
+-- Update statistics for blocks and transactions tables
+ANALYZE blocks;
+ANALYZE transactions;
+
