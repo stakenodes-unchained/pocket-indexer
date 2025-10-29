@@ -955,33 +955,56 @@ app.get('/api/v1/services/top-by-compute-units', async (req, res) => {
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
-    const conditions = [`timestamp >= NOW() - INTERVAL '${daysValue} days'`, `claim_proof_status_int = 0`];
+    // Optimized query with index-friendly WHERE clause ordering
+    // chain first (if provided), then claim_proof_status_int, then timestamp
+    const conditions = [`claim_proof_status_int = 0`, `timestamp >= NOW() - INTERVAL '${daysValue} days'`];
     const values = [];
     let idx = 1;
     
+    // Put chain first in WHERE clause for optimal index usage
     if (chain) {
-      conditions.push(`chain = $${idx++}`);
-      values.push(chain);
+      conditions.unshift(`chain = $${idx++}`);
+      values.unshift(chain);
     }
     
     const where = `WHERE ${conditions.join(' AND ')}`;
     
-    const sql = `
-      SELECT 
-        service_id,
-        chain,
-        SUM(num_claimed_compute_units) as total_claimed_compute_units,
-        SUM(num_estimated_compute_units) as total_estimated_compute_units,
-        COUNT(*) as submission_count,
-        AVG(compute_unit_efficiency) as avg_efficiency_percent,
-        MIN(timestamp) as period_start,
-        MAX(timestamp) as period_end
-      FROM proof_submissions
-      ${where}
-      GROUP BY service_id, chain
-      ORDER BY total_claimed_compute_units DESC
-      LIMIT $${idx}
-    `;
+    // Optimized query - uses covering index for fast aggregation
+    // When chain is provided, we group only by service_id (faster)
+    // When chain is not provided, we include it in GROUP BY
+    const sql = chain
+      ? `
+        SELECT 
+          service_id,
+          $1::text as chain,
+          SUM(num_claimed_compute_units) as total_claimed_compute_units,
+          SUM(num_estimated_compute_units) as total_estimated_compute_units,
+          COUNT(*) as submission_count,
+          AVG(compute_unit_efficiency) as avg_efficiency_percent,
+          MIN(timestamp) as period_start,
+          MAX(timestamp) as period_end
+        FROM proof_submissions
+        ${where}
+        GROUP BY service_id
+        ORDER BY total_claimed_compute_units DESC
+        LIMIT $${idx}
+      `
+      : `
+        SELECT 
+          service_id,
+          chain,
+          SUM(num_claimed_compute_units) as total_claimed_compute_units,
+          SUM(num_estimated_compute_units) as total_estimated_compute_units,
+          COUNT(*) as submission_count,
+          AVG(compute_unit_efficiency) as avg_efficiency_percent,
+          MIN(timestamp) as period_start,
+          MAX(timestamp) as period_end
+        FROM proof_submissions
+        ${where}
+        GROUP BY service_id, chain
+        ORDER BY total_claimed_compute_units DESC
+        LIMIT $${idx}
+      `;
     
     values.push(limitValue);
     
@@ -1040,46 +1063,80 @@ app.get('/api/v1/services/top-by-performance', async (req, res) => {
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
-    const conditions = [`timestamp >= NOW() - INTERVAL '${daysValue} days'`, `claim_proof_status_int = 0`];
+    // Optimized: Single query using CTE to avoid two round trips
+    // Index-friendly WHERE clause ordering: chain first (if provided), then claim_proof_status_int, then timestamp
+    const conditions = [`claim_proof_status_int = 0`, `timestamp >= NOW() - INTERVAL '${daysValue} days'`];
     const values = [];
     let idx = 1;
     
+    // Put chain first in WHERE clause for optimal index usage
     if (chain) {
-      conditions.push(`chain = $${idx++}`);
-      values.push(chain);
+      conditions.unshift(`chain = $${idx++}`);
+      values.unshift(chain);
     }
     
     const where = `WHERE ${conditions.join(' AND ')}`;
     
-    // First, get total for percentage calculation
-    const totalSql = `
-      SELECT SUM(num_claimed_compute_units) as total_compute_units
-      FROM proof_submissions
-      ${where}
-    `;
+    // Single optimized query with CTE - faster than two separate queries
+    // Uses covering index and calculates total in one pass
+    const sql = chain
+      ? `
+        WITH service_totals AS (
+          SELECT 
+            service_id,
+            $1::text as chain,
+            SUM(num_claimed_compute_units) as total_claimed_compute_units,
+            SUM(num_estimated_compute_units) as total_estimated_compute_units,
+            COUNT(*) as submission_count,
+            AVG(compute_unit_efficiency) as avg_efficiency_percent,
+            MIN(timestamp) as period_start,
+            MAX(timestamp) as period_end
+          FROM proof_submissions
+          ${where}
+          GROUP BY service_id
+        ),
+        grand_total AS (
+          SELECT SUM(total_claimed_compute_units) as total_compute_units
+          FROM service_totals
+        )
+        SELECT 
+          st.*,
+          gt.total_compute_units
+        FROM service_totals st
+        CROSS JOIN grand_total gt
+        ORDER BY st.total_claimed_compute_units DESC
+        LIMIT 10
+      `
+      : `
+        WITH service_totals AS (
+          SELECT 
+            service_id,
+            chain,
+            SUM(num_claimed_compute_units) as total_claimed_compute_units,
+            SUM(num_estimated_compute_units) as total_estimated_compute_units,
+            COUNT(*) as submission_count,
+            AVG(compute_unit_efficiency) as avg_efficiency_percent,
+            MIN(timestamp) as period_start,
+            MAX(timestamp) as period_end
+          FROM proof_submissions
+          ${where}
+          GROUP BY service_id, chain
+        ),
+        grand_total AS (
+          SELECT SUM(total_claimed_compute_units) as total_compute_units
+          FROM service_totals
+        )
+        SELECT 
+          st.*,
+          gt.total_compute_units
+        FROM service_totals st
+        CROSS JOIN grand_total gt
+        ORDER BY st.total_claimed_compute_units DESC
+        LIMIT 10
+      `;
     
-    const totalResult = await client.query(totalSql, values);
-    const totalComputeUnits = parseInt(totalResult.rows[0]?.total_compute_units || '0', 10);
-    
-    // Then get top 10 services
-    const topServicesSql = `
-      SELECT 
-        service_id,
-        chain,
-        SUM(num_claimed_compute_units) as total_claimed_compute_units,
-        SUM(num_estimated_compute_units) as total_estimated_compute_units,
-        COUNT(*) as submission_count,
-        AVG(compute_unit_efficiency) as avg_efficiency_percent,
-        MIN(timestamp) as period_start,
-        MAX(timestamp) as period_end
-      FROM proof_submissions
-      ${where}
-      GROUP BY service_id, chain
-      ORDER BY total_claimed_compute_units DESC
-      LIMIT 10
-    `;
-    
-    const servicesResult = await client.query(topServicesSql, values);
+    const servicesResult = await client.query(sql, values);
+    const totalComputeUnits = parseInt(servicesResult.rows[0]?.total_compute_units || '0', 10);
     
     // Calculate percentages and add rank
     const services = servicesResult.rows.map((service, index) => {
