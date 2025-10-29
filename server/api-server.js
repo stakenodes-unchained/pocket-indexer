@@ -917,6 +917,207 @@ app.get('/api/v1/proof-submissions/summary', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/v1/services/top-by-compute-units
+ * 
+ * Returns top N services by total compute units for the specified time period.
+ * Perfect for growth graphs showing service adoption over time.
+ * 
+ * Query Parameters:
+ * - limit: Number of top services to return (5, 10, 25, or 50). Default: 10
+ * - days: Time period in days (7, 15, or 30). Default: 30
+ * - chain: Optional chain filter (e.g., "mainnet", "testnet")
+ * 
+ * Returns array of services with:
+ * - service_id: The service identifier
+ * - total_claimed_compute_units: Sum of all claimed compute units
+ * - total_estimated_compute_units: Sum of all estimated compute units
+ * - submission_count: Number of proof submissions
+ * - avg_efficiency_percent: Average efficiency percentage
+ * - period_start: Start timestamp of the period
+ * - period_end: End timestamp of the period
+ * 
+ * Example:
+ * GET /api/v1/services/top-by-compute-units?limit=25&days=7&chain=mainnet
+ */
+app.get('/api/v1/services/top-by-compute-units', async (req, res) => {
+  try {
+    const { limit = '10', days = '30', chain } = req.query;
+    
+    // Validate limit
+    const validLimits = ['5', '10', '25', '50'];
+    const limitValue = validLimits.includes(limit) ? parseInt(limit, 10) : 10;
+    
+    // Validate days
+    const validDays = ['7', '15', '30'];
+    const daysValue = validDays.includes(days) ? parseInt(days, 10) : 30;
+    
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const conditions = [`timestamp >= NOW() - INTERVAL '${daysValue} days'`, `claim_proof_status_int = 0`];
+    const values = [];
+    let idx = 1;
+    
+    if (chain) {
+      conditions.push(`chain = $${idx++}`);
+      values.push(chain);
+    }
+    
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    
+    const sql = `
+      SELECT 
+        service_id,
+        chain,
+        SUM(num_claimed_compute_units) as total_claimed_compute_units,
+        SUM(num_estimated_compute_units) as total_estimated_compute_units,
+        COUNT(*) as submission_count,
+        AVG(compute_unit_efficiency) as avg_efficiency_percent,
+        MIN(timestamp) as period_start,
+        MAX(timestamp) as period_end
+      FROM proof_submissions
+      ${where}
+      GROUP BY service_id, chain
+      ORDER BY total_claimed_compute_units DESC
+      LIMIT $${idx}
+    `;
+    
+    values.push(limitValue);
+    
+    const result = await client.query(sql, values);
+    
+    res.json({
+      data: result.rows,
+      meta: {
+        limit: limitValue,
+        days: daysValue,
+        chain: chain || 'all',
+        period_start: result.rows[0]?.period_start || null,
+        period_end: result.rows[0]?.period_end || null
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching top services by compute units:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/v1/services/top-by-performance
+ * 
+ * Returns top 10 services by compute units with percentage distribution.
+ * Perfect for displaying a table showing network usage distribution.
+ * 
+ * Query Parameters:
+ * - chain: Optional chain filter (e.g., "mainnet", "testnet")
+ * - days: Optional time period in days (default: 30). Only accepts 7, 15, or 30
+ * 
+ * Returns array of top 10 services with:
+ * - service_id: The service identifier
+ * - total_claimed_compute_units: Sum of all claimed compute units
+ * - total_estimated_compute_units: Sum of all estimated compute units
+ * - submission_count: Number of proof submissions
+ * - avg_efficiency_percent: Average efficiency percentage
+ * - percentage_of_total: Percentage distribution (0-100)
+ * - rank: Ranking position (1-10)
+ * 
+ * Also returns:
+ * - total_compute_units: Grand total for percentage calculations
+ * - meta: Period information
+ * 
+ * Example:
+ * GET /api/v1/services/top-by-performance?chain=mainnet&days=15
+ */
+app.get('/api/v1/services/top-by-performance', async (req, res) => {
+  try {
+    const { chain, days = '30' } = req.query;
+    
+    // Validate days
+    const validDays = ['7', '15', '30'];
+    const daysValue = validDays.includes(days) ? parseInt(days, 10) : 30;
+    
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const conditions = [`timestamp >= NOW() - INTERVAL '${daysValue} days'`, `claim_proof_status_int = 0`];
+    const values = [];
+    let idx = 1;
+    
+    if (chain) {
+      conditions.push(`chain = $${idx++}`);
+      values.push(chain);
+    }
+    
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    
+    // First, get total for percentage calculation
+    const totalSql = `
+      SELECT SUM(num_claimed_compute_units) as total_compute_units
+      FROM proof_submissions
+      ${where}
+    `;
+    
+    const totalResult = await client.query(totalSql, values);
+    const totalComputeUnits = parseInt(totalResult.rows[0]?.total_compute_units || '0', 10);
+    
+    // Then get top 10 services
+    const topServicesSql = `
+      SELECT 
+        service_id,
+        chain,
+        SUM(num_claimed_compute_units) as total_claimed_compute_units,
+        SUM(num_estimated_compute_units) as total_estimated_compute_units,
+        COUNT(*) as submission_count,
+        AVG(compute_unit_efficiency) as avg_efficiency_percent,
+        MIN(timestamp) as period_start,
+        MAX(timestamp) as period_end
+      FROM proof_submissions
+      ${where}
+      GROUP BY service_id, chain
+      ORDER BY total_claimed_compute_units DESC
+      LIMIT 10
+    `;
+    
+    const servicesResult = await client.query(topServicesSql, values);
+    
+    // Calculate percentages and add rank
+    const services = servicesResult.rows.map((service, index) => {
+      const claimed = parseInt(service.total_claimed_compute_units || '0', 10);
+      const percentage = totalComputeUnits > 0 
+        ? parseFloat(((claimed / totalComputeUnits) * 100).toFixed(2))
+        : 0;
+      
+      return {
+        rank: index + 1,
+        service_id: service.service_id,
+        chain: service.chain,
+        total_claimed_compute_units: claimed,
+        total_estimated_compute_units: parseInt(service.total_estimated_compute_units || '0', 10),
+        submission_count: parseInt(service.submission_count || '0', 10),
+        avg_efficiency_percent: parseFloat(parseFloat(service.avg_efficiency_percent || '0').toFixed(2)),
+        percentage_of_total: percentage,
+        period_start: service.period_start,
+        period_end: service.period_end
+      };
+    });
+    
+    res.json({
+      data: services,
+      total_compute_units: totalComputeUnits,
+      meta: {
+        days: daysValue,
+        chain: chain || 'all',
+        period_start: services[0]?.period_start || null,
+        period_end: services[0]?.period_end || null
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching top services by performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start the server and initialize the worker pool
 const startServer = async () => {
   try {
