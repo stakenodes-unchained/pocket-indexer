@@ -1074,6 +1074,10 @@ app.get('/api/v1/proof-submissions/summary', async (req, res) => {
       conditions.push(`timestamp <= $${idx++}`);
       values.push(end_date);
     }
+    // Default to last 24 hours if no explicit date range provided
+    if (!start_date && !end_date) {
+      conditions.push(`timestamp >= NOW() - INTERVAL '24 hours'`);
+    }
     if (supplier_address) {
       conditions.push(`supplier_operator_address = $${idx++}`);
       values.push(supplier_address);
