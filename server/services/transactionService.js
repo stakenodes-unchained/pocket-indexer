@@ -85,12 +85,26 @@ class TransactionService {
       }
       
       // Get transactions for the page (ordered by timestamp descending)
+      // Extract block_height from tx_data JSONB to avoid JOIN with blocks table
       const transactionsResult = await this.pgClient.query(
-        `SELECT t.id, t.hash, t.block_id, t.sender, t.recipient, t.amount, t.fee, t.memo, t.type, t.status, t.chain, t.timestamp, b.height as block_height FROM transactions as t
-         JOIN blocks as b ON t.block_id = b.id
-         WHERE t.chain = $1 
-         ORDER BY timestamp DESC 
-         LIMIT $2 OFFSET $3`,
+        `SELECT 
+          t.id, 
+          t.hash, 
+          t.block_id, 
+          t.sender, 
+          t.recipient, 
+          t.amount, 
+          t.fee, 
+          t.memo, 
+          t.type, 
+          t.status, 
+          t.chain, 
+          t.timestamp,
+          (t.tx_data->'tx_response'->>'height')::bigint as block_height
+        FROM transactions as t
+        WHERE t.chain = $1 
+        ORDER BY t.timestamp DESC 
+        LIMIT $2 OFFSET $3`,
         [chainName, limitNum, offset]
       );
       
@@ -98,7 +112,9 @@ class TransactionService {
         ...tx,
         chain: chainName,
         // Parse JSON fields if they exist
-        tx_data: tx.tx_data ? (typeof tx.tx_data === 'string' ? JSON.parse(tx.tx_data) : tx.tx_data) : null
+        tx_data: tx.tx_data ? (typeof tx.tx_data === 'string' ? JSON.parse(tx.tx_data) : tx.tx_data) : null,
+        // block_height is already extracted from JSONB (may be null if not present)
+        block_height: tx.block_height ? parseInt(tx.block_height, 10) : null
       }));
       
       return {
