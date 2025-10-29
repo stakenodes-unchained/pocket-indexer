@@ -3,18 +3,92 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const path = require('path');
+const cluster = require('cluster');
+const os = require('os');
 const transactionService = require('./services/transactionService');
 const metricsCollector = require('./services/metricsCollector');
+const redis = require('./config/redis');
 
 // Load environment variables
 dotenv.config();
 
-const app = express();
 const PORT = process.env.PORT || 3006;
+const NUM_WORKERS = process.env.CLUSTER_WORKERS || os.cpus().length;
+
+// Simple Redis cache middleware for GET requests
+const cacheMiddleware = (ttl = 60) => {
+  return async (req, res, next) => {
+    // Only cache GET requests
+    if (req.method !== 'GET') {
+      return next();
+    }
+    
+    // Skip cache for endpoints that shouldn't be cached (like health checks)
+    if (req.path.includes('/health') || req.path.includes('/jobs')) {
+      return next();
+    }
+    
+    try {
+      // Create cache key from URL and query params
+      const cacheKey = `api:${req.method}:${req.path}:${JSON.stringify(req.query)}`;
+      
+      // Try to get from cache
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        res.set('X-Cache', 'HIT');
+        return res.json(JSON.parse(cached));
+      }
+      
+      // Store original json method
+      const originalJson = res.json.bind(res);
+      res.json = function(data) {
+        // Cache the response
+        redis.set(cacheKey, JSON.stringify(data), 'EX', ttl).catch(err => {
+          console.error('Redis cache set error:', err);
+        });
+        res.set('X-Cache', 'MISS');
+        return originalJson(data);
+      };
+      
+      next();
+    } catch (err) {
+      // If Redis fails, continue without cache
+      console.error('Cache middleware error:', err);
+      next();
+    }
+  };
+};
+
+// Cluster mode: spawn worker processes
+// Use isPrimary for newer Node.js versions, fallback to isMaster for older versions
+if (cluster.isPrimary || cluster.isMaster) {
+  console.log(`🚀 Primary process ${process.pid} starting ${NUM_WORKERS} workers...`);
+  
+  // Fork workers
+  for (let i = 0; i < NUM_WORKERS; i++) {
+    cluster.fork();
+  }
+  
+  // Handle worker exit
+  cluster.on('exit', (worker, code, signal) => {
+    console.log(`⚠️  Worker ${worker.process.pid} died. Restarting...`);
+    cluster.fork();
+  });
+  
+  console.log(`✅ Primary process ready with ${NUM_WORKERS} workers`);
+  return;
+}
+
+// Worker process - this is where the Express app runs
+const app = express();
 
 // Middleware
 app.use(bodyParser.json());
 app.use(cors());
+
+// Add caching middleware for GET requests (60 second TTL by default)
+// Can be overridden per route if needed
+app.use(cacheMiddleware(30));
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -1380,48 +1454,54 @@ const startServer = async () => {
   try {
     // Log startup banner
     console.log('='.repeat(80));
-    console.log('🚀 POCKET NETWORK API SERVER STARTING');
+    console.log(`🚀 POCKET NETWORK API SERVER STARTING (Worker ${cluster.worker.id}/${NUM_WORKERS})`);
     console.log('='.repeat(80));
     console.log(`📅 Start Time: ${new Date().toISOString()}`);
     console.log(`🆔 Process ID: ${process.pid}`);
+    console.log(`👷 Worker ID: ${cluster.worker.id}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔌 Port: ${PORT}`);
     console.log(`📊 Node Version: ${process.version}`);
     console.log(`💾 Memory Usage: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
+    console.log(`🔗 Database Pool: ${process.env.DB_POOL_SIZE || '20'} max connections`);
     console.log('='.repeat(80));
     
     // Start the HTTP server
     app.listen(PORT, () => {
-      console.log(`🌐 API server running on http://localhost:${PORT}`);
+      console.log(`🌐 Worker ${cluster.worker.id} API server running on http://localhost:${PORT}`);
     });
     
     console.log('='.repeat(80));
-    console.log('🎉 API SERVER STARTED SUCCESSFULLY');
+    console.log(`🎉 Worker ${cluster.worker.id} STARTED SUCCESSFULLY`);
     console.log('='.repeat(80));
     
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
       console.log('='.repeat(80));
-      console.log('🛑 API SERVER SHUTTING DOWN (SIGINT)');
+      console.log(`🛑 Worker ${cluster.worker.id} SHUTTING DOWN (SIGINT)`);
       console.log(`📅 Shutdown Time: ${new Date().toISOString()}`);
       console.log(`⏱️  Uptime: ${Math.round(process.uptime())} seconds`);
       console.log('='.repeat(80));
-      console.log('👋 API SERVER SHUTDOWN COMPLETE');
+      // Close database pool gracefully
+      await transactionService.pgPool.end();
+      console.log('👋 Worker shutdown complete');
       process.exit(0);
     });
     
     process.on('SIGTERM', async () => {
       console.log('='.repeat(80));
-      console.log('🛑 API SERVER SHUTTING DOWN (SIGTERM)');
+      console.log(`🛑 Worker ${cluster.worker.id} SHUTTING DOWN (SIGTERM)`);
       console.log(`📅 Shutdown Time: ${new Date().toISOString()}`);
       console.log(`⏱️  Uptime: ${Math.round(process.uptime())} seconds`);
       console.log('='.repeat(80));
-      console.log('👋 API SERVER SHUTDOWN COMPLETE');
+      // Close database pool gracefully
+      await transactionService.pgPool.end();
+      console.log('👋 Worker shutdown complete');
       process.exit(0);
     });
   } catch (error) {
     console.log('='.repeat(80));
-    console.log('❌ API SERVER STARTUP FAILED');
+    console.log(`❌ Worker ${cluster.worker?.id || 'unknown'} STARTUP FAILED`);
     console.log(`📅 Failure Time: ${new Date().toISOString()}`);
     console.log(`🆔 Process ID: ${process.pid}`);
     console.log(`💥 Error: ${error.message}`);

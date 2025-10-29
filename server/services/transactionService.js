@@ -1,7 +1,7 @@
 const redis = require('../config/redis');
 const REDIS_CACHE_TX_DETAIL = (process.env.REDIS_CACHE_TX_DETAIL || 'false') === 'true';
 const { getRpcEndpoints } = require('../config/rpc');
-const { Client } = require('pg');
+const { Pool } = require('pg');
 
 /**
  * Transaction service that provides methods to interact with stored transaction data
@@ -10,26 +10,40 @@ class TransactionService {
   constructor() {
     this.rpcEndpoints = getRpcEndpoints();
     
-    // PostgreSQL client
-    this.pgClient = new Client({
+    // PostgreSQL connection pool for concurrent request handling
+    this.pgPool = new Pool({
       host: process.env.DB_HOST,
       port: process.env.DB_PORT,
       user: process.env.DB_USER,
       password: process.env.DB_PASS,
       database: process.env.DB_NAME,
+      // Connection pool settings for performance
+      max: parseInt(process.env.DB_POOL_SIZE || '20', 10), // Max connections in pool
+      min: parseInt(process.env.DB_POOL_MIN || '2', 10),   // Min connections to maintain
+      idleTimeoutMillis: 30000,  // Close idle clients after 30 seconds
+      connectionTimeoutMillis: 10000, // 10 second connection timeout
+      statement_timeout: 60000, // 60 second query timeout
     });
     
-    this.pgClient._connected = false;
+    // Handle pool errors
+    this.pgPool.on('error', (err) => {
+      console.error('Unexpected error on idle PostgreSQL client', err);
+    });
   }
 
   /**
-   * Connect to the database if not already connected
+   * Get database client from pool (pool handles connections automatically)
    */
   async connectDB() {
-    if (!this.pgClient._connected) {
-      await this.pgClient.connect();
-      this.pgClient._connected = true;
-    }
+    // Pool manages connections automatically, just ensure pool is ready
+    return this.pgPool;
+  }
+
+  /**
+   * Get pgPool for direct query access
+   */
+  get pgClient() {
+    return this.pgPool;
   }
 
   /**
