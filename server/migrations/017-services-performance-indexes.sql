@@ -33,6 +33,7 @@ WHERE claim_proof_status_int = 0;
 -- Alternative covering index without INCLUDE (works on all PostgreSQL versions)
 CREATE INDEX IF NOT EXISTS idx_proof_submissions_service_covering 
 ON proof_submissions(chain, claim_proof_status_int, service_id, timestamp DESC, num_claimed_compute_units DESC)
+;
 
 -- Additional index for estimated compute units aggregation (if needed)
 CREATE INDEX IF NOT EXISTS idx_proof_submissions_service_estimated 
