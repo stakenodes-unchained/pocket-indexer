@@ -38,14 +38,17 @@ function extractDomain(website) {
   }
 }
 
-async function upsertValidators(validators) {
+async function upsertValidators(validators, chain) {
   if (!Array.isArray(validators) || validators.length === 0) return 0;
+  if (!chain) {
+    throw new Error('chain is required for upsertValidators');
+  }
   const pool = getPool();
   const client = await pool.connect();
   try {
-    const text = `INSERT INTO validators (operator_address, moniker, website, website_domain, status, jailed, tokens, cached_at, updated_at)
-                  VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NOW())
-                  ON CONFLICT (operator_address) DO UPDATE SET
+    const text = `INSERT INTO validators (operator_address, chain, moniker, website, website_domain, status, jailed, tokens, cached_at, updated_at)
+                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
+                  ON CONFLICT (operator_address, chain) DO UPDATE SET
                     moniker = EXCLUDED.moniker,
                     website = EXCLUDED.website,
                     website_domain = EXCLUDED.website_domain,
@@ -63,7 +66,7 @@ async function upsertValidators(validators) {
       const status = v.status || null;
       const jailed = typeof v.jailed === 'boolean' ? v.jailed : null;
       const tokens = v.tokens ? String(v.tokens) : null;
-      await client.query(text, [operator, moniker, website, websiteDomain, status, jailed, tokens]);
+      await client.query(text, [operator, chain, moniker, website, websiteDomain, status, jailed, tokens]);
     }
     return validators.length;
   } finally {
@@ -98,22 +101,31 @@ async function fetchAndCacheValidators({ chain, apiBase, pageSize = 100 } = {}) 
     if (!res.ok) throw new Error(`Failed to fetch validators from ${resolvedApiBase}: ${res.status}`);
     const data = await res.json();
     const validators = data?.validators || [];
-    await upsertValidators(validators);
+    
+    // Chain is required - use provided chain or throw error if missing
+    if (!chain) {
+      throw new Error('chain parameter is required for fetchAndCacheValidators');
+    }
+    
+    await upsertValidators(validators, chain);
     total += validators.length;
     nextKey = data?.pagination?.next_key || null;
   } while (nextKey);
   return total;
 }
 
-async function getOperatorsByDomain(domain) {
+async function getOperatorsByDomain(domain, chain = null) {
   if (!domain) return [];
   const pool = getPool();
   const client = await pool.connect();
   try {
-    const { rows } = await client.query(
-      `SELECT operator_address FROM validators WHERE website_domain = $1`,
-      [domain]
-    );
+    let query = `SELECT operator_address FROM validators WHERE website_domain = $1`;
+    const params = [domain];
+    if (chain) {
+      query += ` AND chain = $2`;
+      params.push(chain);
+    }
+    const { rows } = await client.query(query, params);
     return rows.map(r => r.operator_address);
   } finally {
     client.release();
