@@ -112,7 +112,7 @@ app.use((req, res, next) => {
 
 // API endpoints
 // Network growth (apps, services, gateways, suppliers, relays, compute units)
-app.get('/api/v1/network-growth', async (req, res) => {
+app.get('/api/v1/network-growth', cacheMiddleware(300), async (req, res) => {
   try {
     const { chain, window } = req.query;
     await transactionService.connectDB();
@@ -136,6 +136,7 @@ app.get('/api/v1/network-growth', async (req, res) => {
         FROM transactions
         WHERE timestamp >= (SELECT start_day FROM bounds)
           AND ($1::text IS NULL OR chain = $1)
+          AND (tx_data->'tx'->'body'->'messages') IS NOT NULL
       ),
       msgs AS (
         SELECT 
@@ -277,7 +278,7 @@ app.get('/api/v1/network-growth', async (req, res) => {
 });
 
 // Network growth summary (aggregate over window)
-app.get('/api/v1/network-growth/summary', async (req, res) => {
+app.get('/api/v1/network-growth/summary', cacheMiddleware(300), async (req, res) => {
   try {
     const { chain, window } = req.query;
     await transactionService.connectDB();
@@ -294,6 +295,7 @@ app.get('/api/v1/network-growth/summary', async (req, res) => {
         FROM transactions
         WHERE timestamp >= (SELECT start_day FROM bounds)
           AND ($1::text IS NULL OR chain = $1)
+          AND (tx_data->'tx'->'body'->'messages') IS NOT NULL
       ),
       msgs AS (
         SELECT 
