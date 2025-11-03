@@ -111,6 +111,271 @@ app.use((req, res, next) => {
 });
 
 // API endpoints
+// Network growth (apps, services, gateways, suppliers, relays, compute units)
+app.get('/api/v1/network-growth', async (req, res) => {
+  try {
+    const { chain, window } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    // Window in days (default 7)
+    const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
+
+    // Build daily series for the selected window, counting new entities first seen per day
+    const entitiesSql = `
+      WITH bounds AS (
+        SELECT (NOW()::date) AS end_day,
+               (NOW()::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
+      ),
+      days AS (
+        SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
+        FROM bounds b
+      ),
+      txw AS (
+        SELECT timestamp, tx_data
+        FROM transactions
+        WHERE timestamp >= (SELECT start_day FROM bounds)
+          AND ($1::text IS NULL OR chain = $1)
+      ),
+      msgs AS (
+        SELECT 
+          t.timestamp,
+          COALESCE(m->>'@type', m->>'type', m->>'type_url') AS type_url,
+          COALESCE(
+            m->>'address',
+            m->>'app_address',
+            m->>'gateway_address',
+            m->>'operator_address',
+            m->>'owner_address'
+          ) AS addr,
+          (m->'service'->>'id') AS service_id
+        FROM txw t
+        JOIN LATERAL jsonb_array_elements(t.tx_data->'tx'->'body'->'messages') AS m ON TRUE
+      ),
+      apps_first AS (
+        SELECT DATE_TRUNC('day', MIN(timestamp))::date AS first_day
+        FROM msgs
+        WHERE type_url ILIKE '%pocket.application.MsgStakeApplication%'
+          AND addr IS NOT NULL
+        GROUP BY addr
+      ),
+      sups_first AS (
+        SELECT DATE_TRUNC('day', MIN(timestamp))::date AS first_day
+        FROM msgs
+        WHERE type_url ILIKE '%pocket.supplier.MsgStakeSupplier%'
+          AND addr IS NOT NULL
+        GROUP BY addr
+      ),
+      gws_first AS (
+        SELECT DATE_TRUNC('day', MIN(timestamp))::date AS first_day
+        FROM msgs
+        WHERE type_url ILIKE '%pocket.gateway.MsgStakeGateway%'
+          AND addr IS NOT NULL
+        GROUP BY addr
+      ),
+      svcs_first AS (
+        SELECT DATE_TRUNC('day', MIN(timestamp))::date AS first_day
+        FROM msgs
+        WHERE type_url ILIKE '%pocket.service.MsgAddService%'
+          AND service_id IS NOT NULL
+        GROUP BY service_id
+      ),
+      apps_counts AS (
+        SELECT first_day AS day, COUNT(*) AS cnt FROM apps_first GROUP BY first_day
+      ),
+      sups_counts AS (
+        SELECT first_day AS day, COUNT(*) AS cnt FROM sups_first GROUP BY first_day
+      ),
+      gws_counts AS (
+        SELECT first_day AS day, COUNT(*) AS cnt FROM gws_first GROUP BY first_day
+      ),
+      svcs_counts AS (
+        SELECT first_day AS day, COUNT(*) AS cnt FROM svcs_first GROUP BY first_day
+      )
+      SELECT d.day,
+             COALESCE(a.cnt, 0) AS applications,
+             COALESCE(s.cnt, 0) AS suppliers,
+             COALESCE(g.cnt, 0) AS gateways,
+             COALESCE(v.cnt, 0) AS services
+      FROM days d
+      LEFT JOIN apps_counts a USING(day)
+      LEFT JOIN sups_counts s USING(day)
+      LEFT JOIN gws_counts g USING(day)
+      LEFT JOIN svcs_counts v USING(day)
+      ORDER BY d.day ASC;
+    `;
+
+    const entitiesRes = await client.query(entitiesSql, [chain || null, windowDays]);
+    const entitySeries = entitiesRes.rows || [];
+
+    // Aggregate relays and compute units from proof_submissions (optimized by existing indexes)
+    const perfSql = `
+      WITH bounds AS (
+        SELECT (NOW()::date) AS end_day,
+               (NOW()::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
+      ),
+      days AS (
+        SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
+        FROM bounds b
+      ),
+      agg AS (
+        SELECT DATE_TRUNC('day', timestamp)::date AS day,
+               SUM(num_relays) AS relays,
+               SUM(num_claimed_compute_units) AS compute_units
+        FROM proof_submissions
+        WHERE claim_proof_status_int = 0
+          AND timestamp >= (SELECT start_day FROM bounds)
+          AND ($1::text IS NULL OR chain = $1)
+        GROUP BY 1
+      )
+      SELECT d.day,
+             COALESCE(a.relays, 0) AS relays,
+             COALESCE(a.compute_units, 0) AS compute_units
+      FROM days d
+      LEFT JOIN agg a USING(day)
+      ORDER BY d.day ASC;
+    `;
+
+    const perfRes = await client.query(perfSql, [chain || null, windowDays]);
+    const perfSeries = perfRes.rows || [];
+
+    // Merge series on day
+    const byDay = new Map();
+    for (const row of entitySeries) {
+      byDay.set(row.day, {
+        day: row.day,
+        applications: Number(row.applications || 0),
+        suppliers: Number(row.suppliers || 0),
+        gateways: Number(row.gateways || 0),
+        services: Number(row.services || 0),
+        relays: 0,
+        compute_units: 0
+      });
+    }
+    for (const row of perfSeries) {
+      const existing = byDay.get(row.day) || {
+        day: row.day,
+        applications: 0,
+        suppliers: 0,
+        gateways: 0,
+        services: 0,
+        relays: 0,
+        compute_units: 0
+      };
+      existing.relays = Number(row.relays || 0);
+      existing.compute_units = Number(row.compute_units || 0);
+      byDay.set(row.day, existing);
+    }
+
+    const timeline = Array.from(byDay.values()).sort((a, b) => new Date(a.day) - new Date(b.day));
+
+    res.json({ data: { window_days: windowDays, timeline } });
+  } catch (error) {
+    console.error('Error fetching network growth:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Network growth summary (aggregate over window)
+app.get('/api/v1/network-growth/summary', async (req, res) => {
+  try {
+    const { chain, window } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
+
+    const entitiesSql = `
+      WITH bounds AS (
+        SELECT (NOW()::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
+      ),
+      txw AS (
+        SELECT timestamp, tx_data
+        FROM transactions
+        WHERE timestamp >= (SELECT start_day FROM bounds)
+          AND ($1::text IS NULL OR chain = $1)
+      ),
+      msgs AS (
+        SELECT 
+          t.timestamp,
+          COALESCE(m->>'@type', m->>'type', m->>'type_url') AS type_url,
+          COALESCE(
+            m->>'address',
+            m->>'app_address',
+            m->>'gateway_address',
+            m->>'operator_address',
+            m->>'owner_address'
+          ) AS addr,
+          (m->'service'->>'id') AS service_id
+        FROM txw t
+        JOIN LATERAL jsonb_array_elements(t.tx_data->'tx'->'body'->'messages') AS m ON TRUE
+      ),
+      apps AS (
+        SELECT MIN(timestamp) AS first_seen
+        FROM msgs
+        WHERE type_url ILIKE '%pocket.application.MsgStakeApplication%'
+          AND addr IS NOT NULL
+        GROUP BY addr
+      ),
+      sups AS (
+        SELECT MIN(timestamp) AS first_seen
+        FROM msgs
+        WHERE type_url ILIKE '%pocket.supplier.MsgStakeSupplier%'
+          AND addr IS NOT NULL
+        GROUP BY addr
+      ),
+      gws AS (
+        SELECT MIN(timestamp) AS first_seen
+        FROM msgs
+        WHERE type_url ILIKE '%pocket.gateway.MsgStakeGateway%'
+          AND addr IS NOT NULL
+        GROUP BY addr
+      ),
+      svcs AS (
+        SELECT MIN(timestamp) AS first_seen
+        FROM msgs
+        WHERE type_url ILIKE '%pocket.service.MsgAddService%'
+          AND service_id IS NOT NULL
+        GROUP BY service_id
+      )
+      SELECT
+        COALESCE(COUNT(*) FILTER (WHERE first_seen >= NOW() - make_interval(days => $2::int)), 0) AS applications,
+        COALESCE((SELECT COUNT(*) FROM sups WHERE first_seen >= NOW() - make_interval(days => $2::int)), 0) AS suppliers,
+        COALESCE((SELECT COUNT(*) FROM gws  WHERE first_seen >= NOW() - make_interval(days => $2::int)), 0) AS gateways,
+        COALESCE((SELECT COUNT(*) FROM svcs WHERE first_seen >= NOW() - make_interval(days => $2::int)), 0) AS services
+      FROM apps;
+    `;
+
+    const entitiesRes = await client.query(entitiesSql, [chain || null, windowDays]);
+    const entities = entitiesRes.rows[0] || {};
+
+    const perfSql = `
+      SELECT
+        COALESCE(SUM(num_relays), 0) AS relays,
+        COALESCE(SUM(num_claimed_compute_units), 0) AS compute_units
+      FROM proof_submissions
+      WHERE claim_proof_status_int = 0
+        AND timestamp >= NOW() - make_interval(days => $2::int)
+        AND ($1::text IS NULL OR chain = $1);
+    `;
+
+    const perfRes = await client.query(perfSql, [chain || null, windowDays]);
+    const perf = perfRes.rows[0] || {};
+
+    res.json({ data: {
+      window_days: windowDays,
+      applications: Number(entities.applications || 0),
+      suppliers: Number(entities.suppliers || 0),
+      gateways: Number(entities.gateways || 0),
+      services: Number(entities.services || 0),
+      relays: Number(perf.relays || 0),
+      compute_units: Number(perf.compute_units || 0)
+    }});
+  } catch (error) {
+    console.error('Error fetching network growth summary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 app.get('/api/v1/transactions', async (req, res) => {
   try {
     const { page, limit, chain } = req.query;
