@@ -88,7 +88,7 @@ app.use(cors());
 
 // Add caching middleware for GET requests (60 second TTL by default)
 // Can be overridden per route if needed
-app.use(cacheMiddleware(30));
+app.use(cacheMiddleware(60));
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -1144,6 +1144,44 @@ app.get('/api/v1/staking', async (req, res) => {
 // PROOF SUBMISSIONS ENDPOINTS
 // ============================================================================
 
+// Wire validator service for domain metadata
+const validatorService = require('./services/validatorService');
+
+// Optional: background refresh of validators cache
+// Set ENABLE_VALIDATOR_REFRESH=true and optionally VALIDATOR_REFRESH_INTERVAL_MS (default 21600000 = 6h)
+if (process.env.ENABLE_VALIDATOR_REFRESH === 'true') {
+  const interval = parseInt(process.env.VALIDATOR_REFRESH_INTERVAL_MS || '21600000', 10);
+  (async () => {
+    try {
+      console.log('[validators] Initial cache refresh start');
+      const count = await validatorService.fetchAndCacheValidators({});
+      console.log(`[validators] Initial cache refresh completed, upserted ${count} validators`);
+    } catch (e) {
+      console.warn('[validators] Initial cache refresh failed:', e.message);
+    }
+  })();
+  setInterval(async () => {
+    try {
+      const count = await validatorService.fetchAndCacheValidators({});
+      console.log(`[validators] Periodic cache refresh completed, upserted ${count} validators`);
+    } catch (e) {
+      console.warn('[validators] Periodic cache refresh failed:', e.message);
+    }
+  }, interval);
+}
+
+// Admin endpoint to refresh validators cache on-demand
+app.post('/api/v1/admin/validators/refresh', async (req, res) => {
+  try {
+    const { apiBase } = req.body || {};
+    const count = await validatorService.fetchAndCacheValidators({ apiBase });
+    res.json({ status: 'ok', upserted: count });
+  } catch (error) {
+    console.error('Error refreshing validators cache:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get proof submissions with filters
 app.get('/api/v1/proof-submissions', async (req, res) => {
   try {
@@ -1454,6 +1492,283 @@ app.get('/api/v1/proof-submissions/summary', async (req, res) => {
     res.json({ data: result.rows[0] });
   } catch (error) {
     console.error('Error fetching proof submissions summary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Validators performance endpoints
+
+// GET /api/v1/validators/performance
+// Query: domain, owner_address, supplier_address, chain, service_id, start_date, end_date, group_by(day|hour|total), page, limit
+app.get('/api/v1/validators/performance', async (req, res) => {
+  try {
+    const { domain, owner_address, supplier_address, chain, service_id, start_date, end_date, group_by = 'day', page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    // Build WHERE conditions over proof_submissions joined to suppliers and validators
+    const conditions = ["ps.claim_proof_status_int = 0"]; // successful submissions only
+    const values = [];
+    let idx = 1;
+
+    if (chain) { conditions.push(`ps.chain = $${idx++}`); values.push(chain); }
+    if (service_id) { conditions.push(`ps.service_id = $${idx++}`); values.push(service_id); }
+    if (start_date) { conditions.push(`ps.timestamp >= $${idx++}`); values.push(start_date); }
+    if (end_date) { conditions.push(`ps.timestamp <= $${idx++}`); values.push(end_date); }
+    if (supplier_address) { conditions.push(`ps.supplier_operator_address = $${idx++}`); values.push(supplier_address); }
+    if (owner_address) { conditions.push(`s.owner_address = $${idx++}`); values.push(owner_address); }
+    if (domain) { conditions.push(`v.website_domain = $${idx++}`); values.push(domain); }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    // Grouping
+    let bucketExpr = null;
+    if (group_by === 'hour') bucketExpr = `DATE_TRUNC('hour', ps.timestamp) AS bucket`;
+    else if (group_by === 'total') bucketExpr = `NULL::timestamp AS bucket`;
+    else bucketExpr = `DATE_TRUNC('day', ps.timestamp) AS bucket`;
+
+    // Count total groups for pagination (approximate for total grouping)
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+
+    const countSql = `
+      SELECT COUNT(*) AS total FROM (
+        SELECT 
+          ${bucketExpr.replace(' AS bucket', '')} AS bucket_key,
+          ps.supplier_operator_address
+        FROM proof_submissions ps
+        LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
+        LEFT JOIN validators v ON v.operator_address = ps.supplier_operator_address
+        ${where}
+        GROUP BY bucket_key, ps.supplier_operator_address
+      ) t`;
+
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows?.[0]?.total || '0', 10);
+
+    const listSql = `
+      SELECT 
+        ${bucketExpr},
+        ps.supplier_operator_address,
+        s.owner_address,
+        v.moniker,
+        v.website,
+        v.website_domain,
+        v.status AS validator_status,
+        COALESCE(COUNT(*)::BIGINT, 0) AS submissions,
+        COALESCE(SUM(ps.num_relays)::BIGINT, 0) AS total_relays,
+        COALESCE(SUM(ps.num_claimed_compute_units)::BIGINT, 0) AS total_claimed_compute_units,
+        COALESCE(SUM(ps.num_estimated_compute_units)::BIGINT, 0) AS total_estimated_compute_units,
+        ROUND(AVG(ps.compute_unit_efficiency)::numeric, 2) AS avg_efficiency_percent,
+        ROUND(AVG(ps.reward_per_relay)::numeric, 2) AS avg_reward_per_relay,
+        COUNT(DISTINCT ps.application_address) AS unique_applications,
+        COUNT(DISTINCT ps.service_id) AS unique_services
+      FROM proof_submissions ps
+      LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
+      LEFT JOIN validators v ON v.operator_address = ps.supplier_operator_address
+      ${where}
+      GROUP BY bucket, ps.supplier_operator_address, s.owner_address, v.moniker, v.website, v.website_domain, v.status
+      ORDER BY bucket DESC NULLS LAST, total_relays DESC
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+
+    res.json({
+      data: listRes.rows,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching validator performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/v1/validators/:operator_address/performance
+app.get('/api/v1/validators/:operator_address/performance', async (req, res) => {
+  try {
+    const { operator_address } = req.params;
+    const { chain, service_id, start_date, end_date, group_by = 'day', page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    const conditions = ["ps.claim_proof_status_int = 0", `ps.supplier_operator_address = $1`];
+    const values = [operator_address];
+    let idx = 2;
+    if (chain) { conditions.push(`ps.chain = $${idx++}`); values.push(chain); }
+    if (service_id) { conditions.push(`ps.service_id = $${idx++}`); values.push(service_id); }
+    if (start_date) { conditions.push(`ps.timestamp >= $${idx++}`); values.push(start_date); }
+    if (end_date) { conditions.push(`ps.timestamp <= $${idx++}`); values.push(end_date); }
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    let bucketExpr = null;
+    if (group_by === 'hour') bucketExpr = `DATE_TRUNC('hour', ps.timestamp) AS bucket`;
+    else if (group_by === 'total') bucketExpr = `NULL::timestamp AS bucket`;
+    else bucketExpr = `DATE_TRUNC('day', ps.timestamp) AS bucket`;
+
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+
+    const countSql = `
+      SELECT COUNT(*) AS total FROM (
+        SELECT ${bucketExpr.replace(' AS bucket', '')} AS bucket_key
+        FROM proof_submissions ps
+        ${where}
+        GROUP BY bucket_key
+      ) t`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows?.[0]?.total || '0', 10);
+
+    const listSql = `
+      SELECT 
+        ${bucketExpr},
+        ps.supplier_operator_address,
+        COALESCE(COUNT(*)::BIGINT, 0) AS submissions,
+        COALESCE(SUM(ps.num_relays)::BIGINT, 0) AS total_relays,
+        COALESCE(SUM(ps.num_claimed_compute_units)::BIGINT, 0) AS total_claimed_compute_units,
+        COALESCE(SUM(ps.num_estimated_compute_units)::BIGINT, 0) AS total_estimated_compute_units,
+        ROUND(AVG(ps.compute_unit_efficiency)::numeric, 2) AS avg_efficiency_percent,
+        ROUND(AVG(ps.reward_per_relay)::numeric, 2) AS avg_reward_per_relay,
+        COUNT(DISTINCT ps.application_address) AS unique_applications,
+        COUNT(DISTINCT ps.service_id) AS unique_services
+      FROM proof_submissions ps
+      ${where}
+      GROUP BY bucket, ps.supplier_operator_address
+      ORDER BY bucket DESC NULLS LAST
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+
+    // Fetch metadata
+    const metaSql = `SELECT operator_address, moniker, website, website_domain, status, jailed, tokens FROM validators WHERE operator_address = $1`;
+    const metaRes = await client.query(metaSql, [operator_address]);
+
+    res.json({
+      data: listRes.rows,
+      validator: metaRes.rows?.[0] || null,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching validator detail performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/v1/validators/domains - leaderboard by domain
+app.get('/api/v1/validators/domains', async (req, res) => {
+  try {
+    const { chain, service_id, start_date, end_date, page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    const conditions = ["ps.claim_proof_status_int = 0"]; // successful only
+    const values = [];
+    let idx = 1;
+    if (chain) { conditions.push(`ps.chain = $${idx++}`); values.push(chain); }
+    if (service_id) { conditions.push(`ps.service_id = $${idx++}`); values.push(service_id); }
+    if (start_date) { conditions.push(`ps.timestamp >= $${idx++}`); values.push(start_date); }
+    if (end_date) { conditions.push(`ps.timestamp <= $${idx++}`); values.push(end_date); }
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+
+    const countSql = `
+      SELECT COUNT(*) AS total FROM (
+        SELECT v.website_domain
+        FROM proof_submissions ps
+        LEFT JOIN validators v ON v.operator_address = ps.supplier_operator_address
+        ${where}
+        GROUP BY v.website_domain
+      ) t`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows?.[0]?.total || '0', 10);
+
+    const listSql = `
+      SELECT 
+        v.website_domain AS domain,
+        COUNT(DISTINCT ps.supplier_operator_address) AS validator_count,
+        COALESCE(SUM(ps.num_relays)::BIGINT, 0) AS total_relays,
+        COALESCE(SUM(ps.num_claimed_compute_units)::BIGINT, 0) AS total_claimed_compute_units,
+        COALESCE(SUM(ps.num_estimated_compute_units)::BIGINT, 0) AS total_estimated_compute_units,
+        ROUND(AVG(ps.compute_unit_efficiency)::numeric, 2) AS avg_efficiency_percent
+      FROM proof_submissions ps
+      LEFT JOIN validators v ON v.operator_address = ps.supplier_operator_address
+      ${where}
+      GROUP BY v.website_domain
+      ORDER BY total_relays DESC NULLS LAST
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    res.json({ data: listRes.rows, meta: { total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) } });
+  } catch (error) {
+    console.error('Error fetching validator domains leaderboard:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/v1/validators/owners - leaderboard by owner
+app.get('/api/v1/validators/owners', async (req, res) => {
+  try {
+    const { chain, service_id, start_date, end_date, page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    const conditions = ["ps.claim_proof_status_int = 0"]; // successful only
+    const values = [];
+    let idx = 1;
+    if (chain) { conditions.push(`ps.chain = $${idx++}`); values.push(chain); }
+    if (service_id) { conditions.push(`ps.service_id = $${idx++}`); values.push(service_id); }
+    if (start_date) { conditions.push(`ps.timestamp >= $${idx++}`); values.push(start_date); }
+    if (end_date) { conditions.push(`ps.timestamp <= $${idx++}`); values.push(end_date); }
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+
+    const countSql = `
+      SELECT COUNT(*) AS total FROM (
+        SELECT s.owner_address
+        FROM proof_submissions ps
+        LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
+        ${where}
+        GROUP BY s.owner_address
+      ) t`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows?.[0]?.total || '0', 10);
+
+    const listSql = `
+      SELECT 
+        s.owner_address,
+        COUNT(DISTINCT ps.supplier_operator_address) AS supplier_count,
+        COALESCE(SUM(ps.num_relays)::BIGINT, 0) AS total_relays,
+        COALESCE(SUM(ps.num_claimed_compute_units)::BIGINT, 0) AS total_claimed_compute_units,
+        COALESCE(SUM(ps.num_estimated_compute_units)::BIGINT, 0) AS total_estimated_compute_units,
+        ROUND(AVG(ps.compute_unit_efficiency)::numeric, 2) AS avg_efficiency_percent
+      FROM proof_submissions ps
+      LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
+      ${where}
+      GROUP BY s.owner_address
+      ORDER BY total_relays DESC NULLS LAST
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    res.json({ data: listRes.rows, meta: { total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) } });
+  } catch (error) {
+    console.error('Error fetching validator owners leaderboard:', error);
     res.status(500).json({ error: error.message });
   }
 });
