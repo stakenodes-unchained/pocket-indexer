@@ -6,6 +6,8 @@ const path = require('path');
 const indexerPool = require('./services/indexer/pool');
 const transactionService = require('./services/transactionService');
 const metricsCollector = require('./services/metricsCollector');
+const validatorService = require('./services/validatorService');
+const supplierEnrichmentService = require('./services/supplierEnrichmentService');
 
 
 // Load environment variables
@@ -226,6 +228,86 @@ app.get('/api/v1/health/gaps', async (req, res) => {
   }
 });
 
+// Admin endpoints for enrichment
+// POST /api/v1/admin/suppliers/enrich
+app.post('/api/v1/admin/suppliers/enrich', async (req, res) => {
+  try {
+    const { chain } = req.query;
+    const { operator_addresses } = req.body || {};
+    
+    await transactionService.connectDB();
+    
+    // Set external pool for enrichment service
+    supplierEnrichmentService.setExternalPool(transactionService.pgClient);
+    
+    const chains = chain ? [chain] : transactionService.getAvailableChains();
+    const batchSize = parseInt(process.env.SUPPLIER_ENRICHMENT_BATCH || '200', 10);
+    
+    const results = {};
+    
+    for (const chainName of chains) {
+      try {
+        const result = await supplierEnrichmentService.enrichBatch(
+          chainName,
+          batchSize,
+          operator_addresses
+        );
+        results[chainName] = result;
+      } catch (error) {
+        console.error(`[supplier-enrichment] Error enriching chain ${chainName}:`, error);
+        results[chainName] = {
+          processed: 0,
+          updated: 0,
+          skipped: 0,
+          failed: 0,
+          error: error.message
+        };
+      }
+    }
+    
+    res.json({ chains: results });
+  } catch (error) {
+    console.error('Error in supplier enrichment endpoint:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/v1/admin/validators/refresh
+app.post('/api/v1/admin/validators/refresh', async (req, res) => {
+  try {
+    const { chain } = req.query;
+    
+    await transactionService.connectDB();
+    
+    // Set external pool for validator service
+    validatorService.setExternalPool(transactionService.pgClient);
+    
+    const chains = chain ? [chain] : transactionService.getAvailableChains();
+    const results = {};
+    
+    for (const chainName of chains) {
+      try {
+        const count = await validatorService.fetchAndCacheValidators({ chain: chainName });
+        results[chainName] = {
+          status: 'ok',
+          upserted: count
+        };
+      } catch (error) {
+        console.error(`[validators] Error refreshing chain ${chainName}:`, error);
+        results[chainName] = {
+          status: 'error',
+          error: error.message
+        };
+      }
+    }
+    
+    res.json({ chains: results });
+  } catch (error) {
+    console.error('Error in validator refresh endpoint:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start the server and initialize the worker pool
 const startServer = async () => {
   try {
@@ -255,6 +337,79 @@ const startServer = async () => {
     console.log('📈 Starting metrics collector...');
     metricsCollector.start();
     console.log('✅ Metrics collector started');
+    
+    // Initialize enrichment services with database pool
+    validatorService.setExternalPool(transactionService.pgClient);
+    supplierEnrichmentService.setExternalPool(transactionService.pgClient);
+    
+    // Start supplier enrichment periodic job
+    if (process.env.ENABLE_SUPPLIER_ENRICHMENT === 'true') {
+      const batchSize = parseInt(process.env.SUPPLIER_ENRICHMENT_BATCH || '200', 10);
+      const interval = parseInt(process.env.SUPPLIER_ENRICHMENT_INTERVAL_MS || '3600000', 10);
+      
+      console.log(`🔄 Starting supplier enrichment job (interval: ${interval}ms, batch: ${batchSize})`);
+      
+      // Initial run
+      (async () => {
+        try {
+          const chains = transactionService.getAvailableChains();
+          console.log(`[supplier-enrichment] Initial enrichment start for chains: ${chains.join(', ')}`);
+          for (const chain of chains) {
+            const result = await supplierEnrichmentService.enrichBatch(chain, batchSize);
+            console.log(`[supplier-enrichment] Chain ${chain}: processed=${result.processed}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`);
+          }
+        } catch (error) {
+          console.warn('[supplier-enrichment] Initial enrichment failed:', error.message);
+        }
+      })();
+      
+      // Periodic runs
+      setInterval(async () => {
+        try {
+          const chains = transactionService.getAvailableChains();
+          for (const chain of chains) {
+            const result = await supplierEnrichmentService.enrichBatch(chain, batchSize);
+            console.log(`[supplier-enrichment] Periodic enrichment ${chain}: processed=${result.processed}, updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}`);
+          }
+        } catch (error) {
+          console.warn('[supplier-enrichment] Periodic enrichment failed:', error.message);
+        }
+      }, interval);
+    }
+    
+    // Start validator refresh periodic job
+    if (process.env.ENABLE_VALIDATOR_REFRESH === 'true') {
+      const interval = parseInt(process.env.VALIDATOR_REFRESH_INTERVAL_MS || '21600000', 10);
+      
+      console.log(`🔄 Starting validator refresh job (interval: ${interval}ms)`);
+      
+      // Initial run
+      (async () => {
+        try {
+          const chains = transactionService.getAvailableChains();
+          console.log(`[validators] Initial refresh start for chains: ${chains.join(', ')}`);
+          for (const chain of chains) {
+            const count = await validatorService.fetchAndCacheValidators({ chain });
+            console.log(`[validators] Chain ${chain}: upserted ${count} validators`);
+          }
+        } catch (error) {
+          console.warn('[validators] Initial refresh failed:', error.message);
+        }
+      })();
+      
+      // Periodic runs
+      setInterval(async () => {
+        try {
+          const chains = transactionService.getAvailableChains();
+          for (const chain of chains) {
+            const count = await validatorService.fetchAndCacheValidators({ chain });
+            console.log(`[validators] Periodic refresh ${chain}: upserted ${count} validators`);
+          }
+        } catch (error) {
+          console.warn('[validators] Periodic refresh failed:', error.message);
+        }
+      }, interval);
+    }
     
     console.log('='.repeat(80));
     console.log('🎉 INDEXER SERVICE STARTED SUCCESSFULLY');

@@ -1144,44 +1144,6 @@ app.get('/api/v1/staking', async (req, res) => {
 // PROOF SUBMISSIONS ENDPOINTS
 // ============================================================================
 
-// Wire validator service for domain metadata
-const validatorService = require('./services/validatorService');
-
-// Optional: background refresh of validators cache
-// Set ENABLE_VALIDATOR_REFRESH=true and optionally VALIDATOR_REFRESH_INTERVAL_MS (default 21600000 = 6h)
-if (process.env.ENABLE_VALIDATOR_REFRESH === 'true') {
-  const interval = parseInt(process.env.VALIDATOR_REFRESH_INTERVAL_MS || '21600000', 10);
-  (async () => {
-    try {
-      console.log('[validators] Initial cache refresh start');
-      const count = await validatorService.fetchAndCacheValidators({});
-      console.log(`[validators] Initial cache refresh completed, upserted ${count} validators`);
-    } catch (e) {
-      console.warn('[validators] Initial cache refresh failed:', e.message);
-    }
-  })();
-  setInterval(async () => {
-    try {
-      const count = await validatorService.fetchAndCacheValidators({});
-      console.log(`[validators] Periodic cache refresh completed, upserted ${count} validators`);
-    } catch (e) {
-      console.warn('[validators] Periodic cache refresh failed:', e.message);
-    }
-  }, interval);
-}
-
-// Admin endpoint to refresh validators cache on-demand
-app.post('/api/v1/admin/validators/refresh', async (req, res) => {
-  try {
-    const { apiBase } = req.body || {};
-    const count = await validatorService.fetchAndCacheValidators({ apiBase });
-    res.json({ status: 'ok', upserted: count });
-  } catch (error) {
-    console.error('Error refreshing validators cache:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Get proof submissions with filters
 app.get('/api/v1/proof-submissions', async (req, res) => {
   try {

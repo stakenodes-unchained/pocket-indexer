@@ -2,6 +2,7 @@
 
 const url = require('url');
 const { Pool } = require('pg');
+const { getChainApiBase } = require('./chainConfig');
 
 // Reuse existing DB connection strategy from transactionService if available
 // but keep a minimal fallback for service isolation.
@@ -70,8 +71,23 @@ async function upsertValidators(validators) {
   }
 }
 
-async function fetchAndCacheValidators({ apiBase = 'https://shannon-grove-api.mainnet.poktroll.com', pageSize = 100 } = {}) {
-  const endpoint = `${apiBase}/cosmos/staking/v1beta1/validators`;
+async function fetchAndCacheValidators({ chain, apiBase, pageSize = 100 } = {}) {
+  // Resolve apiBase from chain if chain provided
+  let resolvedApiBase = apiBase;
+  if (chain && !apiBase) {
+    const chainConfig = getChainApiBase(chain);
+    if (!chainConfig) {
+      throw new Error(`Chain '${chain}' not found in RPC_ENDPOINTS configuration`);
+    }
+    resolvedApiBase = chainConfig.url;
+  }
+  
+  // Default fallback for backward compatibility
+  if (!resolvedApiBase) {
+    resolvedApiBase = 'https://shannon-grove-api.mainnet.poktroll.com';
+  }
+  
+  const endpoint = `${resolvedApiBase}/cosmos/staking/v1beta1/validators`;
   let nextKey = null;
   let total = 0;
   do {
@@ -79,7 +95,7 @@ async function fetchAndCacheValidators({ apiBase = 'https://shannon-grove-api.ma
     params.set('pagination.limit', String(pageSize));
     if (nextKey) params.set('pagination.key', nextKey);
     const res = await fetch(`${endpoint}?${params.toString()}`, { timeout: 30000 });
-    if (!res.ok) throw new Error(`Failed to fetch validators: ${res.status}`);
+    if (!res.ok) throw new Error(`Failed to fetch validators from ${resolvedApiBase}: ${res.status}`);
     const data = await res.json();
     const validators = data?.validators || [];
     await upsertValidators(validators);
