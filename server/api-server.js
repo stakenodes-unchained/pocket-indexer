@@ -1501,7 +1501,7 @@ app.get('/api/v1/validators/performance', async (req, res) => {
           ps.supplier_operator_address
         FROM proof_submissions ps
         LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
-        LEFT JOIN validators v ON v.operator_address = s.owner_address AND v.chain = ps.chain
+        LEFT JOIN validators v ON v.operator_address = ps.supplier_operator_address AND v.chain = ps.chain
         ${where}
         GROUP BY bucket_key, ps.supplier_operator_address
       ) t`;
@@ -1528,7 +1528,7 @@ app.get('/api/v1/validators/performance', async (req, res) => {
         COUNT(DISTINCT ps.service_id) AS unique_services
       FROM proof_submissions ps
       LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
-      LEFT JOIN validators v ON v.operator_address = s.owner_address AND v.chain = ps.chain
+      LEFT JOIN validators v ON v.operator_address = ps.supplier_operator_address AND v.chain = ps.chain
       ${where}
       GROUP BY bucket, ps.supplier_operator_address, s.owner_address, v.moniker, v.website, v.website_domain, v.status
       ORDER BY bucket DESC NULLS LAST, total_relays DESC
@@ -1658,7 +1658,7 @@ app.get('/api/v1/validators/domains', async (req, res) => {
         SELECT v.website_domain
         FROM proof_submissions ps
         LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
-        LEFT JOIN validators v ON v.operator_address = s.owner_address AND v.chain = ps.chain
+        LEFT JOIN validators v ON v.operator_address = ps.supplier_operator_address AND v.chain = ps.chain
         ${where}
         GROUP BY v.website_domain
         HAVING v.website_domain IS NOT NULL
@@ -1676,7 +1676,7 @@ app.get('/api/v1/validators/domains', async (req, res) => {
         ROUND(AVG(ps.compute_unit_efficiency)::numeric, 2) AS avg_efficiency_percent
       FROM proof_submissions ps
       LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
-      LEFT JOIN validators v ON v.operator_address = s.owner_address AND v.chain = ps.chain
+      LEFT JOIN validators v ON v.operator_address = ps.supplier_operator_address AND v.chain = ps.chain
       ${where}
       GROUP BY v.website_domain
       HAVING v.website_domain IS NOT NULL
@@ -1716,7 +1716,7 @@ app.get('/api/v1/validators/owners', async (req, res) => {
         SELECT s.owner_address
         FROM proof_submissions ps
         LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
-        LEFT JOIN validators v ON v.operator_address = s.owner_address AND v.chain = ps.chain
+        LEFT JOIN validators v ON v.operator_address = ps.supplier_operator_address AND v.chain = ps.chain
         ${where}
         GROUP BY s.owner_address
       ) t`;
@@ -1734,7 +1734,7 @@ app.get('/api/v1/validators/owners', async (req, res) => {
         ROUND(AVG(ps.compute_unit_efficiency)::numeric, 2) AS avg_efficiency_percent
       FROM proof_submissions ps
       LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
-      LEFT JOIN validators v ON v.operator_address = s.owner_address AND v.chain = ps.chain
+      LEFT JOIN validators v ON v.operator_address = ps.supplier_operator_address AND v.chain = ps.chain
       ${where}
       GROUP BY s.owner_address
       ORDER BY total_relays DESC NULLS LAST
