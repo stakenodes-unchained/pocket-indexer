@@ -2,6 +2,7 @@
 
 const url = require('url');
 const { Pool } = require('pg');
+const { fromBech32, toBech32 } = require('@cosmjs/encoding');
 const { getChainApiBase } = require('./chainConfig');
 
 // Reuse existing DB connection strategy from transactionService if available
@@ -38,6 +39,31 @@ function extractDomain(website) {
   }
 }
 
+/**
+ * Convert operator address (poktvaloper...) to account address (pokt...)
+ * @param {string} operatorAddress - Bech32 operator address
+ * @returns {string|null} Account address or null if conversion fails
+ */
+function operatorAddressToAccount(operatorAddress) {
+  if (!operatorAddress || typeof operatorAddress !== 'string') return null;
+  try {
+    const { prefix, data } = fromBech32(operatorAddress);
+    // Handle special cases
+    if (prefix === 'iva') {
+      return toBech32('iaa', data);
+    }
+    if (prefix === 'crocncl') {
+      return toBech32('cro', data);
+    }
+    // Replace 'valoper' with empty string (poktvaloper -> pokt)
+    const accountPrefix = prefix.replace('valoper', '');
+    return toBech32(accountPrefix, data);
+  } catch (error) {
+    console.warn(`Failed to convert operator address ${operatorAddress}:`, error.message);
+    return null;
+  }
+}
+
 async function upsertValidators(validators, chain) {
   if (!Array.isArray(validators) || validators.length === 0) return 0;
   if (!chain) {
@@ -46,9 +72,10 @@ async function upsertValidators(validators, chain) {
   const pool = getPool();
   const client = await pool.connect();
   try {
-    const text = `INSERT INTO validators (operator_address, chain, moniker, website, website_domain, status, jailed, tokens, cached_at, updated_at)
-                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
+    const text = `INSERT INTO validators (operator_address, chain, account_address, moniker, website, website_domain, status, jailed, tokens, cached_at, updated_at)
+                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW())
                   ON CONFLICT (operator_address, chain) DO UPDATE SET
+                    account_address = EXCLUDED.account_address,
                     moniker = EXCLUDED.moniker,
                     website = EXCLUDED.website,
                     website_domain = EXCLUDED.website_domain,
@@ -60,13 +87,14 @@ async function upsertValidators(validators, chain) {
     for (const v of validators) {
       const operator = v.operator_address || v.address || null;
       if (!operator) continue;
+      const accountAddress = operatorAddressToAccount(operator);
       const moniker = v.description?.moniker || null;
       const website = v.description?.website || null;
       const websiteDomain = extractDomain(website);
       const status = v.status || null;
       const jailed = typeof v.jailed === 'boolean' ? v.jailed : null;
       const tokens = v.tokens ? String(v.tokens) : null;
-      await client.query(text, [operator, chain, moniker, website, websiteDomain, status, jailed, tokens]);
+      await client.query(text, [operator, chain, accountAddress, moniker, website, websiteDomain, status, jailed, tokens]);
     }
     return validators.length;
   } finally {
