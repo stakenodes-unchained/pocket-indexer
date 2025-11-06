@@ -84,7 +84,7 @@ async function backfillAccountAddresses() {
     console.log(`   ${row.chain}: ${row.with_account}/${row.total} with account_address`);
   });
 
-  if (transactionService.pgPool) await transactionService.pgPool.end();
+  if (transactionService.pgPool) transactionService.pgPool.end();
 }
 
 backfillAccountAddresses().catch(async (err) => {

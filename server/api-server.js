@@ -1660,8 +1660,8 @@ app.get('/api/v1/validators/domains', async (req, res) => {
         LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
         LEFT JOIN validators v ON v.account_address = ps.supplier_operator_address AND v.chain = ps.chain
         ${where}
-        GROUP BY domain
-        HAVING domain IS NOT NULL AND domain <> ''
+        GROUP BY website_domain
+        HAVING website_domain IS NOT NULL AND domain <> ''
       ) t`;
     const countRes = await client.query(countSql, values);
     const total = parseInt(countRes.rows?.[0]?.total || '0', 10);
@@ -1678,8 +1678,8 @@ app.get('/api/v1/validators/domains', async (req, res) => {
       LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
       LEFT JOIN validators v ON v.account_address = ps.supplier_operator_address AND v.chain = ps.chain
       ${where}
-      GROUP BY domain
-      HAVING domain IS NOT NULL AND domain <> ''
+      GROUP BY website_domain
+      HAVING website_domain IS NOT NULL AND domain <> ''
       ORDER BY total_relays DESC
       LIMIT $${idx} OFFSET $${idx + 1}`;
 
