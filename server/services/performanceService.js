@@ -402,10 +402,18 @@ async function getTopServicesByComputeUnits(params, client) {
   const daysValue = validDays.includes(days) ? parseInt(days, 10) : 30;
   
   // Build WHERE conditions
+  // Put chain first for optimal index usage, so it's always $1 if provided
   const conditions = [`ps.claim_proof_status_int = 0`, `ps.timestamp >= NOW() - INTERVAL '${daysValue} days'`];
   const values = [];
   let idx = 1;
   let needsJoin = false;
+  
+  // Put chain first in WHERE clause for optimal index usage (always $1 if provided)
+  if (chain) {
+    conditions.unshift(`ps.chain = $1::text`);
+    values.unshift(chain);
+    idx = 2; // Next parameter starts at 2
+  }
   
   // Handle supplier_address filter - can be string, comma-separated string, or array
   // Addresses can be either account addresses (pokt1...) or operator addresses (poktvaloper1...)
@@ -468,13 +476,6 @@ async function getTopServicesByComputeUnits(params, client) {
     needsJoin = true;
     conditions.push(`s.owner_address = $${idx}::text`);
     values.push(owner_address);
-    idx++;
-  }
-  
-  // Put chain first in WHERE clause for optimal index usage
-  if (chain) {
-    conditions.unshift(`ps.chain = $${idx}::text`);
-    values.unshift(chain);
     idx++;
   }
   
@@ -556,10 +557,18 @@ async function getTopServicesByPerformance(params, client) {
   const daysValue = validDays.includes(days) ? parseInt(days, 10) : 30;
   
   // Build WHERE conditions
+  // Put chain first for optimal index usage, so it's always $1 if provided
   const conditions = [`ps.claim_proof_status_int = 0`, `ps.timestamp >= NOW() - INTERVAL '${daysValue} days'`];
   const values = [];
   let idx = 1;
   let needsJoin = false;
+  
+  // Put chain first in WHERE clause for optimal index usage (always $1 if provided)
+  if (chain) {
+    conditions.unshift(`ps.chain = $1::text`);
+    values.unshift(chain);
+    idx = 2; // Next parameter starts at 2
+  }
   
   // Handle supplier_address filter - can be string, comma-separated string, or array
   // Addresses can be either account addresses (pokt1...) or operator addresses (poktvaloper1...)
@@ -620,14 +629,9 @@ async function getTopServicesByPerformance(params, client) {
   // Handle owner_address filter
   if (owner_address) {
     needsJoin = true;
-    conditions.push(`s.owner_address = $${idx++}`);
+    conditions.push(`s.owner_address = $${idx}::text`);
     values.push(owner_address);
-  }
-  
-  // Put chain first in WHERE clause for optimal index usage
-  if (chain) {
-    conditions.unshift(`ps.chain = $${idx++}`);
-    values.unshift(chain);
+    idx++;
   }
   
   const where = `WHERE ${conditions.join(' AND ')}`;
