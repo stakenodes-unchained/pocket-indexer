@@ -7,6 +7,7 @@ const cluster = require('cluster');
 const os = require('os');
 const transactionService = require('./services/transactionService');
 const metricsCollector = require('./services/metricsCollector');
+const performanceService = require('./services/performanceService');
 const redis = require('./config/redis');
 
 // Load environment variables
@@ -1458,93 +1459,85 @@ app.get('/api/v1/proof-submissions/summary', async (req, res) => {
   }
 });
 
+// Validator and Service Search endpoint
+// GET /api/v1/validators/search
+// Query: q (required), chain (optional), limit (optional, default 20)
+app.get('/api/v1/validators/search', cacheMiddleware(300), async (req, res) => {
+  try {
+    const { q, chain, limit = 20 } = req.query;
+    
+    if (!q || q.trim().length === 0) {
+      return res.status(400).json({ error: "Query parameter 'q' is required" });
+    }
+    
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const result = await performanceService.searchValidatorsAndServices({ q, chain, limit }, client);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Error in validator search:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Validators performance endpoints
 
 // GET /api/v1/validators/performance
-// Query: domain, owner_address, supplier_address, chain, service_id, start_date, end_date, group_by(day|hour|total), page, limit
+// Query: domain, owner_address, supplier_address (single or comma-separated), chain, service_id, start_date, end_date, group_by(day|hour|total), page, limit
+// Supports backward compatibility: single supplier_address works as before
+// New: comma-separated supplier_address (e.g., "addr1,addr2,addr3") aggregates results
 app.get('/api/v1/validators/performance', async (req, res) => {
   try {
     const { domain, owner_address, supplier_address, chain, service_id, start_date, end_date, group_by = 'day', page = 1, limit = 100 } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
 
-    // Build WHERE conditions over proof_submissions joined to suppliers and validators
-    const conditions = ["ps.claim_proof_status_int = 0"]; // successful submissions only
-    const values = [];
-    let idx = 1;
+    const result = await performanceService.getValidatorPerformance({
+      domain,
+      owner_address,
+      supplier_address,
+      chain,
+      service_id,
+      start_date,
+      end_date,
+      group_by,
+      page,
+      limit
+    }, client);
 
-    if (chain) { conditions.push(`ps.chain = $${idx++}`); values.push(chain); }
-    if (service_id) { conditions.push(`ps.service_id = $${idx++}`); values.push(service_id); }
-    if (start_date) { conditions.push(`ps.timestamp >= $${idx++}`); values.push(start_date); }
-    if (end_date) { conditions.push(`ps.timestamp <= $${idx++}`); values.push(end_date); }
-    if (supplier_address) { conditions.push(`ps.supplier_operator_address = $${idx++}`); values.push(supplier_address); }
-    if (owner_address) { conditions.push(`s.owner_address = $${idx++}`); values.push(owner_address); }
-    if (domain) { conditions.push(`v.website_domain = $${idx++}`); values.push(domain); }
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching validator performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+// POST /api/v1/validators/performance
+// Body: { domain, owner_address, supplier_address (string or array), chain, service_id, start_date, end_date, group_by, page, limit }
+// Recommended for multiple supplier addresses to avoid URL length limits
+// When supplier_address is an array with multiple addresses, results are aggregated
+app.post('/api/v1/validators/performance', async (req, res) => {
+  try {
+    const { domain, owner_address, supplier_address, chain, service_id, start_date, end_date, group_by = 'day', page = 1, limit = 100 } = req.body;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
 
-    // Grouping
-    let bucketExpr = null;
-    if (group_by === 'hour') bucketExpr = `DATE_TRUNC('hour', ps.timestamp) AS bucket`;
-    else if (group_by === 'total') bucketExpr = `NULL::timestamp AS bucket`;
-    else bucketExpr = `DATE_TRUNC('day', ps.timestamp) AS bucket`;
+    const result = await performanceService.getValidatorPerformance({
+      domain,
+      owner_address,
+      supplier_address,
+      chain,
+      service_id,
+      start_date,
+      end_date,
+      group_by,
+      page,
+      limit
+    }, client);
 
-    // Count total groups for pagination (approximate for total grouping)
-    const pageNum = parseInt(page, 10);
-    const limitNum = parseInt(limit, 10);
-    const offset = (pageNum - 1) * limitNum;
-
-    const countSql = `
-      SELECT COUNT(*) AS total FROM (
-        SELECT 
-          ${bucketExpr.replace(' AS bucket', '')} AS bucket_key,
-          ps.supplier_operator_address
-        FROM proof_submissions ps
-        LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
-        LEFT JOIN validators v ON v.account_address = ps.supplier_operator_address AND v.chain = ps.chain
-        ${where}
-        GROUP BY bucket_key, ps.supplier_operator_address
-      ) t`;
-
-    const countRes = await client.query(countSql, values);
-    const total = parseInt(countRes.rows?.[0]?.total || '0', 10);
-
-    const listSql = `
-      SELECT 
-        ${bucketExpr},
-        ps.supplier_operator_address,
-        s.owner_address,
-        v.moniker,
-        v.website,
-        v.website_domain,
-        v.status AS validator_status,
-        COALESCE(COUNT(*)::BIGINT, 0) AS submissions,
-        COALESCE(SUM(ps.num_relays)::BIGINT, 0) AS total_relays,
-        COALESCE(SUM(ps.num_claimed_compute_units)::BIGINT, 0) AS total_claimed_compute_units,
-        COALESCE(SUM(ps.num_estimated_compute_units)::BIGINT, 0) AS total_estimated_compute_units,
-        ROUND(AVG(ps.compute_unit_efficiency)::numeric, 2) AS avg_efficiency_percent,
-        ROUND(AVG(ps.reward_per_relay)::numeric, 2) AS avg_reward_per_relay,
-        COUNT(DISTINCT ps.application_address) AS unique_applications,
-        COUNT(DISTINCT ps.service_id) AS unique_services
-      FROM proof_submissions ps
-      LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
-      LEFT JOIN validators v ON v.account_address = ps.supplier_operator_address AND v.chain = ps.chain
-      ${where}
-      GROUP BY bucket, ps.supplier_operator_address, s.owner_address, v.moniker, v.website, v.website_domain, v.status
-      ORDER BY bucket DESC NULLS LAST, total_relays DESC
-      LIMIT $${idx} OFFSET $${idx + 1}`;
-
-    const listRes = await client.query(listSql, [...values, limitNum, offset]);
-
-    res.json({
-      data: listRes.rows,
-      meta: {
-        total,
-        page: pageNum,
-        limit: limitNum,
-        totalPages: Math.ceil(total / limitNum)
-      }
-    });
+    res.json(result);
   } catch (error) {
     console.error('Error fetching validator performance:', error);
     res.status(500).json({ error: error.message });
@@ -1655,20 +1648,20 @@ app.get('/api/v1/validators/domains', async (req, res) => {
 
     const countSql = `
       SELECT COUNT(*) AS total FROM (
-        SELECT lower(split_part(regexp_replace(regexp_replace(COALESCE(v.website_domain, v.website, ''), '^https?://', ''), '^www\\.', ''), '/', 1)) AS domain
+        SELECT v.website_domain AS domain
         FROM proof_submissions ps
         LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
         LEFT JOIN validators v ON v.account_address = ps.supplier_operator_address AND v.chain = ps.chain
         ${where}
-        GROUP BY website_domain
-        HAVING website_domain IS NOT NULL AND domain <> ''
+        GROUP BY v.website_domain
+        HAVING v.website_domain IS NOT NULL AND v.website_domain <> ''
       ) t`;
     const countRes = await client.query(countSql, values);
     const total = parseInt(countRes.rows?.[0]?.total || '0', 10);
 
     const listSql = `
       SELECT 
-        lower(split_part(regexp_replace(regexp_replace(COALESCE(v.website_domain, v.website, ''), '^https?://', ''), '^www\\.', ''), '/', 1)) AS domain,
+        v.website_domain AS domain,
         COUNT(DISTINCT ps.supplier_operator_address) AS validator_count,
         COALESCE(SUM(ps.num_relays)::BIGINT, 0) AS total_relays,
         COALESCE(SUM(ps.num_claimed_compute_units)::BIGINT, 0) AS total_claimed_compute_units,
@@ -1678,8 +1671,8 @@ app.get('/api/v1/validators/domains', async (req, res) => {
       LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address
       LEFT JOIN validators v ON v.account_address = ps.supplier_operator_address AND v.chain = ps.chain
       ${where}
-      GROUP BY website_domain
-      HAVING website_domain IS NOT NULL AND domain <> ''
+      GROUP BY v.website_domain
+      HAVING v.website_domain IS NOT NULL AND v.website_domain <> ''
       ORDER BY total_relays DESC
       LIMIT $${idx} OFFSET $${idx + 1}`;
 
@@ -1758,6 +1751,8 @@ app.get('/api/v1/validators/owners', async (req, res) => {
  * - limit: Number of top services to return (5, 10, 25, or 50). Default: 10
  * - days: Time period in days (7, 15, or 30). Default: 30
  * - chain: Optional chain filter (e.g., "mainnet", "testnet")
+ * - supplier_address: Optional supplier operator address filter (single or comma-separated)
+ * - owner_address: Optional owner address filter (filters by supplier owner address)
  * 
  * Returns array of services with:
  * - service_id: The service identifier
@@ -1770,87 +1765,55 @@ app.get('/api/v1/validators/owners', async (req, res) => {
  * 
  * Example:
  * GET /api/v1/services/top-by-compute-units?limit=25&days=7&chain=mainnet
+ * GET /api/v1/services/top-by-compute-units?supplier_address=poktvaloper1abc...&days=30
+ * GET /api/v1/services/top-by-compute-units?owner_address=pokt1xyz...&days=30
  */
 app.get('/api/v1/services/top-by-compute-units', async (req, res) => {
   try {
-    const { limit = '10', days = '30', chain } = req.query;
-    
-    // Validate limit
-    const validLimits = ['5', '10', '25', '50'];
-    const limitValue = validLimits.includes(limit) ? parseInt(limit, 10) : 10;
-    
-    // Validate days
-    const validDays = ['7', '15', '30'];
-    const daysValue = validDays.includes(days) ? parseInt(days, 10) : 30;
+    const { limit = '10', days = '30', chain, supplier_address, owner_address } = req.query;
     
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
-    // Optimized query with index-friendly WHERE clause ordering
-    // chain first (if provided), then claim_proof_status_int, then timestamp
-    const conditions = [`claim_proof_status_int = 0`, `timestamp >= NOW() - INTERVAL '${daysValue} days'`];
-    const values = [];
-    let idx = 1;
+    const result = await performanceService.getTopServicesByComputeUnits({
+      limit,
+      days,
+      chain,
+      supplier_address,
+      owner_address
+    }, client);
     
-    // Put chain first in WHERE clause for optimal index usage
-    if (chain) {
-      conditions.unshift(`chain = $${idx++}`);
-      values.unshift(chain);
-    }
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching top services by compute units:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/v1/services/top-by-compute-units
+ * 
+ * Same as GET but accepts parameters in request body.
+ * Recommended for multiple supplier addresses to avoid URL length limits.
+ * 
+ * Body: { limit, days, chain, supplier_address (string or array), owner_address }
+ */
+app.post('/api/v1/services/top-by-compute-units', async (req, res) => {
+  try {
+    const { limit = '10', days = '30', chain, supplier_address, owner_address } = req.body;
     
-    const where = `WHERE ${conditions.join(' AND ')}`;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
     
-    // Optimized query - uses covering index for fast aggregation
-    // When chain is provided, we group only by service_id (faster)
-    // When chain is not provided, we include it in GROUP BY
-    const sql = chain
-      ? `
-        SELECT 
-          service_id,
-          $1::text as chain,
-          SUM(num_claimed_compute_units) as total_claimed_compute_units,
-          SUM(num_estimated_compute_units) as total_estimated_compute_units,
-          COUNT(*) as submission_count,
-          AVG(compute_unit_efficiency) as avg_efficiency_percent,
-          MIN(timestamp) as period_start,
-          MAX(timestamp) as period_end
-        FROM proof_submissions
-        ${where}
-        GROUP BY service_id
-        ORDER BY total_claimed_compute_units DESC
-        LIMIT $${idx}
-      `
-      : `
-        SELECT 
-          service_id,
-          chain,
-          SUM(num_claimed_compute_units) as total_claimed_compute_units,
-          SUM(num_estimated_compute_units) as total_estimated_compute_units,
-          COUNT(*) as submission_count,
-          AVG(compute_unit_efficiency) as avg_efficiency_percent,
-          MIN(timestamp) as period_start,
-          MAX(timestamp) as period_end
-        FROM proof_submissions
-        ${where}
-        GROUP BY service_id, chain
-        ORDER BY total_claimed_compute_units DESC
-        LIMIT $${idx}
-      `;
+    const result = await performanceService.getTopServicesByComputeUnits({
+      limit,
+      days,
+      chain,
+      supplier_address,
+      owner_address
+    }, client);
     
-    values.push(limitValue);
-    
-    const result = await client.query(sql, values);
-    
-    res.json({
-      data: result.rows,
-      meta: {
-        limit: limitValue,
-        days: daysValue,
-        chain: chain || 'all',
-        period_start: result.rows[0]?.period_start || null,
-        period_end: result.rows[0]?.period_end || null
-      }
-    });
+    res.json(result);
   } catch (error) {
     console.error('Error fetching top services by compute units:', error);
     res.status(500).json({ error: error.message });
@@ -1866,6 +1829,8 @@ app.get('/api/v1/services/top-by-compute-units', async (req, res) => {
  * Query Parameters:
  * - chain: Optional chain filter (e.g., "mainnet", "testnet")
  * - days: Optional time period in days (default: 30). Only accepts 7, 15, or 30
+ * - supplier_address: Optional supplier operator address filter (single or comma-separated)
+ * - owner_address: Optional owner address filter (filters by supplier owner address)
  * 
  * Returns array of top 10 services with:
  * - service_id: The service identifier
@@ -1882,124 +1847,53 @@ app.get('/api/v1/services/top-by-compute-units', async (req, res) => {
  * 
  * Example:
  * GET /api/v1/services/top-by-performance?chain=mainnet&days=15
+ * GET /api/v1/services/top-by-performance?supplier_address=poktvaloper1abc...&days=30
+ * GET /api/v1/services/top-by-performance?owner_address=pokt1xyz...&days=30
  */
 app.get('/api/v1/services/top-by-performance', async (req, res) => {
   try {
-    const { chain, days = '30' } = req.query;
-    
-    // Validate days
-    const validDays = ['7', '15', '30'];
-    const daysValue = validDays.includes(days) ? parseInt(days, 10) : 30;
+    const { chain, days = '30', supplier_address, owner_address } = req.query;
     
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
-    // Optimized: Single query using CTE to avoid two round trips
-    // Index-friendly WHERE clause ordering: chain first (if provided), then claim_proof_status_int, then timestamp
-    const conditions = [`claim_proof_status_int = 0`, `timestamp >= NOW() - INTERVAL '${daysValue} days'`];
-    const values = [];
-    let idx = 1;
+    const result = await performanceService.getTopServicesByPerformance({
+      chain,
+      days,
+      supplier_address,
+      owner_address
+    }, client);
     
-    // Put chain first in WHERE clause for optimal index usage
-    if (chain) {
-      conditions.unshift(`chain = $${idx++}`);
-      values.unshift(chain);
-    }
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching top services by performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/v1/services/top-by-performance
+ * 
+ * Same as GET but accepts parameters in request body.
+ * Recommended for multiple supplier addresses to avoid URL length limits.
+ * 
+ * Body: { chain, days, supplier_address (string or array), owner_address }
+ */
+app.post('/api/v1/services/top-by-performance', async (req, res) => {
+  try {
+    const { chain, days = '30', supplier_address, owner_address } = req.body;
     
-    const where = `WHERE ${conditions.join(' AND ')}`;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
     
-    // Single optimized query with CTE - faster than two separate queries
-    // Uses covering index and calculates total in one pass
-    const sql = chain
-      ? `
-        WITH service_totals AS (
-          SELECT 
-            service_id,
-            $1::text as chain,
-            SUM(num_claimed_compute_units) as total_claimed_compute_units,
-            SUM(num_estimated_compute_units) as total_estimated_compute_units,
-            COUNT(*) as submission_count,
-            AVG(compute_unit_efficiency) as avg_efficiency_percent,
-            MIN(timestamp) as period_start,
-            MAX(timestamp) as period_end
-          FROM proof_submissions
-          ${where}
-          GROUP BY service_id
-        ),
-        grand_total AS (
-          SELECT SUM(total_claimed_compute_units) as total_compute_units
-          FROM service_totals
-        )
-        SELECT 
-          st.*,
-          gt.total_compute_units
-        FROM service_totals st
-        CROSS JOIN grand_total gt
-        ORDER BY st.total_claimed_compute_units DESC
-        LIMIT 10
-      `
-      : `
-        WITH service_totals AS (
-          SELECT 
-            service_id,
-            chain,
-            SUM(num_claimed_compute_units) as total_claimed_compute_units,
-            SUM(num_estimated_compute_units) as total_estimated_compute_units,
-            COUNT(*) as submission_count,
-            AVG(compute_unit_efficiency) as avg_efficiency_percent,
-            MIN(timestamp) as period_start,
-            MAX(timestamp) as period_end
-          FROM proof_submissions
-          ${where}
-          GROUP BY service_id, chain
-        ),
-        grand_total AS (
-          SELECT SUM(total_claimed_compute_units) as total_compute_units
-          FROM service_totals
-        )
-        SELECT 
-          st.*,
-          gt.total_compute_units
-        FROM service_totals st
-        CROSS JOIN grand_total gt
-        ORDER BY st.total_claimed_compute_units DESC
-        LIMIT 10
-      `;
+    const result = await performanceService.getTopServicesByPerformance({
+      chain,
+      days,
+      supplier_address,
+      owner_address
+    }, client);
     
-    const servicesResult = await client.query(sql, values);
-    const totalComputeUnits = parseInt(servicesResult.rows[0]?.total_compute_units || '0', 10);
-    
-    // Calculate percentages and add rank
-    const services = servicesResult.rows.map((service, index) => {
-      const claimed = parseInt(service.total_claimed_compute_units || '0', 10);
-      const percentage = totalComputeUnits > 0 
-        ? parseFloat(((claimed / totalComputeUnits) * 100).toFixed(2))
-        : 0;
-      
-      return {
-        rank: index + 1,
-        service_id: service.service_id,
-        chain: service.chain,
-        total_claimed_compute_units: claimed,
-        total_estimated_compute_units: parseInt(service.total_estimated_compute_units || '0', 10),
-        submission_count: parseInt(service.submission_count || '0', 10),
-        avg_efficiency_percent: parseFloat(parseFloat(service.avg_efficiency_percent || '0').toFixed(2)),
-        percentage_of_total: percentage,
-        period_start: service.period_start,
-        period_end: service.period_end
-      };
-    });
-    
-    res.json({
-      data: services,
-      total_compute_units: totalComputeUnits,
-      meta: {
-        days: daysValue,
-        chain: chain || 'all',
-        period_start: services[0]?.period_start || null,
-        period_end: services[0]?.period_end || null
-      }
-    });
+    res.json(result);
   } catch (error) {
     console.error('Error fetching top services by performance:', error);
     res.status(500).json({ error: error.message });
