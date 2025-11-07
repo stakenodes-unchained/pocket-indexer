@@ -308,7 +308,7 @@ async function getValidatorPerformance(params, client) {
       LEFT JOIN validators v ON v.account_address = ps.supplier_operator_address AND v.chain = ps.chain
       ${where}
       GROUP BY bucket
-      ORDER BY bucket DESC NULLS LAST
+      ORDER BY bucket DESC
       LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
   } else {
     // Normal query - group by bucket and supplier
@@ -346,7 +346,7 @@ async function getValidatorPerformance(params, client) {
       LEFT JOIN validators v ON v.account_address = ps.supplier_operator_address AND v.chain = ps.chain
       ${where}
       GROUP BY bucket, ps.supplier_operator_address, s.owner_address, v.moniker, v.website, v.website_domain, v.status
-      ORDER BY bucket DESC NULLS LAST, total_relays DESC
+      ORDER BY bucket DESC, total_relays DESC
       LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
   }
 

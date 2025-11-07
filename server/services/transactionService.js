@@ -679,7 +679,7 @@ class TransactionService {
       // Use COALESCE to fallback to JSONB extraction if column is NULL
       if (sortField === 'block_height') {
         // Prefer block_height column, fallback to JSONB extraction
-        orderByClause = `ORDER BY COALESCE(t.block_height, (t.tx_data->'tx_response'->>'height')::bigint) ${sortDirection} NULLS LAST`;
+        orderByClause = `ORDER BY COALESCE(t.block_height, (t.tx_data->'tx_response'->>'height')::bigint) ${sortDirection}`;
         blockHeightSelect = `COALESCE(t.block_height, (t.tx_data->'tx_response'->>'height')::bigint) as block_height`;
       } else {
         // Use table alias and ensure proper index usage
