@@ -402,9 +402,24 @@ async function saveTransaction(tx) {
   await connectClients();
 
   try {
+    // Extract addresses from transaction data
+    const { extractAllAddresses } = require('./addressExtractor');
+    let addresses = null;
+    
+    try {
+      if (tx.tx_data) {
+        addresses = extractAllAddresses(tx, tx.tx_data);
+        // Convert to array format for PostgreSQL (empty array if no addresses)
+        addresses = addresses && addresses.length > 0 ? addresses : null;
+      }
+    } catch (extractError) {
+      // Log but don't fail - addresses extraction is best effort
+      console.warn(`Failed to extract addresses for transaction ${tx.hash}:`, extractError.message);
+    }
+
     await pgClient.query(
-      `INSERT INTO transactions (id, hash, block_id, sender, recipient, amount, fee, memo, type, status, timestamp, tx_data, chain, amount_denom, fee_denom)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      `INSERT INTO transactions (id, hash, block_id, sender, recipient, amount, fee, memo, type, status, timestamp, tx_data, chain, amount_denom, fee_denom, addresses)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
        ON CONFLICT (id) DO UPDATE SET
          type=EXCLUDED.type,
          status=EXCLUDED.status,
@@ -413,7 +428,8 @@ async function saveTransaction(tx) {
          amount=EXCLUDED.amount,
          fee=EXCLUDED.fee,
          amount_denom=EXCLUDED.amount_denom,
-         fee_denom=EXCLUDED.fee_denom`,
+         fee_denom=EXCLUDED.fee_denom,
+         addresses=EXCLUDED.addresses`,
       [
         tx.hash,
         tx.hash,
@@ -429,7 +445,8 @@ async function saveTransaction(tx) {
         tx.tx_data || null,
         tx.chain || null,
         tx.amount_denom || null,
-        tx.fee_denom || null
+        tx.fee_denom || null,
+        addresses // PostgreSQL array parameter
       ]
     );
   } catch (error) {

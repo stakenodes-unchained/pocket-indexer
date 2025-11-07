@@ -576,55 +576,37 @@ class TransactionService {
         // Remove duplicates
         const uniqueAddresses = [...new Set(addressList)];
         
-        // Build address conditions: search in sender, recipient, and tx_data JSONB
+        // Build address conditions: use addresses array column for fast queries
+        // Fallback to sender/recipient columns for backward compatibility
         const addressConditions = [];
         
-        // Search in sender and recipient columns
-        // OPTIMIZATION: Use separate conditions for better index usage
-        // This allows PostgreSQL to use idx_transactions_chain_sender_timestamp or idx_transactions_chain_recipient_timestamp
+        // Primary: Use addresses array column with array overlap operator (&&)
+        // This is much faster than JSONB searches and uses the GIN index
+        // Handle NULL addresses with COALESCE to empty array
         if (uniqueAddresses.length === 1) {
-          // Single address: use OR condition (indexes can still be used)
+          // Single address: use array containment operator (@>)
+          addressConditions.push(`(COALESCE(t.addresses, ARRAY[]::TEXT[]) @> ARRAY[$${idx}])`);
+          values.push(uniqueAddresses[0]);
+          idx++;
+        } else {
+          // Multiple addresses: use array overlap operator (&&)
+          const placeholders = uniqueAddresses.map((_, i) => `$${idx + i}`).join(', ');
+          addressConditions.push(`(COALESCE(t.addresses, ARRAY[]::TEXT[]) && ARRAY[${placeholders}])`);
+          values.push(...uniqueAddresses);
+          idx += uniqueAddresses.length;
+        }
+        
+        // Fallback: Also check sender and recipient columns for backward compatibility
+        // This ensures we catch transactions that might not have addresses populated yet
+        if (uniqueAddresses.length === 1) {
           addressConditions.push(`(t.sender = $${idx} OR t.recipient = $${idx})`);
           values.push(uniqueAddresses[0]);
           idx++;
         } else {
-          // Multiple addresses: use IN clauses (more efficient than multiple ORs)
           const placeholders = uniqueAddresses.map((_, i) => `$${idx + i}`).join(', ');
           addressConditions.push(`(t.sender IN (${placeholders}) OR t.recipient IN (${placeholders}))`);
           values.push(...uniqueAddresses, ...uniqueAddresses);
           idx += uniqueAddresses.length * 2;
-        }
-
-        // Search in tx_data JSONB - check common address fields in nested messages structure
-        // tx_data structure: { tx: { body: { messages: [...] } }, tx_response: {...} }
-        // Addresses can be in messages[].to_address, messages[].from_address, messages[].application_address, etc.
-        // Use EXISTS with jsonb_array_elements to check each message in the array
-        const jsonbConditions = [];
-        for (const addr of uniqueAddresses) {
-          // Check if address exists in any message's address fields
-          // Using EXISTS with jsonb_array_elements to iterate through messages
-          jsonbConditions.push(`(
-            EXISTS (
-              SELECT 1 
-              FROM jsonb_array_elements(COALESCE(t.tx_data->'tx'->'body'->'messages', '[]'::jsonb)) AS msg
-              WHERE 
-                msg->>'to_address' = $${idx} OR
-                msg->>'from_address' = $${idx} OR
-                msg->>'application_address' = $${idx} OR
-                msg->>'supplier_operator_address' = $${idx} OR
-                msg->>'delegator_address' = $${idx} OR
-                msg->>'validator_address' = $${idx} OR
-                msg->>'operator_address' = $${idx} OR
-                msg->>'address' = $${idx} OR
-                msg->>'recipient' = $${idx}
-            )
-          )`);
-          values.push(addr);
-          idx++;
-        }
-        
-        if (jsonbConditions.length > 0) {
-          addressConditions.push(`(${jsonbConditions.join(' OR ')})`);
         }
 
         conditions.push(`(${addressConditions.join(' OR ')})`);
@@ -882,6 +864,20 @@ class TransactionService {
         const uniqueAddresses = [...new Set(addressList)];
         const addressConditions = [];
         
+        // Primary: Use addresses array column for fast queries
+        // Handle NULL addresses with COALESCE to empty array
+        if (uniqueAddresses.length === 1) {
+          addressConditions.push(`(COALESCE(t.addresses, ARRAY[]::TEXT[]) @> ARRAY[$${idx}])`);
+          values.push(uniqueAddresses[0]);
+          idx++;
+        } else {
+          const placeholders = uniqueAddresses.map((_, i) => `$${idx + i}`).join(', ');
+          addressConditions.push(`(COALESCE(t.addresses, ARRAY[]::TEXT[]) && ARRAY[${placeholders}])`);
+          values.push(...uniqueAddresses);
+          idx += uniqueAddresses.length;
+        }
+        
+        // Fallback: Also check sender and recipient columns for backward compatibility
         if (uniqueAddresses.length === 1) {
           addressConditions.push(`(t.sender = $${idx} OR t.recipient = $${idx})`);
           values.push(uniqueAddresses[0]);
@@ -891,34 +887,6 @@ class TransactionService {
           addressConditions.push(`(t.sender IN (${placeholders}) OR t.recipient IN (${placeholders}))`);
           values.push(...uniqueAddresses, ...uniqueAddresses);
           idx += uniqueAddresses.length * 2;
-        }
-
-        const jsonbConditions = [];
-        for (const addr of uniqueAddresses) {
-          // Check if address exists in any message's address fields
-          // Using EXISTS with jsonb_array_elements to iterate through messages
-          jsonbConditions.push(`(
-            EXISTS (
-              SELECT 1 
-              FROM jsonb_array_elements(COALESCE(t.tx_data->'tx'->'body'->'messages', '[]'::jsonb)) AS msg
-              WHERE 
-                msg->>'to_address' = $${idx} OR
-                msg->>'from_address' = $${idx} OR
-                msg->>'application_address' = $${idx} OR
-                msg->>'supplier_operator_address' = $${idx} OR
-                msg->>'delegator_address' = $${idx} OR
-                msg->>'validator_address' = $${idx} OR
-                msg->>'operator_address' = $${idx} OR
-                msg->>'address' = $${idx} OR
-                msg->>'recipient' = $${idx}
-            )
-          )`);
-          values.push(addr);
-          idx++;
-        }
-        
-        if (jsonbConditions.length > 0) {
-          addressConditions.push(`(${jsonbConditions.join(' OR ')})`);
         }
 
         conditions.push(`(${addressConditions.join(' OR ')})`);
