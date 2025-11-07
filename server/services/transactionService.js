@@ -686,7 +686,7 @@ class TransactionService {
         blockHeightSelect = `COALESCE(t.block_height, (t.tx_data->'tx_response'->>'height')::bigint) as block_height`;
       } else {
         // Use table alias and ensure proper index usage
-        orderByClause = `ORDER BY t.${sortField} ${sortDirection} NULLS LAST`;
+        orderByClause = `ORDER BY t.${sortField} ${sortDirection}`;
         blockHeightSelect = `COALESCE(t.block_height, (t.tx_data->'tx_response'->>'height')::bigint) as block_height`;
       }
 
