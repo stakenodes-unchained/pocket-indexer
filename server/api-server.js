@@ -1155,8 +1155,9 @@ async function getProofSubmissions(params, client) {
   let idx = 1;
   
   if (chain) {
-    conditions.push(`chain = $${idx++}`);
+    conditions.push(`chain = $${idx}::text`);
     values.push(chain);
+    idx++;
   }
   
   // Handle supplier_address - can be single string, comma-separated string, or array
@@ -1183,20 +1184,24 @@ async function getProofSubmissions(params, client) {
   }
   
   if (application_address) {
-    conditions.push(`application_address = $${idx++}`);
+    conditions.push(`application_address = $${idx}::text`);
     values.push(application_address);
+    idx++;
   }
   if (service_id) {
-    conditions.push(`service_id = $${idx++}`);
+    conditions.push(`service_id = $${idx}::text`);
     values.push(service_id);
+    idx++;
   }
   if (start_date) {
-    conditions.push(`timestamp >= $${idx++}`);
+    conditions.push(`timestamp >= $${idx}::timestamp`);
     values.push(start_date);
+    idx++;
   }
   if (end_date) {
-    conditions.push(`timestamp <= $${idx++}`);
+    conditions.push(`timestamp <= $${idx}::timestamp`);
     values.push(end_date);
+    idx++;
   }
   
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -1218,7 +1223,7 @@ async function getProofSubmissions(params, client) {
     num_relays, compute_unit_efficiency, reward_per_relay, msg_index, created_at
     FROM proof_submissions ${where}
     ORDER BY timestamp DESC, block_height DESC
-    LIMIT $${idx} OFFSET $${idx + 1}`;
+    LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
   
   const listRes = await client.query(listSql, [...values, limitNum, offset]);
   
@@ -1465,16 +1470,19 @@ async function getProofSubmissionsSummary(params, client) {
   let idx = 1;
   
   if (chain) {
-    conditions.push(`chain = $${idx++}`);
+    conditions.push(`chain = $${idx}::text`);
     values.push(chain);
+    idx++;
   }
   if (start_date) {
-    conditions.push(`timestamp >= $${idx++}`);
+    conditions.push(`timestamp >= $${idx}::timestamp`);
     values.push(start_date);
+    idx++;
   }
   if (end_date) {
-    conditions.push(`timestamp <= $${idx++}`);
+    conditions.push(`timestamp <= $${idx}::timestamp`);
     values.push(end_date);
+    idx++;
   }
   // Default to last 24 hours if no explicit date range provided
   if (!start_date && !end_date) {
@@ -1505,12 +1513,14 @@ async function getProofSubmissionsSummary(params, client) {
   }
   
   if (application_address) {
-    conditions.push(`application_address = $${idx++}`);
+    conditions.push(`application_address = $${idx}::text`);
     values.push(application_address);
+    idx++;
   }
   if (service_id) {
-    conditions.push(`service_id = $${idx++}`);
+    conditions.push(`service_id = $${idx}::text`);
     values.push(service_id);
+    idx++;
   }
   
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';

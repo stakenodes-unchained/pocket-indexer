@@ -56,16 +56,16 @@ async function searchValidatorsAndServices(params, client) {
       FROM validators v
       ${validatorWhere}
     ) AS distinct_validators
-    ORDER BY 
-      CASE 
-        WHEN validator_account_address = $2 OR operator_address = $2 THEN 1
-        WHEN moniker ILIKE $1 THEN 2
-        ELSE 3
-      END,
-      moniker NULLS LAST
-    LIMIT $${idx}
-  `;
-  values.push(limitNum);
+      ORDER BY 
+        CASE 
+          WHEN validator_account_address = $2 OR operator_address = $2 THEN 1
+          WHEN moniker ILIKE $1 THEN 2
+          ELSE 3
+        END,
+        moniker NULLS LAST
+      LIMIT $${idx}::integer
+    `;
+    values.push(limitNum);
   
   // Build service search query
   // Search in supplier_service_configs.endpoints array for JSON-RPC URLs
@@ -101,11 +101,11 @@ async function searchValidatorsAndServices(params, client) {
       array_agg(DISTINCT me.supplier_address) AS supplier_operator_addresses,
       COUNT(DISTINCT me.supplier_address) AS supplier_count
     FROM matching_endpoints me
-    GROUP BY me.service_id, me.chain, me.json_rpc_url
-    ORDER BY supplier_count DESC, me.service_id
-    LIMIT $${serviceIdx}
-  `;
-  serviceValues.push(limitNum);
+      GROUP BY me.service_id, me.chain, me.json_rpc_url
+      ORDER BY supplier_count DESC, me.service_id
+      LIMIT $${serviceIdx}::integer
+    `;
+    serviceValues.push(limitNum);
   
   // Execute both queries in parallel
   const [validatorRes, serviceRes] = await Promise.all([
@@ -171,10 +171,10 @@ async function getValidatorPerformance(params, client) {
   const values = [];
   let idx = 1;
 
-  if (chain) { conditions.push(`ps.chain = $${idx++}`); values.push(chain); }
-  if (service_id) { conditions.push(`ps.service_id = $${idx++}`); values.push(service_id); }
-  if (start_date) { conditions.push(`ps.timestamp >= $${idx++}`); values.push(start_date); }
-  if (end_date) { conditions.push(`ps.timestamp <= $${idx++}`); values.push(end_date); }
+  if (chain) { conditions.push(`ps.chain = $${idx}::text`); values.push(chain); idx++; }
+  if (service_id) { conditions.push(`ps.service_id = $${idx}::text`); values.push(service_id); idx++; }
+  if (start_date) { conditions.push(`ps.timestamp >= $${idx}::timestamp`); values.push(start_date); idx++; }
+  if (end_date) { conditions.push(`ps.timestamp <= $${idx}::timestamp`); values.push(end_date); idx++; }
   
   // Handle supplier_address - can be single string, comma-separated string, or array
   // Addresses can be either account addresses (pokt1...) or operator addresses (poktvaloper1...)
@@ -204,11 +204,11 @@ async function getValidatorPerformance(params, client) {
     // Also try matching directly against supplier_operator_address in case it contains account addresses
     if (accountAddresses.length > 0) {
       if (accountAddresses.length === 1) {
-        addressConditions.push(`(s.owner_address = $${idx} OR v.account_address = $${idx} OR ps.supplier_operator_address = $${idx})`);
+        addressConditions.push(`(s.owner_address = $${idx}::text OR v.account_address = $${idx}::text OR ps.supplier_operator_address = $${idx}::text)`);
         values.push(accountAddresses[0]);
         idx++;
       } else {
-        const placeholders = accountAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        const placeholders = accountAddresses.map((_, i) => `$${idx + i}::text`).join(', ');
         addressConditions.push(`(s.owner_address IN (${placeholders}) OR v.account_address IN (${placeholders}) OR ps.supplier_operator_address IN (${placeholders}))`);
         values.push(...accountAddresses, ...accountAddresses, ...accountAddresses);
         idx += accountAddresses.length * 3;
@@ -218,10 +218,11 @@ async function getValidatorPerformance(params, client) {
     // Match operator addresses directly via supplier_operator_address
     if (operatorAddresses.length > 0) {
       if (operatorAddresses.length === 1) {
-        addressConditions.push(`ps.supplier_operator_address = $${idx++}`);
+        addressConditions.push(`ps.supplier_operator_address = $${idx}::text`);
         values.push(operatorAddresses[0]);
+        idx++;
       } else {
-        const placeholders = operatorAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        const placeholders = operatorAddresses.map((_, i) => `$${idx + i}::text`).join(', ');
         addressConditions.push(`ps.supplier_operator_address IN (${placeholders})`);
         values.push(...operatorAddresses);
         idx += operatorAddresses.length;
@@ -233,8 +234,8 @@ async function getValidatorPerformance(params, client) {
     }
   }
   
-  if (owner_address) { conditions.push(`s.owner_address = $${idx++}`); values.push(owner_address); }
-  if (domain) { conditions.push(`v.website_domain = $${idx++}`); values.push(domain); }
+  if (owner_address) { conditions.push(`s.owner_address = $${idx}::text`); values.push(owner_address); idx++; }
+  if (domain) { conditions.push(`v.website_domain = $${idx}::text`); values.push(domain); idx++; }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
@@ -308,7 +309,7 @@ async function getValidatorPerformance(params, client) {
       ${where}
       GROUP BY bucket
       ORDER BY bucket DESC NULLS LAST
-      LIMIT $${idx} OFFSET $${idx + 1}`;
+      LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
   } else {
     // Normal query - group by bucket and supplier
     countSql = `
@@ -346,7 +347,7 @@ async function getValidatorPerformance(params, client) {
       ${where}
       GROUP BY bucket, ps.supplier_operator_address, s.owner_address, v.moniker, v.website, v.website_domain, v.status
       ORDER BY bucket DESC NULLS LAST, total_relays DESC
-      LIMIT $${idx} OFFSET $${idx + 1}`;
+      LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
   }
 
   const countRes = await client.query(countSql, values);
@@ -465,14 +466,16 @@ async function getTopServicesByComputeUnits(params, client) {
   // Handle owner_address filter
   if (owner_address) {
     needsJoin = true;
-    conditions.push(`s.owner_address = $${idx++}`);
+    conditions.push(`s.owner_address = $${idx}::text`);
     values.push(owner_address);
+    idx++;
   }
   
   // Put chain first in WHERE clause for optimal index usage
   if (chain) {
-    conditions.unshift(`ps.chain = $${idx++}`);
+    conditions.unshift(`ps.chain = $${idx}::text`);
     values.unshift(chain);
+    idx++;
   }
   
   const where = `WHERE ${conditions.join(' AND ')}`;
@@ -487,7 +490,7 @@ async function getTopServicesByComputeUnits(params, client) {
     ? `
       SELECT 
         ps.service_id,
-        $${chainParamIdx}::text as chain,
+        $1::text as chain,
         SUM(ps.num_claimed_compute_units) as total_claimed_compute_units,
         SUM(ps.num_estimated_compute_units) as total_estimated_compute_units,
         COUNT(*) as submission_count,
@@ -499,7 +502,7 @@ async function getTopServicesByComputeUnits(params, client) {
       ${where}
       GROUP BY ps.service_id
       ORDER BY total_claimed_compute_units DESC
-      LIMIT $${idx}
+      LIMIT $${idx}::integer
     `
     : `
       SELECT 
@@ -516,7 +519,7 @@ async function getTopServicesByComputeUnits(params, client) {
       ${where}
       GROUP BY ps.service_id, ps.chain
       ORDER BY total_claimed_compute_units DESC
-      LIMIT $${idx}
+      LIMIT $${idx}::integer
     `;
   
   values.push(limitValue);
@@ -639,7 +642,7 @@ async function getTopServicesByPerformance(params, client) {
       WITH service_totals AS (
         SELECT 
           ps.service_id,
-          $${chainParamIdx}::text as chain,
+          $1::text as chain,
           SUM(ps.num_claimed_compute_units) as total_claimed_compute_units,
           SUM(ps.num_estimated_compute_units) as total_estimated_compute_units,
           COUNT(*) as submission_count,
@@ -661,7 +664,7 @@ async function getTopServicesByPerformance(params, client) {
       FROM service_totals st
       CROSS JOIN grand_total gt
       ORDER BY st.total_claimed_compute_units DESC
-      LIMIT 10
+      LIMIT 10::integer
     `
     : `
       WITH service_totals AS (
@@ -689,7 +692,7 @@ async function getTopServicesByPerformance(params, client) {
       FROM service_totals st
       CROSS JOIN grand_total gt
       ORDER BY st.total_claimed_compute_units DESC
-      LIMIT 10
+      LIMIT 10::integer
     `;
   
   const servicesResult = await client.query(sql, values);
