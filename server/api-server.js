@@ -379,16 +379,47 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(300), async (req, res)
     res.status(500).json({ error: error.message });
   }
 });
+/**
+ * GET /api/v1/transactions
+ * POST /api/v1/transactions
+ * 
+ * Retrieve transactions with comprehensive filtering, sorting, and pagination.
+ * 
+ * GET Query Parameters / POST Body Parameters:
+ * - address or addresses (string|array): Single address, comma-separated addresses, or array of addresses to filter by
+ * - type (string, optional): Filter by transaction type
+ * - status (string, optional): Filter by transaction status (e.g., 'success', 'failed')
+ * - chain (string, optional): Filter by chain identifier
+ * - start_date (string, optional): ISO date string - filter transactions from this date onwards
+ * - end_date (string, optional): ISO date string - filter transactions up to this date
+ * - min_amount (number, optional): Minimum transaction amount filter
+ * - max_amount (number, optional): Maximum transaction amount filter
+ * - page (integer, default: 1): Page number for pagination
+ * - limit (integer, default: 10, max: 1000): Number of results per page
+ * - sort_by (string, default: 'timestamp'): Field to sort by (timestamp, amount, fee, block_height, type, status)
+ * - sort_order (string, default: 'desc'): Sort order (asc, desc)
+ * 
+ * Note: POST method is recommended when filtering by many addresses to avoid URL length limits.
+ * 
+ * Returns:
+ * - data: Array of transaction objects
+ * - meta: Pagination metadata (total, page, limit, totalPages)
+ */
 app.get('/api/v1/transactions', async (req, res) => {
   try {
-    const { page, limit, chain } = req.query;
-    // console.log(page, limit, chain);
-    const transactions = await transactionService.getTransactions({
-      page,
-      limit,
-      chain
-    });
-    // console.log(transactions);
+    const filters = transactionService.extractTransactionFilters(req);
+    const transactions = await transactionService.getTransactionsWithFilters(filters);
+    res.json(transactions);
+  } catch (error) {
+    console.error('Error fetching transactions:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/v1/transactions', async (req, res) => {
+  try {
+    const filters = transactionService.extractTransactionFilters(req);
+    const transactions = await transactionService.getTransactionsWithFilters(filters);
     res.json(transactions);
   } catch (error) {
     console.error('Error fetching transactions:', error);
@@ -403,6 +434,55 @@ app.get('/api/v1/transactions/count', async (req, res) => {
     res.json(count);
   } catch (error) {
     console.error('Error fetching transaction count:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/v1/transactions/stats
+ * POST /api/v1/transactions/stats
+ * 
+ * Get transaction statistics based on filters.
+ * 
+ * GET Query Parameters / POST Body Parameters (same as /api/v1/transactions, excluding pagination/sorting):
+ * - address or addresses (string|array): Address filter(s)
+ * - type (string, optional): Filter by transaction type
+ * - status (string, optional): Filter by transaction status
+ * - chain (string, optional): Filter by chain identifier
+ * - start_date (string, optional): ISO date string - start date filter
+ * - end_date (string, optional): ISO date string - end date filter
+ * - min_amount (number, optional): Minimum transaction amount filter
+ * - max_amount (number, optional): Maximum transaction amount filter
+ * 
+ * Note: POST method is recommended when filtering by many addresses to avoid URL length limits.
+ * 
+ * Returns:
+ * - data: Statistics object containing:
+ *   - total_count: Total number of transactions matching filters
+ *   - total_amount: Sum of all transaction amounts
+ *   - total_fees: Sum of all transaction fees
+ *   - by_type: Object with transaction counts grouped by type
+ *   - by_status: Object with transaction counts grouped by status
+ *   - date_range: Object with min and max timestamps
+ */
+app.get('/api/v1/transactions/stats', async (req, res) => {
+  try {
+    const filters = transactionService.extractStatsFilters(req);
+    const stats = await transactionService.getTransactionStats(filters);
+    res.json(stats);
+  } catch (error) {
+    console.error('Error fetching transaction stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/v1/transactions/stats', async (req, res) => {
+  try {
+    const filters = transactionService.extractStatsFilters(req);
+    const stats = await transactionService.getTransactionStats(filters);
+    res.json(stats);
+  } catch (error) {
+    console.error('Error fetching transaction stats:', error);
     res.status(500).json({ error: error.message });
   }
 });

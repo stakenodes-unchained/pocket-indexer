@@ -489,6 +489,500 @@ class TransactionService {
       throw new Error(`Failed to retrieve transaction statistics: ${error.message}`);
     }
   }
+
+  /**
+   * Get transactions with comprehensive filtering and sorting
+   * 
+   * @param {Object} options Query options
+   * @param {string|Array<string>} options.address or options.addresses - Single address, comma-separated, or array of addresses
+   * @param {string} options.type - Transaction type filter
+   * @param {string} options.status - Transaction status filter
+   * @param {string} options.chain - Chain filter
+   * @param {string} options.start_date - Start date (ISO string)
+   * @param {string} options.end_date - End date (ISO string)
+   * @param {number} options.min_amount - Minimum amount filter
+   * @param {number} options.max_amount - Maximum amount filter
+   * @param {number} options.page - Page number (1-based, default: 1)
+   * @param {number} options.limit - Items per page (default: 10)
+   * @param {string} options.sort_by - Field to sort by (timestamp, amount, fee, block_height, type, status, default: timestamp)
+   * @param {string} options.sort_order - Sort order (asc, desc, default: desc)
+   * @returns {Promise<Object>} Transactions and pagination metadata
+   */
+  async getTransactionsWithFilters(options = {}) {
+    const {
+      address,
+      addresses,
+      type,
+      status,
+      chain,
+      start_date,
+      end_date,
+      min_amount,
+      max_amount,
+      page = 1,
+      limit = 10,
+      sort_by = 'timestamp',
+      sort_order = 'desc'
+    } = options;
+
+    // Convert to numbers
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = Math.min(parseInt(limit, 10) || 10, 1000); // Cap at 1000
+    const offset = (pageNum - 1) * limitNum;
+
+    // Validate sort_by
+    const validSortFields = ['timestamp', 'amount', 'fee', 'block_height', 'type', 'status'];
+    const sortField = validSortFields.includes(sort_by) ? sort_by : 'timestamp';
+    const sortDirection = sort_order.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+    try {
+      await this.connectDB();
+
+      const conditions = [];
+      const values = [];
+      let idx = 1;
+
+      // Chain filter
+      if (chain) {
+        conditions.push(`t.chain = $${idx}`);
+        values.push(chain);
+        idx++;
+      }
+
+      // Address filter - handle single address, comma-separated, or array
+      const addressList = [];
+      if (address) {
+        if (typeof address === 'string' && address.includes(',')) {
+          addressList.push(...address.split(',').map(addr => addr.trim()).filter(addr => addr.length > 0));
+        } else {
+          addressList.push(address);
+        }
+      }
+      if (addresses) {
+        if (Array.isArray(addresses)) {
+          addressList.push(...addresses);
+        } else if (typeof addresses === 'string' && addresses.includes(',')) {
+          addressList.push(...addresses.split(',').map(addr => addr.trim()).filter(addr => addr.length > 0));
+        } else {
+          addressList.push(addresses);
+        }
+      }
+
+      if (addressList.length > 0) {
+        // Remove duplicates
+        const uniqueAddresses = [...new Set(addressList)];
+        
+        // Build address conditions: search in sender, recipient, and tx_data JSONB
+        const addressConditions = [];
+        
+        // Search in sender and recipient columns
+        if (uniqueAddresses.length === 1) {
+          addressConditions.push(`(t.sender = $${idx} OR t.recipient = $${idx})`);
+          values.push(uniqueAddresses[0]);
+          idx++;
+        } else {
+          const placeholders = uniqueAddresses.map((_, i) => `$${idx + i}`).join(', ');
+          addressConditions.push(`(t.sender IN (${placeholders}) OR t.recipient IN (${placeholders}))`);
+          values.push(...uniqueAddresses, ...uniqueAddresses);
+          idx += uniqueAddresses.length * 2;
+        }
+
+        // Search in tx_data JSONB - check common address fields in nested messages structure
+        // tx_data structure: { tx: { body: { messages: [...] } }, tx_response: {...} }
+        // Addresses can be in messages[].to_address, messages[].from_address, messages[].application_address, etc.
+        // Use EXISTS with jsonb_array_elements to check each message in the array
+        const jsonbConditions = [];
+        for (const addr of uniqueAddresses) {
+          // Check if address exists in any message's address fields
+          // Using EXISTS with jsonb_array_elements to iterate through messages
+          jsonbConditions.push(`(
+            EXISTS (
+              SELECT 1 
+              FROM jsonb_array_elements(COALESCE(t.tx_data->'tx'->'body'->'messages', '[]'::jsonb)) AS msg
+              WHERE 
+                msg->>'to_address' = $${idx} OR
+                msg->>'from_address' = $${idx} OR
+                msg->>'application_address' = $${idx} OR
+                msg->>'supplier_operator_address' = $${idx} OR
+                msg->>'delegator_address' = $${idx} OR
+                msg->>'validator_address' = $${idx} OR
+                msg->>'operator_address' = $${idx} OR
+                msg->>'address' = $${idx} OR
+                msg->>'recipient' = $${idx}
+            )
+          )`);
+          values.push(addr);
+          idx++;
+        }
+        
+        if (jsonbConditions.length > 0) {
+          addressConditions.push(`(${jsonbConditions.join(' OR ')})`);
+        }
+
+        conditions.push(`(${addressConditions.join(' OR ')})`);
+      }
+
+      // Type filter
+      if (type) {
+        conditions.push(`t.type = $${idx}`);
+        values.push(type);
+        idx++;
+      }
+
+      // Status filter
+      if (status) {
+        conditions.push(`t.status = $${idx}`);
+        values.push(status);
+        idx++;
+      }
+
+      // Date range filters
+      if (start_date) {
+        conditions.push(`t.timestamp >= $${idx}::timestamp`);
+        values.push(start_date);
+        idx++;
+      }
+      if (end_date) {
+        conditions.push(`t.timestamp <= $${idx}::timestamp`);
+        values.push(end_date);
+        idx++;
+      }
+
+      // Amount range filters
+      if (min_amount !== undefined && min_amount !== null) {
+        conditions.push(`t.amount >= $${idx}::numeric`);
+        values.push(parseFloat(min_amount));
+        idx++;
+      }
+      if (max_amount !== undefined && max_amount !== null) {
+        conditions.push(`t.amount <= $${idx}::numeric`);
+        values.push(parseFloat(max_amount));
+        idx++;
+      }
+
+      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+      // Get total count
+      const countSql = `SELECT COUNT(*) AS total FROM transactions t ${where}`;
+      const countRes = await this.pgClient.query(countSql, values);
+      const total = parseInt(countRes.rows[0].total, 10);
+
+      if (total === 0) {
+        return {
+          data: [],
+          meta: {
+            total: 0,
+            page: pageNum,
+            limit: limitNum,
+            totalPages: 0,
+          }
+        };
+      }
+
+      // Build ORDER BY clause
+      let orderByClause;
+      if (sortField === 'block_height') {
+        // Extract block_height from JSONB for sorting
+        orderByClause = `ORDER BY (t.tx_data->'tx_response'->>'height')::bigint ${sortDirection} NULLS LAST`;
+      } else {
+        orderByClause = `ORDER BY t.${sortField} ${sortDirection} NULLS LAST`;
+      }
+
+      // Get paginated results
+      const listSql = `SELECT 
+        t.id, 
+        t.hash, 
+        t.block_id, 
+        t.sender, 
+        t.recipient, 
+        t.amount, 
+        t.fee, 
+        t.memo, 
+        t.type, 
+        t.status, 
+        t.chain, 
+        t.timestamp,
+        (t.tx_data->'tx_response'->>'height')::bigint as block_height
+      FROM transactions t
+      ${where}
+      ${orderByClause}
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+
+      const listRes = await this.pgClient.query(listSql, [...values, limitNum, offset]);
+
+      const transactions = listRes.rows.map(tx => ({
+        ...tx,
+        // Parse JSON fields if they exist
+        tx_data: tx.tx_data ? (typeof tx.tx_data === 'string' ? JSON.parse(tx.tx_data) : tx.tx_data) : null,
+        // block_height is already extracted from JSONB (may be null if not present)
+        block_height: tx.block_height ? parseInt(tx.block_height, 10) : null
+      }));
+
+      return {
+        data: transactions,
+        meta: {
+          total,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: Math.ceil(total / limitNum),
+        }
+      };
+    } catch (error) {
+      console.error('Error getting transactions with filters:', error);
+      throw new Error(`Failed to retrieve transactions: ${error.message}`);
+    }
+  }
+
+  /**
+   * Extract filter parameters from request (supports both GET query and POST body)
+   * 
+   * @param {Object} req Express request object
+   * @returns {Object} Extracted filter parameters
+   */
+  extractTransactionFilters(req) {
+    // For POST requests, use body; for GET requests, use query
+    const source = req.method === 'POST' ? req.body : req.query;
+    return {
+      address: source.address,
+      addresses: source.addresses,
+      type: source.type,
+      status: source.status,
+      chain: source.chain,
+      start_date: source.start_date,
+      end_date: source.end_date,
+      min_amount: source.min_amount,
+      max_amount: source.max_amount,
+      page: source.page,
+      limit: source.limit,
+      sort_by: source.sort_by,
+      sort_order: source.sort_order
+    };
+  }
+
+  /**
+   * Extract stats filter parameters from request (supports both GET query and POST body)
+   * 
+   * @param {Object} req Express request object
+   * @returns {Object} Extracted filter parameters (excluding pagination/sorting)
+   */
+  extractStatsFilters(req) {
+    // For POST requests, use body; for GET requests, use query
+    const source = req.method === 'POST' ? req.body : req.query;
+    return {
+      address: source.address,
+      addresses: source.addresses,
+      type: source.type,
+      status: source.status,
+      chain: source.chain,
+      start_date: source.start_date,
+      end_date: source.end_date,
+      min_amount: source.min_amount,
+      max_amount: source.max_amount
+    };
+  }
+
+  /**
+   * Get transaction statistics based on filters
+   * 
+   * @param {Object} filters Filter options (same as getTransactionsWithFilters)
+   * @returns {Promise<Object>} Transaction statistics
+   */
+  async getTransactionStats(filters = {}) {
+    const {
+      address,
+      addresses,
+      type,
+      status,
+      chain,
+      start_date,
+      end_date,
+      min_amount,
+      max_amount
+    } = filters;
+
+    try {
+      await this.connectDB();
+
+      const conditions = [];
+      const values = [];
+      let idx = 1;
+
+      // Build same WHERE conditions as getTransactionsWithFilters
+      if (chain) {
+        conditions.push(`t.chain = $${idx}`);
+        values.push(chain);
+        idx++;
+      }
+
+      // Address filter - same logic as getTransactionsWithFilters
+      const addressList = [];
+      if (address) {
+        if (typeof address === 'string' && address.includes(',')) {
+          addressList.push(...address.split(',').map(addr => addr.trim()).filter(addr => addr.length > 0));
+        } else {
+          addressList.push(address);
+        }
+      }
+      if (addresses) {
+        if (Array.isArray(addresses)) {
+          addressList.push(...addresses);
+        } else if (typeof addresses === 'string' && addresses.includes(',')) {
+          addressList.push(...addresses.split(',').map(addr => addr.trim()).filter(addr => addr.length > 0));
+        } else {
+          addressList.push(addresses);
+        }
+      }
+
+      if (addressList.length > 0) {
+        const uniqueAddresses = [...new Set(addressList)];
+        const addressConditions = [];
+        
+        if (uniqueAddresses.length === 1) {
+          addressConditions.push(`(t.sender = $${idx} OR t.recipient = $${idx})`);
+          values.push(uniqueAddresses[0]);
+          idx++;
+        } else {
+          const placeholders = uniqueAddresses.map((_, i) => `$${idx + i}`).join(', ');
+          addressConditions.push(`(t.sender IN (${placeholders}) OR t.recipient IN (${placeholders}))`);
+          values.push(...uniqueAddresses, ...uniqueAddresses);
+          idx += uniqueAddresses.length * 2;
+        }
+
+        const jsonbConditions = [];
+        for (const addr of uniqueAddresses) {
+          // Check if address exists in any message's address fields
+          // Using EXISTS with jsonb_array_elements to iterate through messages
+          jsonbConditions.push(`(
+            EXISTS (
+              SELECT 1 
+              FROM jsonb_array_elements(COALESCE(t.tx_data->'tx'->'body'->'messages', '[]'::jsonb)) AS msg
+              WHERE 
+                msg->>'to_address' = $${idx} OR
+                msg->>'from_address' = $${idx} OR
+                msg->>'application_address' = $${idx} OR
+                msg->>'supplier_operator_address' = $${idx} OR
+                msg->>'delegator_address' = $${idx} OR
+                msg->>'validator_address' = $${idx} OR
+                msg->>'operator_address' = $${idx} OR
+                msg->>'address' = $${idx} OR
+                msg->>'recipient' = $${idx}
+            )
+          )`);
+          values.push(addr);
+          idx++;
+        }
+        
+        if (jsonbConditions.length > 0) {
+          addressConditions.push(`(${jsonbConditions.join(' OR ')})`);
+        }
+
+        conditions.push(`(${addressConditions.join(' OR ')})`);
+      }
+
+      if (type) {
+        conditions.push(`t.type = $${idx}`);
+        values.push(type);
+        idx++;
+      }
+
+      if (status) {
+        conditions.push(`t.status = $${idx}`);
+        values.push(status);
+        idx++;
+      }
+
+      if (start_date) {
+        conditions.push(`t.timestamp >= $${idx}::timestamp`);
+        values.push(start_date);
+        idx++;
+      }
+      if (end_date) {
+        conditions.push(`t.timestamp <= $${idx}::timestamp`);
+        values.push(end_date);
+        idx++;
+      }
+
+      if (min_amount !== undefined && min_amount !== null) {
+        conditions.push(`t.amount >= $${idx}::numeric`);
+        values.push(parseFloat(min_amount));
+        idx++;
+      }
+      if (max_amount !== undefined && max_amount !== null) {
+        conditions.push(`t.amount <= $${idx}::numeric`);
+        values.push(parseFloat(max_amount));
+        idx++;
+      }
+
+      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+      // Get statistics in a single optimized query
+      const statsSql = `
+        SELECT 
+          COUNT(*)::bigint as total_count,
+          COALESCE(SUM(t.amount), 0)::numeric as total_amount,
+          COALESCE(SUM(t.fee), 0)::numeric as total_fees,
+          MIN(t.timestamp) as min_timestamp,
+          MAX(t.timestamp) as max_timestamp
+        FROM transactions t
+        ${where}
+      `;
+
+      const statsRes = await this.pgClient.query(statsSql, values);
+
+      // Get counts by type
+      const byTypeSql = `
+        SELECT 
+          t.type,
+          COUNT(*)::bigint as count
+        FROM transactions t
+        ${where}
+        GROUP BY t.type
+        ORDER BY count DESC
+      `;
+
+      const byTypeRes = await this.pgClient.query(byTypeSql, values);
+      const byType = {};
+      byTypeRes.rows.forEach(row => {
+        byType[row.type || 'unknown'] = parseInt(row.count, 10);
+      });
+
+      // Get counts by status
+      const byStatusSql = `
+        SELECT 
+          t.status,
+          COUNT(*)::bigint as count
+        FROM transactions t
+        ${where}
+        GROUP BY t.status
+        ORDER BY count DESC
+      `;
+
+      const byStatusRes = await this.pgClient.query(byStatusSql, values);
+      const byStatus = {};
+      byStatusRes.rows.forEach(row => {
+        byStatus[row.status || 'unknown'] = parseInt(row.count, 10);
+      });
+
+      const stats = statsRes.rows[0];
+
+      return {
+        data: {
+          total_count: parseInt(stats.total_count, 10),
+          total_amount: parseFloat(stats.total_amount) || 0,
+          total_fees: parseFloat(stats.total_fees) || 0,
+          by_type: byType,
+          by_status: byStatus,
+          date_range: {
+            min: stats.min_timestamp ? new Date(stats.min_timestamp).toISOString() : null,
+            max: stats.max_timestamp ? new Date(stats.max_timestamp).toISOString() : null
+          }
+        }
+      };
+    } catch (error) {
+      console.error('Error getting transaction stats:', error);
+      throw new Error(`Failed to retrieve transaction statistics: ${error.message}`);
+    }
+  }
 }
 
 module.exports = new TransactionService(); 
