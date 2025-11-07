@@ -663,6 +663,8 @@ class TransactionService {
       const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
       // Get total count
+      // Note: COUNT(*) on large tables can be slow. The chain index should help,
+      // but for very large filtered sets, consider using approximate counts or caching.
       const countSql = `SELECT COUNT(*) AS total FROM transactions t ${where}`;
       const countRes = await this.pgClient.query(countSql, values);
       const total = parseInt(countRes.rows[0].total, 10);
