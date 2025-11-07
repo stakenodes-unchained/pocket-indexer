@@ -715,14 +715,29 @@ class TransactionService {
       ${orderByClause}
       LIMIT $${idx} OFFSET $${idx + 1}`;
 
+      const listParams = [...values, fetchLimit, offset];
+      
+      // Debug: Print query before execution
+      console.log('[DEBUG] Transaction List Query:');
+      console.log('SQL:', listSql);
+      console.log('Params:', listParams);
+      console.log('---');
+
       // Run COUNT and SELECT in parallel for better performance
       const queryPromises = [
-        this.pgClient.query(listSql, [...values, fetchLimit, offset])
+        this.pgClient.query(listSql, listParams)
       ];
       
       // Only run COUNT if requested
       if (!skip_count) {
         const countSql = `SELECT COUNT(*) AS total FROM transactions t ${where}`;
+        
+        // Debug: Print COUNT query before execution
+        console.log('[DEBUG] Transaction Count Query:');
+        console.log('SQL:', countSql);
+        console.log('Params:', values);
+        console.log('---');
+        
         queryPromises.push(
           this.pgClient.query(countSql, values).catch(err => {
             // If COUNT fails, return null to indicate it wasn't computed
