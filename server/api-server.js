@@ -1146,73 +1146,135 @@ app.get('/api/v1/staking', async (req, res) => {
 // ============================================================================
 
 // Get proof submissions with filters
+// Shared function for proof submissions queries
+async function getProofSubmissions(params, client) {
+  const { supplier_address, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = params;
+  
+  const conditions = [];
+  const values = [];
+  let idx = 1;
+  
+  if (chain) {
+    conditions.push(`chain = $${idx++}`);
+    values.push(chain);
+  }
+  
+  // Handle supplier_address - can be single string, comma-separated string, or array
+  if (supplier_address) {
+    let addresses;
+    if (Array.isArray(supplier_address)) {
+      addresses = supplier_address;
+    } else if (typeof supplier_address === 'string' && supplier_address.includes(',')) {
+      addresses = supplier_address.split(',').map(addr => addr.trim()).filter(addr => addr.length > 0);
+    } else {
+      addresses = [supplier_address];
+    }
+    
+    if (addresses.length === 1) {
+      conditions.push(`supplier_operator_address = $${idx}::text`);
+      values.push(addresses[0]);
+      idx++;
+    } else if (addresses.length > 1) {
+      const placeholders = addresses.map((_, i) => `$${idx + i}::text`).join(', ');
+      conditions.push(`supplier_operator_address IN (${placeholders})`);
+      values.push(...addresses);
+      idx += addresses.length;
+    }
+  }
+  
+  if (application_address) {
+    conditions.push(`application_address = $${idx++}`);
+    values.push(application_address);
+  }
+  if (service_id) {
+    conditions.push(`service_id = $${idx++}`);
+    values.push(service_id);
+  }
+  if (start_date) {
+    conditions.push(`timestamp >= $${idx++}`);
+    values.push(start_date);
+  }
+  if (end_date) {
+    conditions.push(`timestamp <= $${idx++}`);
+    values.push(end_date);
+  }
+  
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const pageNum = parseInt(page, 10);
+  const limitNum = parseInt(limit, 10);
+  const offset = (pageNum - 1) * limitNum;
+  
+  // Get total count
+  const countSql = `SELECT COUNT(*) AS total FROM proof_submissions ${where}`;
+  const countRes = await client.query(countSql, values);
+  const total = parseInt(countRes.rows[0].total, 10);
+  
+  // Get paginated results
+  const listSql = `SELECT 
+    id, transaction_hash, block_height, timestamp, chain,
+    supplier_operator_address, application_address, service_id, session_id,
+    session_end_block_height, claim_proof_status_int, claimed_upokt,
+    claimed_upokt_amount, num_claimed_compute_units, num_estimated_compute_units,
+    num_relays, compute_unit_efficiency, reward_per_relay, msg_index, created_at
+    FROM proof_submissions ${where}
+    ORDER BY timestamp DESC, block_height DESC
+    LIMIT $${idx} OFFSET $${idx + 1}`;
+  
+  const listRes = await client.query(listSql, [...values, limitNum, offset]);
+  
+  return {
+    data: listRes.rows,
+    meta: {
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum)
+    }
+  };
+}
+
 app.get('/api/v1/proof-submissions', async (req, res) => {
   try {
     const { supplier_address, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
-    const conditions = [];
-    const values = [];
-    let idx = 1;
+    const result = await getProofSubmissions({
+      supplier_address,
+      application_address,
+      service_id,
+      chain,
+      start_date,
+      end_date,
+      page,
+      limit
+    }, client);
     
-    if (chain) {
-      conditions.push(`chain = $${idx++}`);
-      values.push(chain);
-    }
-    if (supplier_address) {
-      conditions.push(`supplier_operator_address = $${idx++}`);
-      values.push(supplier_address);
-    }
-    if (application_address) {
-      conditions.push(`application_address = $${idx++}`);
-      values.push(application_address);
-    }
-    if (service_id) {
-      conditions.push(`service_id = $${idx++}`);
-      values.push(service_id);
-    }
-    if (start_date) {
-      conditions.push(`timestamp >= $${idx++}`);
-      values.push(start_date);
-    }
-    if (end_date) {
-      conditions.push(`timestamp <= $${idx++}`);
-      values.push(end_date);
-    }
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching proof submissions:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/v1/proof-submissions', async (req, res) => {
+  try {
+    const { supplier_address, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.body;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
     
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const pageNum = parseInt(page, 10);
-    const limitNum = parseInt(limit, 10);
-    const offset = (pageNum - 1) * limitNum;
+    const result = await getProofSubmissions({
+      supplier_address,
+      application_address,
+      service_id,
+      chain,
+      start_date,
+      end_date,
+      page,
+      limit
+    }, client);
     
-    // Get total count
-    const countSql = `SELECT COUNT(*) AS total FROM proof_submissions ${where}`;
-    const countRes = await client.query(countSql, values);
-    const total = parseInt(countRes.rows[0].total, 10);
-    
-    // Get paginated results
-    const listSql = `SELECT 
-      id, transaction_hash, block_height, timestamp, chain,
-      supplier_operator_address, application_address, service_id, session_id,
-      session_end_block_height, claim_proof_status_int, claimed_upokt,
-      claimed_upokt_amount, num_claimed_compute_units, num_estimated_compute_units,
-      num_relays, compute_unit_efficiency, reward_per_relay, msg_index, created_at
-      FROM proof_submissions ${where}
-      ORDER BY timestamp DESC, block_height DESC
-      LIMIT $${idx} OFFSET $${idx + 1}`;
-    
-    const listRes = await client.query(listSql, [...values, limitNum, offset]);
-    
-    res.json({
-      data: listRes.rows,
-      meta: {
-        total,
-        page: pageNum,
-        limit: limitNum,
-        totalPages: Math.ceil(total / limitNum)
-      }
-    });
+    res.json(result);
   } catch (error) {
     console.error('Error fetching proof submissions:', error);
     res.status(500).json({ error: error.message });
@@ -1394,65 +1456,123 @@ app.get('/api/v1/applications/:address/usage', async (req, res) => {
 });
 
 // Get summary statistics for proof submissions
+// Shared function for proof submissions summary
+async function getProofSubmissionsSummary(params, client) {
+  const { start_date, end_date, supplier_address, application_address, service_id, chain } = params;
+  
+  const conditions = [];
+  const values = [];
+  let idx = 1;
+  
+  if (chain) {
+    conditions.push(`chain = $${idx++}`);
+    values.push(chain);
+  }
+  if (start_date) {
+    conditions.push(`timestamp >= $${idx++}`);
+    values.push(start_date);
+  }
+  if (end_date) {
+    conditions.push(`timestamp <= $${idx++}`);
+    values.push(end_date);
+  }
+  // Default to last 24 hours if no explicit date range provided
+  if (!start_date && !end_date) {
+    conditions.push(`timestamp >= NOW() - INTERVAL '24 hours'`);
+  }
+  
+  // Handle supplier_address - can be single string, comma-separated string, or array
+  if (supplier_address) {
+    let addresses;
+    if (Array.isArray(supplier_address)) {
+      addresses = supplier_address;
+    } else if (typeof supplier_address === 'string' && supplier_address.includes(',')) {
+      addresses = supplier_address.split(',').map(addr => addr.trim()).filter(addr => addr.length > 0);
+    } else {
+      addresses = [supplier_address];
+    }
+    
+    if (addresses.length === 1) {
+      conditions.push(`supplier_operator_address = $${idx}::text`);
+      values.push(addresses[0]);
+      idx++;
+    } else if (addresses.length > 1) {
+      const placeholders = addresses.map((_, i) => `$${idx + i}::text`).join(', ');
+      conditions.push(`supplier_operator_address IN (${placeholders})`);
+      values.push(...addresses);
+      idx += addresses.length;
+    }
+  }
+  
+  if (application_address) {
+    conditions.push(`application_address = $${idx++}`);
+    values.push(application_address);
+  }
+  if (service_id) {
+    conditions.push(`service_id = $${idx++}`);
+    values.push(service_id);
+  }
+  
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  
+  const summarySql = `SELECT 
+    COUNT(*) as total_submissions,
+    COUNT(DISTINCT supplier_operator_address) as unique_suppliers,
+    COUNT(DISTINCT application_address) as unique_applications,
+    COUNT(DISTINCT service_id) as unique_services,
+    SUM(claimed_upokt_amount) as total_rewards_upokt,
+    SUM(num_relays) as total_relays,
+    SUM(num_claimed_compute_units) as total_claimed_compute_units,
+    SUM(num_estimated_compute_units) as total_estimated_compute_units,
+    AVG(compute_unit_efficiency) as avg_efficiency_percent,
+    AVG(reward_per_relay) as avg_reward_per_relay,
+    MIN(timestamp) as first_submission,
+    MAX(timestamp) as last_submission
+    FROM proof_submissions ${where}`;
+  
+  const result = await client.query(summarySql, values);
+  
+  return { data: result.rows[0] };
+}
+
 app.get('/api/v1/proof-submissions/summary', async (req, res) => {
   try {
     const { start_date, end_date, supplier_address, application_address, service_id, chain } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
-    const conditions = [];
-    const values = [];
-    let idx = 1;
+    const result = await getProofSubmissionsSummary({
+      start_date,
+      end_date,
+      supplier_address,
+      application_address,
+      service_id,
+      chain
+    }, client);
     
-    if (chain) {
-      conditions.push(`chain = $${idx++}`);
-      values.push(chain);
-    }
-    if (start_date) {
-      conditions.push(`timestamp >= $${idx++}`);
-      values.push(start_date);
-    }
-    if (end_date) {
-      conditions.push(`timestamp <= $${idx++}`);
-      values.push(end_date);
-    }
-    // Default to last 24 hours if no explicit date range provided
-    if (!start_date && !end_date) {
-      conditions.push(`timestamp >= NOW() - INTERVAL '24 hours'`);
-    }
-    if (supplier_address) {
-      conditions.push(`supplier_operator_address = $${idx++}`);
-      values.push(supplier_address);
-    }
-    if (application_address) {
-      conditions.push(`application_address = $${idx++}`);
-      values.push(application_address);
-    }
-    if (service_id) {
-      conditions.push(`service_id = $${idx++}`);
-      values.push(service_id);
-    }
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching proof submissions summary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/v1/proof-submissions/summary', async (req, res) => {
+  try {
+    const { start_date, end_date, supplier_address, application_address, service_id, chain } = req.body;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
     
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const result = await getProofSubmissionsSummary({
+      start_date,
+      end_date,
+      supplier_address,
+      application_address,
+      service_id,
+      chain
+    }, client);
     
-    const summarySql = `SELECT 
-      COUNT(*) as total_submissions,
-      COUNT(DISTINCT supplier_operator_address) as unique_suppliers,
-      COUNT(DISTINCT application_address) as unique_applications,
-      COUNT(DISTINCT service_id) as unique_services,
-      SUM(claimed_upokt_amount) as total_rewards_upokt,
-      SUM(num_relays) as total_relays,
-      SUM(num_claimed_compute_units) as total_claimed_compute_units,
-      SUM(num_estimated_compute_units) as total_estimated_compute_units,
-      AVG(compute_unit_efficiency) as avg_efficiency_percent,
-      AVG(reward_per_relay) as avg_reward_per_relay,
-      MIN(timestamp) as first_submission,
-      MAX(timestamp) as last_submission
-      FROM proof_submissions ${where}`;
-    
-    const result = await client.query(summarySql, values);
-    
-    res.json({ data: result.rows[0] });
+    res.json(result);
   } catch (error) {
     console.error('Error fetching proof submissions summary:', error);
     res.status(500).json({ error: error.message });

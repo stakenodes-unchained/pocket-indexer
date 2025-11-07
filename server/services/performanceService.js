@@ -432,11 +432,11 @@ async function getTopServicesByComputeUnits(params, client) {
     // Also try matching directly against supplier_operator_address in case it contains account addresses
     if (accountAddresses.length > 0) {
       if (accountAddresses.length === 1) {
-        addressConditions.push(`(s.owner_address = $${idx} OR ps.supplier_operator_address = $${idx})`);
+        addressConditions.push(`(s.owner_address = $${idx}::text OR ps.supplier_operator_address = $${idx}::text)`);
         values.push(accountAddresses[0]);
         idx++;
       } else {
-        const placeholders = accountAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        const placeholders = accountAddresses.map((_, i) => `$${idx + i}::text`).join(', ');
         addressConditions.push(`(s.owner_address IN (${placeholders}) OR ps.supplier_operator_address IN (${placeholders}))`);
         values.push(...accountAddresses, ...accountAddresses);
         idx += accountAddresses.length * 2;
@@ -446,10 +446,11 @@ async function getTopServicesByComputeUnits(params, client) {
     // Match operator addresses directly via supplier_operator_address
     if (operatorAddresses.length > 0) {
       if (operatorAddresses.length === 1) {
-        addressConditions.push(`ps.supplier_operator_address = $${idx++}`);
+        addressConditions.push(`ps.supplier_operator_address = $${idx}::text`);
         values.push(operatorAddresses[0]);
+        idx++;
       } else {
-        const placeholders = operatorAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        const placeholders = operatorAddresses.map((_, i) => `$${idx + i}::text`).join(', ');
         addressConditions.push(`ps.supplier_operator_address IN (${placeholders})`);
         values.push(...operatorAddresses);
         idx += operatorAddresses.length;
@@ -583,11 +584,11 @@ async function getTopServicesByPerformance(params, client) {
     // Also try matching directly against supplier_operator_address in case it contains account addresses
     if (accountAddresses.length > 0) {
       if (accountAddresses.length === 1) {
-        addressConditions.push(`(s.owner_address = $${idx} OR ps.supplier_operator_address = $${idx})`);
+        addressConditions.push(`(s.owner_address = $${idx}::text OR ps.supplier_operator_address = $${idx}::text)`);
         values.push(accountAddresses[0]);
         idx++;
       } else {
-        const placeholders = accountAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        const placeholders = accountAddresses.map((_, i) => `$${idx + i}::text`).join(', ');
         addressConditions.push(`(s.owner_address IN (${placeholders}) OR ps.supplier_operator_address IN (${placeholders}))`);
         values.push(...accountAddresses, ...accountAddresses);
         idx += accountAddresses.length * 2;
@@ -597,10 +598,11 @@ async function getTopServicesByPerformance(params, client) {
     // Match operator addresses directly via supplier_operator_address
     if (operatorAddresses.length > 0) {
       if (operatorAddresses.length === 1) {
-        addressConditions.push(`ps.supplier_operator_address = $${idx++}`);
+        addressConditions.push(`ps.supplier_operator_address = $${idx}::text`);
         values.push(operatorAddresses[0]);
+        idx++;
       } else {
-        const placeholders = operatorAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        const placeholders = operatorAddresses.map((_, i) => `$${idx + i}::text`).join(', ');
         addressConditions.push(`ps.supplier_operator_address IN (${placeholders})`);
         values.push(...operatorAddresses);
         idx += operatorAddresses.length;
