@@ -20,7 +20,7 @@ const args = process.argv.slice(2);
 const options = {
   chain: null,
   batchSize: 1000,
-  limit: null,
+  limit: null, // Default: unlimited (process all)
   dryRun: false
 };
 
@@ -62,53 +62,101 @@ async function backfillAddresses() {
       console.log('DRY RUN MODE - No changes will be made');
     }
 
-    // Build query to find transactions that need address extraction
-    let query = `
-      SELECT id, hash, sender, recipient, tx_data, chain
-      FROM transactions
-      WHERE tx_data IS NOT NULL
-    `;
-    
-    const queryParams = [];
-    let paramIndex = 1;
-
-    if (options.chain) {
-      query += ` AND chain = $${paramIndex}`;
-      queryParams.push(options.chain);
-      paramIndex++;
-    }
-
-    // Optionally filter for transactions without addresses populated
-    // For initial backfill, we'll process all transactions to ensure consistency
-    query += ` ORDER BY timestamp ASC`;
-
-    if (options.limit) {
-      query += ` LIMIT $${paramIndex}`;
-      queryParams.push(options.limit);
-    }
-
-    console.log('Fetching transactions...');
-    const result = await client.query(query, queryParams);
-    const transactions = result.rows;
-    
-    console.log(`Found ${transactions.length} transactions to process`);
-
-    if (transactions.length === 0) {
-      console.log('No transactions to process');
-      return;
+    // Get total count for progress tracking (optional, can be slow on large tables)
+    let totalCount = null;
+    try {
+      let countQuery = `
+        SELECT COUNT(*) as total
+        FROM transactions
+        WHERE tx_data IS NOT NULL AND addresses IS NULL
+      `;
+      const countParams = [];
+      if (options.chain) {
+        countQuery += ` AND chain = $1`;
+        countParams.push(options.chain);
+      }
+      const countResult = await client.query(countQuery, countParams);
+      totalCount = parseInt(countResult.rows[0].total, 10);
+      console.log(`Total transactions to process: ${totalCount.toLocaleString()}`);
+    } catch (countError) {
+      console.warn('Could not get total count (this is OK for very large tables):', countError.message);
+      console.log('Proceeding without total count...');
     }
 
     let processed = 0;
     let updated = 0;
     let errors = 0;
     const startTime = Date.now();
+    let lastId = null; // For cursor-based pagination (more efficient than OFFSET)
 
-    // Process in batches
-    for (let i = 0; i < transactions.length; i += options.batchSize) {
-      const batch = transactions.slice(i, i + options.batchSize);
-      console.log(`Processing batch ${Math.floor(i / options.batchSize) + 1} (${batch.length} transactions)...`);
+    // Build base query
+    let baseQuery = `
+      SELECT id, hash, sender, recipient, tx_data, chain, timestamp
+      FROM transactions
+      WHERE tx_data IS NOT NULL AND addresses IS NULL
+    `;
+    
+    const baseParams = [];
+    let paramIndex = 1;
 
-      for (const tx of batch) {
+    if (options.chain) {
+      baseQuery += ` AND chain = $${paramIndex}`;
+      baseParams.push(options.chain);
+      paramIndex++;
+    }
+
+    // Use cursor-based pagination (more efficient than OFFSET for large datasets)
+    // Order by (id, timestamp) for consistent pagination
+    baseQuery += ` ORDER BY id ASC, timestamp ASC`;
+
+    // Fetch and process in batches
+    let hasMore = true;
+    let batchNumber = 0;
+
+    while (hasMore) {
+      // Check if we've hit the limit
+      if (options.limit && processed >= options.limit) {
+        console.log(`Reached limit of ${options.limit} transactions`);
+        break;
+      }
+
+      batchNumber++;
+      
+      // Build query for this batch
+      let query = baseQuery;
+      const queryParams = [...baseParams];
+      let queryParamIndex = paramIndex;
+
+      // Use cursor-based pagination if we have a lastId
+      // Since id is the primary key (unique), we can use simple id > lastId
+      if (lastId) {
+        query += ` AND id > $${queryParamIndex}`;
+        queryParams.push(lastId);
+        queryParamIndex++;
+      }
+
+      // Add LIMIT for batch size
+      const batchLimit = options.limit 
+        ? Math.min(options.batchSize, options.limit - processed)
+        : options.batchSize;
+      
+      query += ` LIMIT $${queryParamIndex}`;
+      queryParams.push(batchLimit);
+
+      // Fetch batch from database
+      const result = await client.query(query, queryParams);
+      const transactions = result.rows;
+      
+      if (transactions.length === 0) {
+        hasMore = false;
+        console.log('No more transactions to process');
+        break;
+      }
+
+      console.log(`\nFetching batch ${batchNumber} (${transactions.length} transactions)...`);
+
+      // Process transactions in this batch
+      for (const tx of transactions) {
         try {
           // Extract addresses
           let addresses = null;
@@ -125,6 +173,7 @@ async function backfillAddresses() {
             console.warn(`Failed to extract addresses for ${tx.hash}:`, extractError.message);
             errors++;
             processed++;
+            lastId = tx.id; // Update cursor even on error
             continue;
           }
 
@@ -138,30 +187,48 @@ async function backfillAddresses() {
 
           if (addresses && addresses.length > 0) {
             updated++;
-            if (processed % 100 === 0) {
-              console.log(`  Processed ${processed + 1}/${transactions.length}, updated: ${updated}, errors: ${errors}`);
-            }
           }
 
           processed++;
+          lastId = tx.id; // Update cursor for next batch
+
+          // Log progress periodically
+          if (processed % 1000 === 0) {
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+            const rate = (processed / elapsed).toFixed(2);
+            const progress = totalCount 
+              ? `${processed.toLocaleString()}/${totalCount.toLocaleString()} (${((processed / totalCount) * 100).toFixed(2)}%)`
+              : `${processed.toLocaleString()}`;
+            console.log(`  Progress: ${progress} | Rate: ${rate} tx/sec | Updated: ${updated.toLocaleString()} | Errors: ${errors.toLocaleString()}`);
+          }
         } catch (error) {
           console.error(`Error processing transaction ${tx.hash}:`, error.message);
           errors++;
           processed++;
+          lastId = tx.id; // Update cursor even on error
         }
       }
 
       // Log progress after each batch
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
       const rate = (processed / elapsed).toFixed(2);
-      console.log(`Progress: ${processed}/${transactions.length} (${rate} tx/sec), Updated: ${updated}, Errors: ${errors}`);
+      const progress = totalCount 
+        ? `${processed.toLocaleString()}/${totalCount.toLocaleString()} (${((processed / totalCount) * 100).toFixed(2)}%)`
+        : `${processed.toLocaleString()}`;
+      console.log(`Batch ${batchNumber} complete: ${progress} | Rate: ${rate} tx/sec | Updated: ${updated.toLocaleString()} | Errors: ${errors.toLocaleString()}`);
+
+      // Check if we got fewer results than requested (end of data)
+      if (transactions.length < batchLimit) {
+        hasMore = false;
+        console.log('Reached end of transactions');
+      }
     }
 
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
     console.log('\n=== Backfill Complete ===');
-    console.log(`Total processed: ${processed}`);
-    console.log(`Total updated: ${updated}`);
-    console.log(`Total errors: ${errors}`);
+    console.log(`Total processed: ${processed.toLocaleString()}`);
+    console.log(`Total updated: ${updated.toLocaleString()}`);
+    console.log(`Total errors: ${errors.toLocaleString()}`);
     console.log(`Time elapsed: ${totalTime} seconds`);
     console.log(`Average rate: ${(processed / parseFloat(totalTime)).toFixed(2)} tx/sec`);
 
