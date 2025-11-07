@@ -40,21 +40,29 @@ async function searchValidatorsAndServices(params, client) {
   const validatorWhere = `WHERE ${validatorConditions.join(' AND ')}`;
   
   // Search validators: moniker, account_address (pokt1...), operator_address (poktvaloper1...)
+  // Use subquery to handle DISTINCT with ORDER BY properly
   const validatorSql = `
-    SELECT DISTINCT
-      v.account_address AS validator_account_address,
-      v.moniker,
-      v.operator_address,
-      v.chain
-    FROM validators v
-    ${validatorWhere}
+    SELECT 
+      validator_account_address,
+      moniker,
+      operator_address,
+      chain
+    FROM (
+      SELECT DISTINCT
+        v.account_address AS validator_account_address,
+        v.moniker,
+        v.operator_address,
+        v.chain
+      FROM validators v
+      ${validatorWhere}
+    ) AS distinct_validators
     ORDER BY 
       CASE 
-        WHEN v.account_address = $2 OR v.operator_address = $2 THEN 1
-        WHEN v.moniker ILIKE $1 THEN 2
+        WHEN validator_account_address = $2 OR operator_address = $2 THEN 1
+        WHEN moniker ILIKE $1 THEN 2
         ELSE 3
       END,
-      v.moniker NULLS LAST
+      moniker NULLS LAST
     LIMIT $${idx}
   `;
   values.push(limitNum);
