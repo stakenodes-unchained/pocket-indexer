@@ -736,7 +736,10 @@ class TransactionService {
       }
       
       // Execute both queries in parallel
-      const [listRes, countRes] = await Promise.all(queryPromises);
+      const [listRes, countRes] = await Promise.all(queryPromises).catch(err => {
+        console.error('Error executing queries:', err.message);
+        throw new Error(`Failed to retrieve transactions: ${err.message}`);
+      });
       
       // Determine if there's a next page by checking if we got more than requested
       const hasMore = listRes.rows.length > limitNum;
