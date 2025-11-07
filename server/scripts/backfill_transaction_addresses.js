@@ -89,25 +89,20 @@ async function backfillAddresses() {
     const startTime = Date.now();
     let lastId = null; // For cursor-based pagination (more efficient than OFFSET)
 
-    // Build base query
-    let baseQuery = `
-      SELECT id, hash, sender, recipient, tx_data, chain, timestamp
-      FROM transactions
-      WHERE tx_data IS NOT NULL AND addresses IS NULL
-    `;
-    
+    // Build base WHERE conditions
+    const baseConditions = ['tx_data IS NOT NULL', 'addresses IS NULL'];
     const baseParams = [];
     let paramIndex = 1;
 
     if (options.chain) {
-      baseQuery += ` AND chain = $${paramIndex}`;
+      baseConditions.push(`chain = $${paramIndex}`);
       baseParams.push(options.chain);
       paramIndex++;
     }
 
     // Use cursor-based pagination (more efficient than OFFSET for large datasets)
     // Order by (id, timestamp) for consistent pagination
-    baseQuery += ` ORDER BY id ASC, timestamp ASC`;
+    const baseOrderBy = ` ORDER BY id ASC, timestamp ASC`;
 
     // Fetch and process in batches
     let hasMore = true;
@@ -123,28 +118,36 @@ async function backfillAddresses() {
       batchNumber++;
       
       // Build query for this batch
-      let query = baseQuery;
+      const conditions = [...baseConditions];
       const queryParams = [...baseParams];
       let queryParamIndex = paramIndex;
 
       // Use cursor-based pagination if we have a lastId
       // Since id is the primary key (unique), we can use simple id > lastId
       if (lastId) {
-        query += ` AND id > $${queryParamIndex}`;
+        conditions.push(`id > $${queryParamIndex}`);
         queryParams.push(lastId);
         queryParamIndex++;
       }
+
+      // Build the complete query
+      const query = `
+        SELECT id, hash, sender, recipient, tx_data, chain, timestamp
+        FROM transactions
+        WHERE ${conditions.join(' AND ')}
+        ${baseOrderBy}
+      `;
 
       // Add LIMIT for batch size
       const batchLimit = options.limit 
         ? Math.min(options.batchSize, options.limit - processed)
         : options.batchSize;
       
-      query += ` LIMIT $${queryParamIndex}`;
+      const finalQuery = query.trim() + ` LIMIT $${queryParamIndex}`;
       queryParams.push(batchLimit);
 
       // Fetch batch from database
-      const result = await client.query(query, queryParams);
+      const result = await client.query(finalQuery, queryParams);
       const transactions = result.rows;
       
       if (transactions.length === 0) {
