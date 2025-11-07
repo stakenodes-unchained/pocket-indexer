@@ -494,9 +494,8 @@ class TransactionService {
    * Get transactions with comprehensive filtering and sorting
    * 
    * Optimized for large datasets (10M+ rows):
-   * - By default, skips COUNT(*) query for performance (skip_count=true)
    * - Uses "has_more" approach: fetches limit+1 rows to determine next page
-   * - COUNT(*) on 10M+ rows can take 10+ seconds, so it's optional
+   * - Always returns pagination metadata including total count
    * 
    * @param {Object} options Query options
    * @param {string|Array<string>} options.address or options.addresses - Single address, comma-separated, or array of addresses
@@ -511,7 +510,6 @@ class TransactionService {
    * @param {number} options.limit - Items per page (default: 10)
    * @param {string} options.sort_by - Field to sort by (timestamp, amount, fee, block_height, type, status, default: timestamp)
    * @param {string} options.sort_order - Sort order (asc, desc, default: desc)
-   * @param {boolean} options.skip_count - Skip COUNT(*) query for performance (default: true). Set to false to get total count (slower).
    * @returns {Promise<Object>} Transactions and pagination metadata with has_more flag
    */
   async getTransactionsWithFilters(options = {}) {
@@ -528,8 +526,7 @@ class TransactionService {
       page = 1,
       limit = 10,
       sort_by = 'timestamp',
-      sort_order = 'desc',
-      skip_count = false // Default to true for performance on large datasets (10M+ rows)
+      sort_order = 'desc'
     } = options;
 
     // Convert to numbers
@@ -716,39 +713,18 @@ class TransactionService {
       LIMIT $${idx} OFFSET $${idx + 1}`;
 
       const listParams = [...values, fetchLimit, offset];
-      
-      // Debug: Print query before execution
-      console.log('[DEBUG] Transaction List Query:');
-      console.log('SQL:', listSql);
-      console.log('Params:', listParams);
-      console.log('---');
 
       // Run COUNT and SELECT in parallel for better performance
-      const queryPromises = [
-        this.pgClient.query(listSql, listParams)
-      ];
+      const countSql = `SELECT COUNT(*) AS total FROM transactions t ${where}`;
       
-      // Only run COUNT if requested
-      if (!skip_count) {
-        const countSql = `SELECT COUNT(*) AS total FROM transactions t ${where}`;
-        
-        // Debug: Print COUNT query before execution
-        console.log('[DEBUG] Transaction Count Query:');
-        console.log('SQL:', countSql);
-        console.log('Params:', values);
-        console.log('---');
-        
-        queryPromises.push(
-          this.pgClient.query(countSql, values).catch(err => {
-            // If COUNT fails, return null to indicate it wasn't computed
-            console.warn('COUNT query failed:', err.message);
-            return { rows: [{ total: null }] };
-          })
-        );
-      } else {
-        // Push a resolved promise to maintain array structure
-        queryPromises.push(Promise.resolve({ rows: [{ total: null }] }));
-      }
+      const queryPromises = [
+        this.pgClient.query(listSql, listParams),
+        this.pgClient.query(countSql, values).catch(err => {
+          // If COUNT fails, return null to indicate it wasn't computed
+          console.warn('COUNT query failed:', err.message);
+          return { rows: [{ total: null }] };
+        })
+      ];
       
       // Execute both queries in parallel
       const [listRes, countRes] = await Promise.all(queryPromises).catch(err => {
@@ -761,23 +737,18 @@ class TransactionService {
       const transactions = listRes.rows.slice(0, limitNum); // Return only requested amount
       
       // Get total count from parallel query result
-      let total = 0;
-      let totalPages = 0;
-      
-      if (!skip_count && countRes.rows[0].total !== null) {
-        total = parseInt(countRes.rows[0].total, 10);
-        totalPages = Math.ceil(total / limitNum);
-      }
+      const total = countRes.rows[0].total !== null ? parseInt(countRes.rows[0].total, 10) : 0;
+      const totalPages = Math.ceil(total / limitNum);
       
       // If no results and we're on page 1, return empty
       if (transactions.length === 0 && pageNum === 1) {
         return {
           data: [],
           meta: {
-            total: skip_count ? null : 0,
+            total: 0,
             page: pageNum,
             limit: limitNum,
-            totalPages: skip_count ? null : 0,
+            totalPages: 0,
             has_more: false
           }
         };
@@ -794,10 +765,10 @@ class TransactionService {
       return {
         data: formattedTransactions,
         meta: {
-          total: skip_count ? null : total,
+          total: total,
           page: pageNum,
           limit: limitNum,
-          totalPages: skip_count ? null : totalPages,
+          totalPages: totalPages,
           has_more: hasMore
         }
       };
@@ -829,10 +800,7 @@ class TransactionService {
       page: source.page,
       limit: source.limit,
       sort_by: source.sort_by,
-      sort_order: source.sort_order,
-      // skip_count defaults to true for performance on large datasets (10M+ rows)
-      // Set skip_count=false in query/body to get total count (slower)
-      skip_count: source.skip_count !== undefined ? source.skip_count === 'true' || source.skip_count === true : true
+      sort_order: source.sort_order
     };
   }
 

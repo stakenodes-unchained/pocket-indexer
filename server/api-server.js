@@ -398,17 +398,15 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(300), async (req, res)
  * - limit (integer, default: 10, max: 1000): Number of results per page
  * - sort_by (string, default: 'timestamp'): Field to sort by (timestamp, amount, fee, block_height, type, status)
  * - sort_order (string, default: 'desc'): Sort order (asc, desc)
- * - skip_count (boolean, default: true): Skip COUNT(*) query for performance on large datasets (10M+ rows).
- *   Set to false to get total count and totalPages (slower). When true, uses has_more flag instead.
  * 
  * Note: POST method is recommended when filtering by many addresses to avoid URL length limits.
  * 
  * Returns:
  * - data: Array of transaction objects
  * - meta: Pagination metadata (total, page, limit, totalPages, has_more)
- *   - total: Total count (null if skip_count=true)
- *   - totalPages: Total pages (null if skip_count=true)
- *   - has_more: Boolean indicating if there are more results (always present)
+ *   - total: Total count of transactions matching filters
+ *   - totalPages: Total number of pages
+ *   - has_more: Boolean indicating if there are more results
  */
 app.get('/api/v1/transactions', async (req, res) => {
   try {
