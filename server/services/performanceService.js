@@ -177,6 +177,9 @@ async function getValidatorPerformance(params, client) {
   if (end_date) { conditions.push(`ps.timestamp <= $${idx++}`); values.push(end_date); }
   
   // Handle supplier_address - can be single string, comma-separated string, or array
+  // Addresses can be either account addresses (pokt1...) or operator addresses (poktvaloper1...)
+  // Account addresses should match via owner_address or account_address
+  // Operator addresses should match via supplier_operator_address
   if (supplier_address) {
     let addresses;
     if (Array.isArray(supplier_address)) {
@@ -188,16 +191,45 @@ async function getValidatorPerformance(params, client) {
       addresses = [supplier_address];
     }
     
-    if (addresses.length === 1) {
-      // Single address - use equality for better index usage
-      conditions.push(`ps.supplier_operator_address = $${idx++}`);
-      values.push(addresses[0]);
-    } else if (addresses.length > 1) {
-      // Multiple addresses - use IN clause
-      const placeholders = addresses.map((_, i) => `$${idx + i}`).join(', ');
-      conditions.push(`ps.supplier_operator_address IN (${placeholders})`);
-      values.push(...addresses);
-      idx += addresses.length;
+    // Check if addresses are account addresses (pokt1...) or operator addresses (poktvaloper1...)
+    const isAccountAddress = (addr) => addr && addr.startsWith('pokt1') && !addr.startsWith('poktvaloper1');
+    
+    // Separate account and operator addresses
+    const accountAddresses = addresses.filter(isAccountAddress);
+    const operatorAddresses = addresses.filter(addr => !isAccountAddress(addr));
+    
+    const addressConditions = [];
+    
+    // Match account addresses via owner_address in suppliers table or account_address in validators
+    // Also try matching directly against supplier_operator_address in case it contains account addresses
+    if (accountAddresses.length > 0) {
+      if (accountAddresses.length === 1) {
+        addressConditions.push(`(s.owner_address = $${idx} OR v.account_address = $${idx} OR ps.supplier_operator_address = $${idx})`);
+        values.push(accountAddresses[0]);
+        idx++;
+      } else {
+        const placeholders = accountAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        addressConditions.push(`(s.owner_address IN (${placeholders}) OR v.account_address IN (${placeholders}) OR ps.supplier_operator_address IN (${placeholders}))`);
+        values.push(...accountAddresses, ...accountAddresses, ...accountAddresses);
+        idx += accountAddresses.length * 3;
+      }
+    }
+    
+    // Match operator addresses directly via supplier_operator_address
+    if (operatorAddresses.length > 0) {
+      if (operatorAddresses.length === 1) {
+        addressConditions.push(`ps.supplier_operator_address = $${idx++}`);
+        values.push(operatorAddresses[0]);
+      } else {
+        const placeholders = operatorAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        addressConditions.push(`ps.supplier_operator_address IN (${placeholders})`);
+        values.push(...operatorAddresses);
+        idx += operatorAddresses.length;
+      }
+    }
+    
+    if (addressConditions.length > 0) {
+      conditions.push(`(${addressConditions.join(' OR ')})`);
     }
   }
   
@@ -322,8 +354,21 @@ async function getValidatorPerformance(params, client) {
 
   const listRes = await client.query(listSql, [...values, limitNum, offset]);
 
+  // Parse numeric fields from strings to numbers
+  const parsedData = listRes.rows.map(row => ({
+    ...row,
+    submissions: parseInt(row.submissions || '0', 10),
+    total_relays: parseInt(row.total_relays || '0', 10),
+    total_claimed_compute_units: parseInt(row.total_claimed_compute_units || '0', 10),
+    total_estimated_compute_units: parseInt(row.total_estimated_compute_units || '0', 10),
+    avg_efficiency_percent: parseFloat(row.avg_efficiency_percent || '0'),
+    avg_reward_per_relay: parseFloat(row.avg_reward_per_relay || '0'),
+    unique_applications: parseInt(row.unique_applications || '0', 10),
+    unique_services: parseInt(row.unique_services || '0', 10)
+  }));
+
   return {
-    data: listRes.rows,
+    data: parsedData,
     meta: {
       total,
       page: pageNum,
@@ -361,7 +406,8 @@ async function getTopServicesByComputeUnits(params, client) {
   let idx = 1;
   let needsJoin = false;
   
-  // Handle supplier_address filter (operator address) - can be string, comma-separated string, or array
+  // Handle supplier_address filter - can be string, comma-separated string, or array
+  // Addresses can be either account addresses (pokt1...) or operator addresses (poktvaloper1...)
   if (supplier_address) {
     needsJoin = true;
     let addresses;
@@ -373,14 +419,45 @@ async function getTopServicesByComputeUnits(params, client) {
       addresses = [supplier_address];
     }
     
-    if (addresses.length === 1) {
-      conditions.push(`ps.supplier_operator_address = $${idx++}`);
-      values.push(addresses[0]);
-    } else if (addresses.length > 1) {
-      const placeholders = addresses.map((_, i) => `$${idx + i}`).join(', ');
-      conditions.push(`ps.supplier_operator_address IN (${placeholders})`);
-      values.push(...addresses);
-      idx += addresses.length;
+    // Check if addresses are account addresses (pokt1...) or operator addresses (poktvaloper1...)
+    const isAccountAddress = (addr) => addr && addr.startsWith('pokt1') && !addr.startsWith('poktvaloper1');
+    
+    // Separate account and operator addresses
+    const accountAddresses = addresses.filter(isAccountAddress);
+    const operatorAddresses = addresses.filter(addr => !isAccountAddress(addr));
+    
+    const addressConditions = [];
+    
+    // Match account addresses via owner_address in suppliers table
+    // Also try matching directly against supplier_operator_address in case it contains account addresses
+    if (accountAddresses.length > 0) {
+      if (accountAddresses.length === 1) {
+        addressConditions.push(`(s.owner_address = $${idx} OR ps.supplier_operator_address = $${idx})`);
+        values.push(accountAddresses[0]);
+        idx++;
+      } else {
+        const placeholders = accountAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        addressConditions.push(`(s.owner_address IN (${placeholders}) OR ps.supplier_operator_address IN (${placeholders}))`);
+        values.push(...accountAddresses, ...accountAddresses);
+        idx += accountAddresses.length * 2;
+      }
+    }
+    
+    // Match operator addresses directly via supplier_operator_address
+    if (operatorAddresses.length > 0) {
+      if (operatorAddresses.length === 1) {
+        addressConditions.push(`ps.supplier_operator_address = $${idx++}`);
+        values.push(operatorAddresses[0]);
+      } else {
+        const placeholders = operatorAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        addressConditions.push(`ps.supplier_operator_address IN (${placeholders})`);
+        values.push(...operatorAddresses);
+        idx += operatorAddresses.length;
+      }
+    }
+    
+    if (addressConditions.length > 0) {
+      conditions.push(`(${addressConditions.join(' OR ')})`);
     }
   }
   
@@ -480,7 +557,8 @@ async function getTopServicesByPerformance(params, client) {
   let idx = 1;
   let needsJoin = false;
   
-  // Handle supplier_address filter (operator address) - can be string, comma-separated string, or array
+  // Handle supplier_address filter - can be string, comma-separated string, or array
+  // Addresses can be either account addresses (pokt1...) or operator addresses (poktvaloper1...)
   if (supplier_address) {
     needsJoin = true;
     let addresses;
@@ -492,14 +570,45 @@ async function getTopServicesByPerformance(params, client) {
       addresses = [supplier_address];
     }
     
-    if (addresses.length === 1) {
-      conditions.push(`ps.supplier_operator_address = $${idx++}`);
-      values.push(addresses[0]);
-    } else if (addresses.length > 1) {
-      const placeholders = addresses.map((_, i) => `$${idx + i}`).join(', ');
-      conditions.push(`ps.supplier_operator_address IN (${placeholders})`);
-      values.push(...addresses);
-      idx += addresses.length;
+    // Check if addresses are account addresses (pokt1...) or operator addresses (poktvaloper1...)
+    const isAccountAddress = (addr) => addr && addr.startsWith('pokt1') && !addr.startsWith('poktvaloper1');
+    
+    // Separate account and operator addresses
+    const accountAddresses = addresses.filter(isAccountAddress);
+    const operatorAddresses = addresses.filter(addr => !isAccountAddress(addr));
+    
+    const addressConditions = [];
+    
+    // Match account addresses via owner_address in suppliers table
+    // Also try matching directly against supplier_operator_address in case it contains account addresses
+    if (accountAddresses.length > 0) {
+      if (accountAddresses.length === 1) {
+        addressConditions.push(`(s.owner_address = $${idx} OR ps.supplier_operator_address = $${idx})`);
+        values.push(accountAddresses[0]);
+        idx++;
+      } else {
+        const placeholders = accountAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        addressConditions.push(`(s.owner_address IN (${placeholders}) OR ps.supplier_operator_address IN (${placeholders}))`);
+        values.push(...accountAddresses, ...accountAddresses);
+        idx += accountAddresses.length * 2;
+      }
+    }
+    
+    // Match operator addresses directly via supplier_operator_address
+    if (operatorAddresses.length > 0) {
+      if (operatorAddresses.length === 1) {
+        addressConditions.push(`ps.supplier_operator_address = $${idx++}`);
+        values.push(operatorAddresses[0]);
+      } else {
+        const placeholders = operatorAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        addressConditions.push(`ps.supplier_operator_address IN (${placeholders})`);
+        values.push(...operatorAddresses);
+        idx += operatorAddresses.length;
+      }
+    }
+    
+    if (addressConditions.length > 0) {
+      conditions.push(`(${addressConditions.join(' OR ')})`);
     }
   }
   
@@ -582,28 +691,34 @@ async function getTopServicesByPerformance(params, client) {
     `;
   
   const servicesResult = await client.query(sql, values);
-  const totalComputeUnits = parseInt(servicesResult.rows[0]?.total_compute_units || '0', 10);
+  
+  // Handle case where there are no results - grand_total will be NULL
+  const totalComputeUnits = servicesResult.rows.length > 0 
+    ? parseInt(servicesResult.rows[0]?.total_compute_units || '0', 10)
+    : 0;
   
   // Calculate percentages and add rank
-  const services = servicesResult.rows.map((service, index) => {
-    const claimed = parseInt(service.total_claimed_compute_units || '0', 10);
-    const percentage = totalComputeUnits > 0 
-      ? parseFloat(((claimed / totalComputeUnits) * 100).toFixed(2))
-      : 0;
-    
-    return {
-      rank: index + 1,
-      service_id: service.service_id,
-      chain: service.chain,
-      total_claimed_compute_units: claimed,
-      total_estimated_compute_units: parseInt(service.total_estimated_compute_units || '0', 10),
-      submission_count: parseInt(service.submission_count || '0', 10),
-      avg_efficiency_percent: parseFloat(parseFloat(service.avg_efficiency_percent || '0').toFixed(2)),
-      percentage_of_total: percentage,
-      period_start: service.period_start,
-      period_end: service.period_end
-    };
-  });
+  const services = servicesResult.rows
+    .filter(row => row.service_id) // Filter out any NULL service_ids
+    .map((service, index) => {
+      const claimed = parseInt(service.total_claimed_compute_units || '0', 10);
+      const percentage = totalComputeUnits > 0 
+        ? parseFloat(((claimed / totalComputeUnits) * 100).toFixed(2))
+        : 0;
+      
+      return {
+        rank: index + 1,
+        service_id: service.service_id,
+        chain: service.chain,
+        total_claimed_compute_units: claimed,
+        total_estimated_compute_units: parseInt(service.total_estimated_compute_units || '0', 10),
+        submission_count: parseInt(service.submission_count || '0', 10),
+        avg_efficiency_percent: parseFloat(parseFloat(service.avg_efficiency_percent || '0').toFixed(2)),
+        percentage_of_total: percentage,
+        period_start: service.period_start,
+        period_end: service.period_end
+      };
+    });
   
   return {
     data: services,
