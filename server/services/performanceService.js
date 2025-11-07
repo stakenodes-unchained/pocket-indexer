@@ -208,10 +208,10 @@ async function getValidatorPerformance(params, client) {
         values.push(accountAddresses[0]);
         idx++;
       } else {
-        const placeholders = accountAddresses.map((_, i) => `$${idx + i}::text`).join(', ');
-        addressConditions.push(`(s.owner_address IN (${placeholders}) OR v.account_address IN (${placeholders}) OR ps.supplier_operator_address IN (${placeholders}))`);
-        values.push(...accountAddresses, ...accountAddresses, ...accountAddresses);
-        idx += accountAddresses.length * 3;
+        // Use ANY with array parameter to avoid parameter explosion
+        addressConditions.push(`(s.owner_address = ANY($${idx}::text[]) OR v.account_address = ANY($${idx}::text[]) OR ps.supplier_operator_address = ANY($${idx}::text[]))`);
+        values.push(accountAddresses);
+        idx++;
       }
     }
     
@@ -222,10 +222,10 @@ async function getValidatorPerformance(params, client) {
         values.push(operatorAddresses[0]);
         idx++;
       } else {
-        const placeholders = operatorAddresses.map((_, i) => `$${idx + i}::text`).join(', ');
-        addressConditions.push(`ps.supplier_operator_address IN (${placeholders})`);
-        values.push(...operatorAddresses);
-        idx += operatorAddresses.length;
+        // Use ANY with array parameter to avoid parameter explosion
+        addressConditions.push(`ps.supplier_operator_address = ANY($${idx}::text[])`);
+        values.push(operatorAddresses);
+        idx++;
       }
     }
     
@@ -445,10 +445,10 @@ async function getTopServicesByComputeUnits(params, client) {
         values.push(accountAddresses[0]);
         idx++;
       } else {
-        const placeholders = accountAddresses.map((_, i) => `$${idx + i}::text`).join(', ');
-        addressConditions.push(`(s.owner_address IN (${placeholders}) OR ps.supplier_operator_address IN (${placeholders}))`);
-        values.push(...accountAddresses, ...accountAddresses);
-        idx += accountAddresses.length * 2;
+        // Use ANY with array parameter to avoid parameter explosion
+        addressConditions.push(`(s.owner_address = ANY($${idx}::text[]) OR ps.supplier_operator_address = ANY($${idx}::text[]))`);
+        values.push(accountAddresses);
+        idx++;
       }
     }
     
@@ -459,10 +459,10 @@ async function getTopServicesByComputeUnits(params, client) {
         values.push(operatorAddresses[0]);
         idx++;
       } else {
-        const placeholders = operatorAddresses.map((_, i) => `$${idx + i}::text`).join(', ');
-        addressConditions.push(`ps.supplier_operator_address IN (${placeholders})`);
-        values.push(...operatorAddresses);
-        idx += operatorAddresses.length;
+        // Use ANY with array parameter to avoid parameter explosion
+        addressConditions.push(`ps.supplier_operator_address = ANY($${idx}::text[])`);
+        values.push(operatorAddresses);
+        idx++;
       }
     }
     
@@ -600,10 +600,10 @@ async function getTopServicesByPerformance(params, client) {
         values.push(accountAddresses[0]);
         idx++;
       } else {
-        const placeholders = accountAddresses.map((_, i) => `$${idx + i}::text`).join(', ');
-        addressConditions.push(`(s.owner_address IN (${placeholders}) OR ps.supplier_operator_address IN (${placeholders}))`);
-        values.push(...accountAddresses, ...accountAddresses);
-        idx += accountAddresses.length * 2;
+        // Use ANY with array parameter to avoid parameter explosion
+        addressConditions.push(`(s.owner_address = ANY($${idx}::text[]) OR ps.supplier_operator_address = ANY($${idx}::text[]))`);
+        values.push(accountAddresses);
+        idx++;
       }
     }
     
@@ -614,10 +614,10 @@ async function getTopServicesByPerformance(params, client) {
         values.push(operatorAddresses[0]);
         idx++;
       } else {
-        const placeholders = operatorAddresses.map((_, i) => `$${idx + i}::text`).join(', ');
-        addressConditions.push(`ps.supplier_operator_address IN (${placeholders})`);
-        values.push(...operatorAddresses);
-        idx += operatorAddresses.length;
+        // Use ANY with array parameter to avoid parameter explosion
+        addressConditions.push(`ps.supplier_operator_address = ANY($${idx}::text[])`);
+        values.push(operatorAddresses);
+        idx++;
       }
     }
     
