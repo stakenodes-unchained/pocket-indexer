@@ -22,7 +22,7 @@ class TransactionService {
       min: parseInt(process.env.DB_POOL_MIN || '2', 10),   // Min connections to maintain
       idleTimeoutMillis: 30000,  // Close idle clients after 30 seconds
       connectionTimeoutMillis: 10000, // 10 second connection timeout
-      statement_timeout: 60000, // 60 second query timeout
+      statement_timeout: 120000, // 120 second query timeout (increased for large datasets, but optimization is preferred)
     });
     
     // Handle pool errors
@@ -583,11 +583,15 @@ class TransactionService {
         const addressConditions = [];
         
         // Search in sender and recipient columns
+        // OPTIMIZATION: Use separate conditions for better index usage
+        // This allows PostgreSQL to use idx_transactions_chain_sender_timestamp or idx_transactions_chain_recipient_timestamp
         if (uniqueAddresses.length === 1) {
+          // Single address: use OR condition (indexes can still be used)
           addressConditions.push(`(t.sender = $${idx} OR t.recipient = $${idx})`);
           values.push(uniqueAddresses[0]);
           idx++;
         } else {
+          // Multiple addresses: use IN clauses (more efficient than multiple ORs)
           const placeholders = uniqueAddresses.map((_, i) => `$${idx + i}`).join(', ');
           addressConditions.push(`(t.sender IN (${placeholders}) OR t.recipient IN (${placeholders}))`);
           values.push(...uniqueAddresses, ...uniqueAddresses);
@@ -670,24 +674,28 @@ class TransactionService {
       const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
       // Build ORDER BY clause - optimize for index usage
-      // For chain + timestamp DESC, ensure we use the composite index
+      // Use block_height column if available (much faster than JSONB extraction)
       let orderByClause;
+      let blockHeightSelect;
+      
+      // Check if block_height column exists (from migration 026)
+      // Use COALESCE to fallback to JSONB extraction if column is NULL
       if (sortField === 'block_height') {
-        // Extract block_height from JSONB for sorting
-        orderByClause = `ORDER BY (t.tx_data->'tx_response'->>'height')::bigint ${sortDirection} NULLS LAST`;
+        // Prefer block_height column, fallback to JSONB extraction
+        orderByClause = `ORDER BY COALESCE(t.block_height, (t.tx_data->'tx_response'->>'height')::bigint) ${sortDirection} NULLS LAST`;
+        blockHeightSelect = `COALESCE(t.block_height, (t.tx_data->'tx_response'->>'height')::bigint) as block_height`;
       } else {
         // Use table alias and ensure proper index usage
         orderByClause = `ORDER BY t.${sortField} ${sortDirection} NULLS LAST`;
+        blockHeightSelect = `COALESCE(t.block_height, (t.tx_data->'tx_response'->>'height')::bigint) as block_height`;
       }
 
-      // OPTIMIZATION: For large datasets (10M+ rows), ensure efficient index usage
-      // The key is to structure the query so PostgreSQL uses the composite index
-      // For chain + timestamp DESC, idx_transactions_chain_timestamp_desc should be used
+      // OPTIMIZATION: For large datasets (10M+ rows), run COUNT and SELECT in parallel
+      // This reduces total response time significantly
       const fetchLimit = limitNum + 1; // Fetch one extra to check for next page
       
-      // Build optimized query - ensure it can use the index efficiently
-      // For simple chain filter + timestamp sort, use direct query (fastest)
-      // For complex filters, the query planner should still use appropriate indexes
+      // Build optimized query - use covering index when possible
+      // The covering index (chain, timestamp DESC) INCLUDE (id, hash, ...) enables index-only scans
       const listSql = `SELECT 
         t.id, 
         t.hash, 
@@ -701,35 +709,46 @@ class TransactionService {
         t.status, 
         t.chain, 
         t.timestamp,
-        (t.tx_data->'tx_response'->>'height')::bigint as block_height
+        ${blockHeightSelect}
       FROM transactions t
       ${where}
       ${orderByClause}
       LIMIT $${idx} OFFSET $${idx + 1}`;
 
-      // Execute query - PostgreSQL should use idx_transactions_chain_timestamp_desc
-      // for chain filter + timestamp DESC, or other appropriate indexes for other cases
-      const listRes = await this.pgClient.query(listSql, [...values, fetchLimit, offset]);
+      // Run COUNT and SELECT in parallel for better performance
+      const queryPromises = [
+        this.pgClient.query(listSql, [...values, fetchLimit, offset])
+      ];
+      
+      // Only run COUNT if requested
+      if (!skip_count) {
+        const countSql = `SELECT COUNT(*) AS total FROM transactions t ${where}`;
+        queryPromises.push(
+          this.pgClient.query(countSql, values).catch(err => {
+            // If COUNT fails, return null to indicate it wasn't computed
+            console.warn('COUNT query failed:', err.message);
+            return { rows: [{ total: null }] };
+          })
+        );
+      } else {
+        // Push a resolved promise to maintain array structure
+        queryPromises.push(Promise.resolve({ rows: [{ total: null }] }));
+      }
+      
+      // Execute both queries in parallel
+      const [listRes, countRes] = await Promise.all(queryPromises);
       
       // Determine if there's a next page by checking if we got more than requested
       const hasMore = listRes.rows.length > limitNum;
       const transactions = listRes.rows.slice(0, limitNum); // Return only requested amount
       
-      // Get total count only if requested (skip_count = false)
+      // Get total count from parallel query result
       let total = 0;
       let totalPages = 0;
       
-      if (!skip_count) {
-        try {
-          const countSql = `SELECT COUNT(*) AS total FROM transactions t ${where}`;
-          const countRes = await this.pgClient.query(countSql, values);
-          total = parseInt(countRes.rows[0].total, 10);
-          totalPages = Math.ceil(total / limitNum);
-        } catch (countError) {
-          // If COUNT fails (e.g., timeout), fall back to has_more approach
-          console.warn('COUNT query failed, using has_more approach:', countError.message);
-          skip_count = true;
-        }
+      if (!skip_count && countRes.rows[0].total !== null) {
+        total = parseInt(countRes.rows[0].total, 10);
+        totalPages = Math.ceil(total / limitNum);
       }
       
       // If no results and we're on page 1, return empty
@@ -750,8 +769,8 @@ class TransactionService {
         ...tx,
         // Parse JSON fields if they exist
         tx_data: tx.tx_data ? (typeof tx.tx_data === 'string' ? JSON.parse(tx.tx_data) : tx.tx_data) : null,
-        // block_height is already extracted from JSONB (may be null if not present)
-        block_height: tx.block_height ? parseInt(tx.block_height, 10) : null
+        // block_height is already computed (from column or JSONB extraction)
+        block_height: tx.block_height ? (typeof tx.block_height === 'string' ? parseInt(tx.block_height, 10) : tx.block_height) : null
       }));
 
       return {
