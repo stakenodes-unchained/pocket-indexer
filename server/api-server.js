@@ -1383,11 +1383,17 @@ async function getRewardAnalytics(params, client) {
   }
   
   // Handle single supplier_address or array of supplier_addresses
+  // Use ANY(array) syntax for large arrays as it's more efficient than IN with many parameters
   if (supplier_addresses && Array.isArray(supplier_addresses) && supplier_addresses.length > 0) {
-    const placeholders = supplier_addresses.map((_, i) => `$${idx + i}`).join(', ');
-    conditions.push(`supplier_operator_address IN (${placeholders})`);
-    values.push(...supplier_addresses);
-    idx += supplier_addresses.length;
+    if (supplier_addresses.length === 1) {
+      // Single address - use equality for better index usage
+      conditions.push(`supplier_operator_address = $${idx++}`);
+      values.push(supplier_addresses[0]);
+    } else {
+      // Multiple addresses - use ANY(array) which is more efficient for large arrays
+      conditions.push(`supplier_operator_address = ANY($${idx++}::text[])`);
+      values.push(supplier_addresses);
+    }
   } else if (supplier_address) {
     conditions.push(`supplier_operator_address = $${idx++}`);
     values.push(supplier_address);
@@ -1402,11 +1408,11 @@ async function getRewardAnalytics(params, client) {
     values.push(service_id);
   }
   if (start_date) {
-    conditions.push(`hour_bucket >= $${idx++}`);
+    conditions.push(`hour_bucket >= $${idx++}::timestamp`);
     values.push(start_date);
   }
   if (end_date) {
-    conditions.push(`hour_bucket <= $${idx++}`);
+    conditions.push(`hour_bucket <= $${idx++}::timestamp`);
     values.push(end_date);
   }
   
@@ -1423,7 +1429,7 @@ async function getRewardAnalytics(params, client) {
   // Get paginated results
   const listSql = `SELECT * FROM proof_submission_rewards ${where}
     ORDER BY hour_bucket DESC
-    LIMIT $${idx} OFFSET $${idx + 1}`;
+    LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
   
   const listRes = await client.query(listSql, [...values, limitNum, offset]);
   
@@ -1467,6 +1473,12 @@ app.get('/api/v1/proof-submissions/rewards', async (req, res) => {
 app.post('/api/v1/proof-submissions/rewards', async (req, res) => {
   try {
     const { supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.body;
+    
+    // Validate input
+    if (supplier_addresses && !Array.isArray(supplier_addresses)) {
+      return res.status(400).json({ error: 'supplier_addresses must be an array' });
+    }
+    
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
@@ -1482,10 +1494,12 @@ app.post('/api/v1/proof-submissions/rewards', async (req, res) => {
       limit
     }, client);
     
-    res.json(result);
+    // Ensure we always return a valid response structure
+    res.json(result || { data: [], meta: { total: 0, page: 1, limit: parseInt(limit, 10) || 100, totalPages: 0 } });
   } catch (error) {
     console.error('Error fetching reward analytics:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ error: error.message || 'Internal server error' });
   }
 });
 
