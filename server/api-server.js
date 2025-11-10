@@ -1369,6 +1369,75 @@ app.post('/api/v1/proof-submissions', async (req, res) => {
   }
 });
 
+// Shared function for reward analytics queries
+async function getRewardAnalytics(params, client) {
+  const { supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = params;
+  
+  const conditions = [];
+  const values = [];
+  let idx = 1;
+  
+  if (chain) {
+    conditions.push(`chain = $${idx++}`);
+    values.push(chain);
+  }
+  
+  // Handle single supplier_address or array of supplier_addresses
+  if (supplier_addresses && Array.isArray(supplier_addresses) && supplier_addresses.length > 0) {
+    const placeholders = supplier_addresses.map((_, i) => `$${idx + i}`).join(', ');
+    conditions.push(`supplier_operator_address IN (${placeholders})`);
+    values.push(...supplier_addresses);
+    idx += supplier_addresses.length;
+  } else if (supplier_address) {
+    conditions.push(`supplier_operator_address = $${idx++}`);
+    values.push(supplier_address);
+  }
+  
+  if (application_address) {
+    conditions.push(`application_address = $${idx++}`);
+    values.push(application_address);
+  }
+  if (service_id) {
+    conditions.push(`service_id = $${idx++}`);
+    values.push(service_id);
+  }
+  if (start_date) {
+    conditions.push(`hour_bucket >= $${idx++}`);
+    values.push(start_date);
+  }
+  if (end_date) {
+    conditions.push(`hour_bucket <= $${idx++}`);
+    values.push(end_date);
+  }
+  
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const pageNum = parseInt(page, 10);
+  const limitNum = parseInt(limit, 10);
+  const offset = (pageNum - 1) * limitNum;
+  
+  // Get total count
+  const countSql = `SELECT COUNT(*) AS total FROM proof_submission_rewards ${where}`;
+  const countRes = await client.query(countSql, values);
+  const total = parseInt(countRes.rows[0].total, 10);
+  
+  // Get paginated results
+  const listSql = `SELECT * FROM proof_submission_rewards ${where}
+    ORDER BY hour_bucket DESC
+    LIMIT $${idx} OFFSET $${idx + 1}`;
+  
+  const listRes = await client.query(listSql, [...values, limitNum, offset]);
+  
+  return {
+    data: listRes.rows,
+    meta: {
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum)
+    }
+  };
+}
+
 // Get reward analytics aggregated view (hourly)
 app.get('/api/v1/proof-submissions/rewards', async (req, res) => {
   try {
@@ -1376,61 +1445,44 @@ app.get('/api/v1/proof-submissions/rewards', async (req, res) => {
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
-    const conditions = [];
-    const values = [];
-    let idx = 1;
+    const result = await getRewardAnalytics({
+      supplier_address,
+      application_address,
+      service_id,
+      chain,
+      start_date,
+      end_date,
+      page,
+      limit
+    }, client);
     
-    if (chain) {
-      conditions.push(`chain = $${idx++}`);
-      values.push(chain);
-    }
-    if (supplier_address) {
-      conditions.push(`supplier_operator_address = $${idx++}`);
-      values.push(supplier_address);
-    }
-    if (application_address) {
-      conditions.push(`application_address = $${idx++}`);
-      values.push(application_address);
-    }
-    if (service_id) {
-      conditions.push(`service_id = $${idx++}`);
-      values.push(service_id);
-    }
-    if (start_date) {
-      conditions.push(`hour_bucket >= $${idx++}`);
-      values.push(start_date);
-    }
-    if (end_date) {
-      conditions.push(`hour_bucket <= $${idx++}`);
-      values.push(end_date);
-    }
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching reward analytics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST endpoint for reward analytics with support for multiple supplier addresses
+app.post('/api/v1/proof-submissions/rewards', async (req, res) => {
+  try {
+    const { supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.body;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
     
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const pageNum = parseInt(page, 10);
-    const limitNum = parseInt(limit, 10);
-    const offset = (pageNum - 1) * limitNum;
+    const result = await getRewardAnalytics({
+      supplier_address,
+      supplier_addresses,
+      application_address,
+      service_id,
+      chain,
+      start_date,
+      end_date,
+      page,
+      limit
+    }, client);
     
-    // Get total count
-    const countSql = `SELECT COUNT(*) AS total FROM proof_submission_rewards ${where}`;
-    const countRes = await client.query(countSql, values);
-    const total = parseInt(countRes.rows[0].total, 10);
-    
-    // Get paginated results
-    const listSql = `SELECT * FROM proof_submission_rewards ${where}
-      ORDER BY hour_bucket DESC
-      LIMIT $${idx} OFFSET $${idx + 1}`;
-    
-    const listRes = await client.query(listSql, [...values, limitNum, offset]);
-    
-    res.json({
-      data: listRes.rows,
-      meta: {
-        total,
-        page: pageNum,
-        limit: limitNum,
-        totalPages: Math.ceil(total / limitNum)
-      }
-    });
+    res.json(result);
   } catch (error) {
     console.error('Error fetching reward analytics:', error);
     res.status(500).json({ error: error.message });
@@ -1546,7 +1598,7 @@ app.get('/api/v1/applications/:address/usage', async (req, res) => {
 // Get summary statistics for proof submissions
 // Shared function for proof submissions summary
 async function getProofSubmissionsSummary(params, client) {
-  const { start_date, end_date, supplier_address, application_address, service_id, chain } = params;
+  const { start_date, end_date, supplier_address, supplier_addresses, application_address, service_id, chain } = params;
   
   const conditions = [];
   const values = [];
@@ -1572,8 +1624,22 @@ async function getProofSubmissionsSummary(params, client) {
     conditions.push(`timestamp >= NOW() - INTERVAL '24 hours'`);
   }
   
-  // Handle supplier_address - can be single string, comma-separated string, or array
-  if (supplier_address) {
+  // Handle supplier_address or supplier_addresses
+  // Priority: supplier_addresses (array) > supplier_address (single or comma-separated)
+  if (supplier_addresses && Array.isArray(supplier_addresses) && supplier_addresses.length > 0) {
+    // Use supplier_addresses array directly
+    if (supplier_addresses.length === 1) {
+      conditions.push(`supplier_operator_address = $${idx}::text`);
+      values.push(supplier_addresses[0]);
+      idx++;
+    } else {
+      const placeholders = supplier_addresses.map((_, i) => `$${idx + i}::text`).join(', ');
+      conditions.push(`supplier_operator_address IN (${placeholders})`);
+      values.push(...supplier_addresses);
+      idx += supplier_addresses.length;
+    }
+  } else if (supplier_address) {
+    // Handle supplier_address - can be single string, comma-separated string, or array
     let addresses;
     if (Array.isArray(supplier_address)) {
       addresses = supplier_address;
@@ -1652,7 +1718,7 @@ app.get('/api/v1/proof-submissions/summary', async (req, res) => {
 
 app.post('/api/v1/proof-submissions/summary', async (req, res) => {
   try {
-    const { start_date, end_date, supplier_address, application_address, service_id, chain } = req.body;
+    const { start_date, end_date, supplier_address, supplier_addresses, application_address, service_id, chain } = req.body;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
@@ -1660,6 +1726,7 @@ app.post('/api/v1/proof-submissions/summary', async (req, res) => {
       start_date,
       end_date,
       supplier_address,
+      supplier_addresses,
       application_address,
       service_id,
       chain
