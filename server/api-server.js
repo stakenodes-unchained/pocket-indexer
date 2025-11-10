@@ -84,8 +84,19 @@ if (cluster.isPrimary || cluster.isMaster) {
 const app = express();
 
 // Middleware
-app.use(bodyParser.json());
+// Increase body size limit to handle large arrays of supplier addresses (default is 100kb)
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cors());
+
+// Error handler for body-parser errors (e.g., payload too large)
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    console.error('Body parsing error:', err.message);
+    return res.status(400).json({ error: 'Invalid JSON in request body', details: err.message });
+  }
+  next(err);
+});
 
 // Add caching middleware for GET requests (60 second TTL by default)
 // Can be overridden per route if needed
@@ -1423,18 +1434,36 @@ async function getRewardAnalytics(params, client) {
   
   // Get total count
   const countSql = `SELECT COUNT(*) AS total FROM proof_submission_rewards ${where}`;
-  const countRes = await client.query(countSql, values);
-  const total = parseInt(countRes.rows[0].total, 10);
+  
+  let countRes;
+  try {
+    countRes = await client.query(countSql, values);
+  } catch (error) {
+    console.error('Error in count query:', error);
+    console.error('Count SQL:', countSql);
+    console.error('Count values:', values);
+    throw error;
+  }
+  
+  const total = parseInt(countRes.rows[0]?.total || 0, 10);
   
   // Get paginated results
   const listSql = `SELECT * FROM proof_submission_rewards ${where}
     ORDER BY hour_bucket DESC
     LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
   
-  const listRes = await client.query(listSql, [...values, limitNum, offset]);
+  let listRes;
+  try {
+    listRes = await client.query(listSql, [...values, limitNum, offset]);
+  } catch (error) {
+    console.error('Error in list query:', error);
+    console.error('List SQL:', listSql);
+    console.error('List values:', [...values, limitNum, offset]);
+    throw error;
+  }
   
-  return {
-    data: listRes.rows,
+  const result = {
+    data: listRes.rows || [],
     meta: {
       total,
       page: pageNum,
@@ -1442,6 +1471,8 @@ async function getRewardAnalytics(params, client) {
       totalPages: Math.ceil(total / limitNum)
     }
   };
+  
+  return result;
 }
 
 // Get reward analytics aggregated view (hourly)
@@ -1472,15 +1503,26 @@ app.get('/api/v1/proof-submissions/rewards', async (req, res) => {
 // POST endpoint for reward analytics with support for multiple supplier addresses
 app.post('/api/v1/proof-submissions/rewards', async (req, res) => {
   try {
+    console.log('POST /api/v1/proof-submissions/rewards - Request received');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    
     const { supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.body;
     
     // Validate input
     if (supplier_addresses && !Array.isArray(supplier_addresses)) {
+      console.error('Invalid supplier_addresses - not an array');
       return res.status(400).json({ error: 'supplier_addresses must be an array' });
     }
     
+    console.log(`Processing request with ${supplier_addresses?.length || 0} supplier addresses`);
+    
     await transactionService.connectDB();
     const client = transactionService.pgClient;
+    
+    if (!client) {
+      console.error('Database client is null');
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
     
     const result = await getRewardAnalytics({
       supplier_address,
@@ -1494,12 +1536,21 @@ app.post('/api/v1/proof-submissions/rewards', async (req, res) => {
       limit
     }, client);
     
+    console.log(`Query completed. Total: ${result.meta.total}, Data rows: ${result.data.length}`);
+    
     // Ensure we always return a valid response structure
-    res.json(result || { data: [], meta: { total: 0, page: 1, limit: parseInt(limit, 10) || 100, totalPages: 0 } });
+    const response = result || { data: [], meta: { total: 0, page: 1, limit: parseInt(limit, 10) || 100, totalPages: 0 } };
+    
+    console.log('Sending response:', JSON.stringify({ ...response, data: `[${response.data.length} items]` }));
+    res.json(response);
   } catch (error) {
     console.error('Error fetching reward analytics:', error);
     console.error('Error stack:', error.stack);
-    res.status(500).json({ error: error.message || 'Internal server error' });
+    
+    // Make sure we send an error response
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message || 'Internal server error' });
+    }
   }
 });
 
