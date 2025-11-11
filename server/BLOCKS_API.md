@@ -35,6 +35,8 @@ Retrieve blocks with pagination and optional filters.
       "timestamp": "2025-01-27T10:30:00Z",
       "proposer": "pokt1abc...",
       "chain": "mainnet",
+      "raw_block_size": 45678,
+      "block_production_time": 15.234,
       "transaction_count": 42
     },
     {
@@ -43,7 +45,10 @@ Retrieve blocks with pagination and optional filters.
       "hash": "XYZ789UVW012...",
       "timestamp": "2025-01-27T10:29:00Z",
       "proposer": "pokt1xyz...",
-      "chain": "mainnet"
+      "chain": "mainnet",
+      "raw_block_size": 43210,
+      "block_production_time": 14.987,
+      "transaction_count": 38
     }
   ],
   "meta": {
@@ -62,6 +67,8 @@ Retrieve blocks with pagination and optional filters.
 - `timestamp`: Block timestamp (ISO 8601 format, UTC)
 - `proposer`: Block proposer address
 - `chain`: Chain identifier
+- `raw_block_size`: Raw block size in bytes (serialized block size as received over the wire). This represents the binary length of the serialized block data. (integer, nullable)
+- `block_production_time`: Time in seconds it took to produce this block (time difference between current and previous block). Calculated as the difference between the current block's timestamp and the previous block's timestamp. (numeric with 3 decimal places, nullable - null for genesis block or if previous block is not available)
 - `transaction_count`: Number of transactions in this block (integer)
 
 **Example Requests:**
@@ -130,6 +137,8 @@ function BlockList({ chain }) {
             <th>Hash</th>
             <th>Timestamp</th>
             <th>Proposer</th>
+            <th>Size (Bytes)</th>
+            <th>Production Time (s)</th>
             <th>Transactions</th>
           </tr>
         </thead>
@@ -140,6 +149,8 @@ function BlockList({ chain }) {
               <td>{block.hash.substring(0, 16)}...</td>
               <td>{new Date(block.timestamp).toLocaleString()}</td>
               <td>{block.proposer}</td>
+              <td>{block.raw_block_size ? block.raw_block_size.toLocaleString() : 'N/A'}</td>
+              <td>{block.block_production_time ? block.block_production_time.toFixed(3) : 'N/A'}</td>
               <td>{block.transaction_count}</td>
             </tr>
           ))}
@@ -192,14 +203,38 @@ Retrieve a specific block by its ID (hash) or height.
     "timestamp": "2025-01-27T10:30:00Z",
     "proposer": "pokt1abc...",
     "chain": "mainnet",
-    "transaction_count": 42
+    "raw_block_size": 45678,
+    "block_production_time": 15.234,
+    "transaction_count": 42,
+    "block_data": {
+      "block_id": {
+        "hash": "ABC123DEF456..."
+      },
+      "block": {
+        "header": {
+          "version": { "block": "11", "app": "0" },
+          "chain_id": "mainnet",
+          "height": "482817",
+          "time": "2025-01-27T10:30:00Z",
+          "proposer_address": "pokt1abc...",
+          ...
+        },
+        "data": {
+          "txs": [...]
+        },
+        ...
+      }
+    }
   }
 }
 ```
 
 **Response Fields:**
-- All fields from the list endpoint, plus:
+- All fields from the list endpoint, including:
+- `raw_block_size`: Raw block size in bytes (serialized block size as received over the wire)
+- `block_production_time`: Time in seconds it took to produce this block (time difference between current and previous block)
 - `transaction_count`: Number of transactions in this block
+- `block_data`: Complete block data from RPC API response stored as JSONB. This contains the full block information including header, transactions, evidence, and last_commit data. Available to avoid additional RPC calls when detailed block information is needed. (JSON object, nullable - null for blocks indexed before this feature was added)
 
 **Example Requests:**
 
@@ -264,6 +299,8 @@ function BlockDetail({ blockId }) {
       <p>Hash: {block.hash}</p>
       <p>Timestamp: {new Date(block.timestamp).toLocaleString()}</p>
       <p>Proposer: {block.proposer}</p>
+      <p>Raw Block Size: {block.raw_block_size ? `${block.raw_block_size.toLocaleString()} bytes` : 'N/A'}</p>
+      <p>Block Production Time: {block.block_production_time ? `${block.block_production_time.toFixed(3)} seconds` : 'N/A'}</p>
       <p>Transactions: {block.transaction_count}</p>
     </div>
   );
@@ -308,6 +345,8 @@ All endpoints return errors in the following format:
 - Track block production over time
 - Monitor proposer distribution
 - Analyze block heights and timestamps
+- Monitor block sizes and production times
+- Track network performance metrics (block production time trends)
 
 ### 3. Historical Analysis
 - Query blocks by height range
@@ -323,4 +362,11 @@ All endpoints return errors in the following format:
 - Height is unique per chain (enforced by database constraint)
 - When querying by height, `chain` parameter is required to ensure correct block retrieval
 - Transaction count is calculated on-demand from the transactions table
+- `raw_block_size` represents the serialized block size in bytes (the same data the node receives over the wire)
+- `block_production_time` is calculated as the time difference between the current block's timestamp and the previous block's timestamp
+- `block_production_time` will be `null` for the genesis block (height 1) or if the previous block is not available in the database
+- `raw_block_size` may be `null` for blocks indexed before this feature was added; these will be populated on re-indexing
+- `block_data` contains the complete block JSON from the RPC API response, stored as JSONB for efficient querying without additional RPC calls
+- `block_data` is only included in the detail endpoint (`GET /api/v1/blocks/:block_id`) to keep list responses lightweight
+- `block_data` may be `null` for blocks indexed before this feature was added; these will be populated on re-indexing
 

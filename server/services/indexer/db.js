@@ -91,38 +91,80 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
     // Extract transactions from the block data
     const rawTxs = blockData.block?.data?.txs || blockData.sdk_block?.data?.txs || [];
 
+    // Calculate raw block size in bytes (serialized block size as received over the wire)
+    // Serialize the block data to JSON and get the byte length
+    const blockJson = JSON.stringify(blockData);
+    const rawBlockSize = Buffer.byteLength(blockJson, 'utf8');
+
+    // Calculate block production time (time difference between current and previous block)
+    // Get the previous block's timestamp to calculate the time difference
+    let blockProductionTime = null;
+    if (height > 1) {
+      try {
+        const prevBlockRes = await client.query(
+          'SELECT timestamp FROM blocks WHERE chain = $1 AND height = $2',
+          [chain, height - 1]
+        );
+        if (prevBlockRes.rows.length > 0) {
+          const prevTimestamp = new Date(prevBlockRes.rows[0].timestamp);
+          const currentTimestamp = new Date(timestamp);
+          // Calculate difference in seconds with millisecond precision
+          blockProductionTime = (currentTimestamp.getTime() - prevTimestamp.getTime()) / 1000;
+        }
+      } catch (error) {
+        // If we can't get previous block, that's okay - production time will be null
+        console.warn(`Could not calculate block production time for block ${height}:`, error.message);
+      }
+    }
+
     // Save block in DB with conflict handling (update metadata on conflict)
+    // Always process blocks to ensure all transactions are captured, even if block exists
+    // Store complete block data as JSONB for efficient querying without additional RPC calls
+    let persistedBlockId = uniqueBlockId;
     try {
       const result = await client.query(
-        `INSERT INTO blocks (id, height, hash, timestamp, proposer, chain)
-       VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO blocks (id, height, hash, timestamp, proposer, chain, raw_block_size, block_production_time, block_data)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (chain, height) DO UPDATE SET
          hash = EXCLUDED.hash,
          timestamp = EXCLUDED.timestamp,
-         proposer = EXCLUDED.proposer
+         proposer = EXCLUDED.proposer,
+         raw_block_size = EXCLUDED.raw_block_size,
+         block_production_time = EXCLUDED.block_production_time,
+         block_data = EXCLUDED.block_data
        RETURNING id`,
-        [uniqueBlockId, height, hash, timestamp, proposer, chain]
+        [uniqueBlockId, height, hash, timestamp, proposer, chain, rawBlockSize, blockProductionTime, JSON.stringify(blockData)]
       );
       // Use the returned id (inserted or existing)
-      const persistedBlockId = result.rows[0]?.id || uniqueBlockId;
-      // Ensure we reference the persisted id for downstream inserts
-      // Note: uniqueBlockId is already used consistently for new inserts
-      // but if historical data had a different id scheme, RETURNING id covers it.
-      // Override uniqueBlockId for this scope
-      // eslint-disable-next-line no-param-reassign
-      chain && persistedBlockId; // no-op to satisfy linter if present
+      persistedBlockId = result.rows[0]?.id || uniqueBlockId;
     } catch (error) {
-      // Handle unique constraint violations
+      // Handle unique constraint violations for primary key (different from chain+height)
       if (error.code === '23505') {
         if (error.constraint === 'blocks_pkey') {
-          console.log(`Block ${uniqueBlockId} already exists (primary key conflict), skipping...`);
-          return null;
-        } else if (error.constraint === 'blocks_chain_height_key') {
-          console.log(`Block at height ${height} for chain ${chain} already exists (height conflict), skipping...`);
-          return null;
+          // Block ID conflict - try to get existing block ID
+          console.log(`Block ${uniqueBlockId} already exists (primary key conflict), continuing with transaction processing...`);
+          const existingRes = await client.query(
+            'SELECT id FROM blocks WHERE id = $1',
+            [uniqueBlockId]
+          );
+          if (existingRes.rows.length > 0) {
+            persistedBlockId = existingRes.rows[0].id;
+          }
+        } else {
+          // For chain+height conflicts, ON CONFLICT should have handled it
+          // If we get here, it's unexpected - log and continue
+          console.warn(`Unexpected constraint violation: ${error.constraint}, continuing with transaction processing...`);
+          const existingRes = await client.query(
+            'SELECT id FROM blocks WHERE chain = $1 AND height = $2',
+            [chain, height]
+          );
+          if (existingRes.rows.length > 0) {
+            persistedBlockId = existingRes.rows[0].id;
+          }
         }
+      } else {
+        throw error;
       }
-      throw error;
     }
 
     // Process and save transactions

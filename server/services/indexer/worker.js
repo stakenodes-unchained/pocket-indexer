@@ -41,14 +41,18 @@ function reportError(message) {
 
 async function processBlock(blockData) {
   try {
-    console.log(`[Worker ${workerData.id}] Processing block ${blockData.block?.header?.height || 'unknown'}`);
+    const blockHeight = blockData.block?.header?.height || 'unknown';
+    console.log(`[Worker ${workerData.id}] Processing block ${blockHeight}`);
 
     // Save block to database
+    // Note: saveBlock now always processes transactions even if block exists
+    // This ensures we catch any transactions that might have been missed due to
+    // restarts, failures, or partial processing
     let block = await saveBlock(blockData, rpcName, rpcUrl);
 
-    // If block already exists, skip processing to avoid null 'block' usage
+    // If block save failed completely, skip processing
     if (!block) {
-      console.log(`[Worker ${workerData.id}] Block already exists, skipping processing`);
+      console.log(`[Worker ${workerData.id}] Block save failed, skipping processing`);
       return;
     }
 
@@ -212,8 +216,7 @@ async function syncHistoricalBlocks() {
     upsertWorkerHeartbeat,
     getLastProcessedHeight,
     getNextGapToFill,
-    findGaps,
-    blockExists
+    findGaps
   } = require('./db');
 
   // Get the highest processed height from monitoring (this is our target)
@@ -235,19 +238,10 @@ async function syncHistoricalBlocks() {
 
   while (currentHeight < monitoringHeight && consecutiveErrors < maxConsecutiveErrors) {
     try {
-      // Check if the next block already exists
+      // Always process blocks to ensure all transactions are captured
+      // This handles cases where blocks exist but transactions might have been missed
+      // due to restarts, failures, or partial processing
       const nextHeight = currentHeight + 1;
-      const exists = await blockExists(rpcName, nextHeight);
-
-      if (exists) {
-        log(`Block ${nextHeight} already exists, skipping...`);
-        currentHeight = nextHeight;
-        await setHistoricalCheckpoint(rpcName, currentHeight);
-        consecutiveErrors = 0; // Reset error counter on success
-        continue;
-      }
-
-      // Process the missing block
       log(`Processing historical block ${nextHeight}...`);
       await processBlock(await fetchBlockByHeight(nextHeight, rpcUrl));
       currentHeight = nextHeight;

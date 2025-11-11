@@ -604,7 +604,7 @@ app.get('/api/v1/blocks', async (req, res) => {
     const blocksWithTxSql = `
       WITH paginated_blocks AS (
         SELECT 
-          id, height, hash, timestamp, proposer, chain
+          id, height, hash, timestamp, proposer, chain, raw_block_size, block_production_time
         FROM blocks b ${where}
         ORDER BY b.height DESC NULLS LAST
         LIMIT $${idx} OFFSET $${idx + 1}
@@ -616,10 +616,12 @@ app.get('/api/v1/blocks', async (req, res) => {
         pb.timestamp,
         pb.proposer,
         pb.chain,
+        pb.raw_block_size,
+        pb.block_production_time,
         COALESCE(COUNT(t.id), 0)::integer as transaction_count
       FROM paginated_blocks pb
       LEFT JOIN transactions t ON t.block_id = pb.id
-      GROUP BY pb.id, pb.height, pb.hash, pb.timestamp, pb.proposer, pb.chain
+      GROUP BY pb.id, pb.height, pb.hash, pb.timestamp, pb.proposer, pb.chain, pb.raw_block_size, pb.block_production_time
       ORDER BY pb.height DESC NULLS LAST
     `;
     
