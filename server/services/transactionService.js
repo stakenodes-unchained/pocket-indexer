@@ -696,8 +696,14 @@ class TransactionService {
 
       const listParams = [...values, fetchLimit, offset];
 
-      // Run COUNT and SELECT in parallel for better performance
+      // Run COUNT, SELECT, and failed transactions count in parallel for better performance
       const countSql = `SELECT COUNT(*) AS total FROM transactions t ${where}`;
+      
+      // Count failed transactions in the last 24 hours (independent of current filters)
+      const failedLast24hSql = `SELECT COUNT(*) AS failed_count 
+                                FROM transactions t 
+                                WHERE t.status = 'failed' 
+                                AND t.timestamp >= NOW() - INTERVAL '24 hours'`;
       
       const queryPromises = [
         this.pgClient.query(listSql, listParams),
@@ -705,11 +711,16 @@ class TransactionService {
           // If COUNT fails, return null to indicate it wasn't computed
           console.warn('COUNT query failed:', err.message);
           return { rows: [{ total: null }] };
+        }),
+        this.pgClient.query(failedLast24hSql, []).catch(err => {
+          // If failed count query fails, return 0
+          console.warn('Failed transactions count query failed:', err.message);
+          return { rows: [{ failed_count: '0' }] };
         })
       ];
       
-      // Execute both queries in parallel
-      const [listRes, countRes] = await Promise.all(queryPromises).catch(err => {
+      // Execute all queries in parallel
+      const [listRes, countRes, failedRes] = await Promise.all(queryPromises).catch(err => {
         console.error('Error executing queries:', err.message);
         throw new Error(`Failed to retrieve transactions: ${err.message}`);
       });
@@ -722,6 +733,9 @@ class TransactionService {
       const total = countRes.rows[0].total !== null ? parseInt(countRes.rows[0].total, 10) : 0;
       const totalPages = Math.ceil(total / limitNum);
       
+      // Get failed transactions count in last 24 hours
+      const failedLast24h = parseInt(failedRes.rows[0]?.failed_count || '0', 10);
+      
       // If no results and we're on page 1, return empty
       if (transactions.length === 0 && pageNum === 1) {
         return {
@@ -731,7 +745,8 @@ class TransactionService {
             page: pageNum,
             limit: limitNum,
             totalPages: 0,
-            has_more: false
+            has_more: false,
+            failedLast24h: failedLast24h
           }
         };
       }
@@ -751,7 +766,8 @@ class TransactionService {
           page: pageNum,
           limit: limitNum,
           totalPages: totalPages,
-          has_more: hasMore
+          has_more: hasMore,
+          failedLast24h: failedLast24h
         }
       };
     } catch (error) {

@@ -382,24 +382,26 @@ async function getValidatorPerformance(params, client) {
 /**
  * Get top services by compute units
  * @param {Object} params - Query parameters
- * @param {string} [params.limit='10'] - Number of top services (5, 10, 25, or 50)
  * @param {string} [params.days='30'] - Time period in days (7, 15, or 30)
  * @param {string} [params.chain] - Optional chain filter
  * @param {string|string[]} [params.supplier_address] - Optional supplier operator address filter
  * @param {string} [params.owner_address] - Optional owner address filter
+ * @param {number} [params.page=1] - Page number for pagination
+ * @param {number} [params.limit=10] - Number of results per page
  * @param {Object} client - PostgreSQL client
  * @returns {Promise<Object>} Top services data with metadata
  */
 async function getTopServicesByComputeUnits(params, client) {
-  const { limit = '10', days = '30', chain, supplier_address, owner_address } = params;
-  
-  // Validate limit
-  const validLimits = ['5', '10', '25', '50'];
-  const limitValue = validLimits.includes(limit) ? parseInt(limit, 10) : 10;
+  const { days = '30', chain, supplier_address, owner_address, page = 1, limit = 10 } = params;
   
   // Validate days
   const validDays = ['7', '15', '30'];
   const daysValue = validDays.includes(days) ? parseInt(days, 10) : 30;
+  
+  // Validate and parse pagination parameters
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(Math.max(1, parseInt(limit, 10) || 10), 1000); // Cap at 1000 for performance
+  const offset = (pageNum - 1) * limitNum;
   
   // Build WHERE conditions
   // Put chain first for optimal index usage, so it's always $1 if provided
@@ -481,6 +483,24 @@ async function getTopServicesByComputeUnits(params, client) {
   
   const where = `WHERE ${conditions.join(' AND ')}`;
   const join = needsJoin ? `LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address AND s.chain = ps.chain` : '';
+  
+  // Build count query to get total number of services for pagination
+  const countSql = chain
+    ? `
+      SELECT COUNT(DISTINCT ps.service_id) as total
+      FROM proof_submissions ps
+      ${join}
+      ${where}
+    `
+    : `
+      SELECT COUNT(*) as total
+      FROM (
+        SELECT DISTINCT ps.service_id, ps.chain
+        FROM proof_submissions ps
+        ${join}
+        ${where}
+      ) t
+    `;
   
   // Optimized query - uses covering index for fast aggregation
   // When chain is provided, we group only by service_id (faster)
@@ -503,7 +523,7 @@ async function getTopServicesByComputeUnits(params, client) {
       ${where}
       GROUP BY ps.service_id
       ORDER BY total_claimed_compute_units DESC
-      LIMIT $${idx}::integer
+      LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
     `
     : `
       SELECT 
@@ -520,21 +540,28 @@ async function getTopServicesByComputeUnits(params, client) {
       ${where}
       GROUP BY ps.service_id, ps.chain
       ORDER BY total_claimed_compute_units DESC
-      LIMIT $${idx}::integer
+      LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
     `;
   
-  values.push(limitValue);
+  // Execute count and data queries in parallel
+  const [countResult, servicesResult] = await Promise.all([
+    client.query(countSql, values),
+    client.query(sql, [...values, limitNum, offset])
+  ]);
   
-  const result = await client.query(sql, values);
+  const total = parseInt(countResult.rows[0]?.total || '0', 10);
   
   return {
-    data: result.rows,
+    data: servicesResult.rows,
     meta: {
-      limit: limitValue,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum),
       days: daysValue,
       chain: chain || 'all',
-      period_start: result.rows[0]?.period_start || null,
-      period_end: result.rows[0]?.period_end || null
+      period_start: servicesResult.rows[0]?.period_start || null,
+      period_end: servicesResult.rows[0]?.period_end || null
     }
   };
 }
@@ -546,15 +573,22 @@ async function getTopServicesByComputeUnits(params, client) {
  * @param {string} [params.days='30'] - Time period in days (7, 15, or 30)
  * @param {string|string[]} [params.supplier_address] - Optional supplier operator address filter
  * @param {string} [params.owner_address] - Optional owner address filter
+ * @param {number} [params.page=1] - Page number for pagination
+ * @param {number} [params.limit=10] - Number of results per page
  * @param {Object} client - PostgreSQL client
  * @returns {Promise<Object>} Top services with percentage distribution
  */
 async function getTopServicesByPerformance(params, client) {
-  const { chain, days = '30', supplier_address, owner_address } = params;
+  const { chain, days = '30', supplier_address, owner_address, page = 1, limit = 10 } = params;
   
   // Validate days
   const validDays = ['7', '15', '30'];
   const daysValue = validDays.includes(days) ? parseInt(days, 10) : 30;
+  
+  // Validate and parse pagination parameters
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(Math.max(1, parseInt(limit, 10) || 10), 1000); // Cap at 1000 for performance
+  const offset = (pageNum - 1) * limitNum;
   
   // Build WHERE conditions
   // Put chain first for optimal index usage, so it's always $1 if provided
@@ -637,8 +671,35 @@ async function getTopServicesByPerformance(params, client) {
   const where = `WHERE ${conditions.join(' AND ')}`;
   const join = needsJoin ? `LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address AND s.chain = ps.chain` : '';
   
-  // Single optimized query with CTE - faster than two separate queries
-  // Uses covering index and calculates total in one pass
+  // Build count query to get total number of services for pagination
+  const countSql = chain
+    ? `
+      SELECT COUNT(DISTINCT ps.service_id) as total
+      FROM proof_submissions ps
+      ${join}
+      ${where}
+    `
+    : `
+      SELECT COUNT(*) as total
+      FROM (
+        SELECT DISTINCT ps.service_id, ps.chain
+        FROM proof_submissions ps
+        ${join}
+        ${where}
+      ) t
+    `;
+  
+  // Build grand_total query - calculate total compute units across all services
+  // This is needed for percentage calculations and should be calculated separately
+  // to ensure we have it even when a page has no results
+  const grandTotalSql = `
+    SELECT COALESCE(SUM(ps.num_claimed_compute_units), 0) as total_compute_units
+    FROM proof_submissions ps
+    ${join}
+    ${where}
+  `;
+  
+  // Single optimized query with CTE for paginated services
   // Calculate chain param index (it's always the first parameter if provided)
   const chainParamIdx = chain ? 1 : null;
   const sql = chain
@@ -657,18 +718,12 @@ async function getTopServicesByPerformance(params, client) {
         ${join}
         ${where}
         GROUP BY ps.service_id
-      ),
-      grand_total AS (
-        SELECT SUM(total_claimed_compute_units) as total_compute_units
-        FROM service_totals
       )
       SELECT 
-        st.*,
-        gt.total_compute_units
+        st.*
       FROM service_totals st
-      CROSS JOIN grand_total gt
       ORDER BY st.total_claimed_compute_units DESC
-      LIMIT 10::integer
+      LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
     `
     : `
       WITH service_totals AS (
@@ -685,28 +740,25 @@ async function getTopServicesByPerformance(params, client) {
         ${join}
         ${where}
         GROUP BY ps.service_id, ps.chain
-      ),
-      grand_total AS (
-        SELECT SUM(total_claimed_compute_units) as total_compute_units
-        FROM service_totals
       )
       SELECT 
-        st.*,
-        gt.total_compute_units
+        st.*
       FROM service_totals st
-      CROSS JOIN grand_total gt
       ORDER BY st.total_claimed_compute_units DESC
-      LIMIT 10::integer
+      LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
     `;
   
-  const servicesResult = await client.query(sql, values);
+  // Execute count, grand_total, and data queries in parallel
+  const [countResult, grandTotalResult, servicesResult] = await Promise.all([
+    client.query(countSql, values),
+    client.query(grandTotalSql, values),
+    client.query(sql, [...values, limitNum, offset])
+  ]);
   
-  // Handle case where there are no results - grand_total will be NULL
-  const totalComputeUnits = servicesResult.rows.length > 0 
-    ? parseInt(servicesResult.rows[0]?.total_compute_units || '0', 10)
-    : 0;
+  const total = parseInt(countResult.rows[0]?.total || '0', 10);
+  const totalComputeUnits = parseInt(grandTotalResult.rows[0]?.total_compute_units || '0', 10);
   
-  // Calculate percentages and add rank
+  // Calculate percentages and add rank (rank is global position, not page position)
   const services = servicesResult.rows
     .filter(row => row.service_id) // Filter out any NULL service_ids
     .map((service, index) => {
@@ -716,7 +768,7 @@ async function getTopServicesByPerformance(params, client) {
         : 0;
       
       return {
-        rank: index + 1,
+        rank: offset + index + 1, // Global rank based on offset
         service_id: service.service_id,
         chain: service.chain,
         total_claimed_compute_units: claimed,
@@ -733,6 +785,10 @@ async function getTopServicesByPerformance(params, client) {
     data: services,
     total_compute_units: totalComputeUnits,
     meta: {
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum),
       days: daysValue,
       chain: chain || 'all',
       period_start: services[0]?.period_start || null,

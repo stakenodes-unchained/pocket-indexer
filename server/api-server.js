@@ -414,10 +414,11 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(300), async (req, res)
  * 
  * Returns:
  * - data: Array of transaction objects
- * - meta: Pagination metadata (total, page, limit, totalPages, has_more)
+ * - meta: Pagination metadata (total, page, limit, totalPages, has_more, failedLast24h)
  *   - total: Total count of transactions matching filters
  *   - totalPages: Total number of pages
  *   - has_more: Boolean indicating if there are more results
+ *   - failedLast24h: Number of failed transactions in the last 24 hours (independent of current filters)
  */
 app.get('/api/v1/transactions', async (req, res) => {
   try {
@@ -539,6 +540,8 @@ app.get('/api/v1/transactions/:transaction_id', async (req, res) => {
  * Returns:
  * - data: Array of block objects
  * - meta: Pagination metadata (total, page, limit, totalPages)
+ *   - avgBlockProductionTime (number, optional): Average block production time in seconds for the chain (only included if chain parameter is provided)
+ *   - avgBlockSize (integer, optional): Average block size in bytes for the chain (only included if chain parameter is provided)
  */
 app.get('/api/v1/blocks', async (req, res) => {
   try {
@@ -627,12 +630,44 @@ app.get('/api/v1/blocks', async (req, res) => {
     
     const blocksPromise = client.query(blocksWithTxSql, [...values, limitNum, offset]);
     
-    // Wait for both queries
-    const [countRes, blocksRes] = await Promise.all([countPromise, blocksPromise]);
+    // Calculate average block production time and average block size for the chain (if chain is provided)
+    // Run this query in parallel with the other queries for better performance
+    const avgStatsPromise = chain ? (async () => {
+      const avgStatsSql = `
+        SELECT 
+          AVG(block_production_time)::numeric(10, 3) as avg_production_time,
+          AVG(raw_block_size)::bigint as avg_block_size
+        FROM blocks
+        WHERE chain = $1
+          AND block_production_time IS NOT NULL
+          AND raw_block_size IS NOT NULL
+      `;
+      const avgStatsRes = await client.query(avgStatsSql, [chain]);
+      if (avgStatsRes.rows.length > 0 && avgStatsRes.rows[0].avg_production_time !== null) {
+        return {
+          avgBlockProductionTime: parseFloat(avgStatsRes.rows[0].avg_production_time),
+          avgBlockSize: avgStatsRes.rows[0].avg_block_size ? parseInt(avgStatsRes.rows[0].avg_block_size, 10) : null
+        };
+      }
+      return { avgBlockProductionTime: null, avgBlockSize: null };
+    })() : Promise.resolve({ avgBlockProductionTime: null, avgBlockSize: null });
+    
+    // Wait for all queries in parallel
+    const [countRes, blocksRes, avgStats] = await Promise.all([countPromise, blocksPromise, avgStatsPromise]);
+    const { avgBlockProductionTime, avgBlockSize } = avgStats;
     total = skipCount ? 0 : parseInt(countRes.rows[0].total, 10);
     
     if (blocksRes.rows.length === 0) {
-      return res.json({ data: [], meta: { total, page: pageNum, limit: limitNum, totalPages: skipCount ? 0 : Math.ceil(total / limitNum) } });
+      return res.json({ 
+        data: [], 
+        meta: { 
+          total, 
+          page: pageNum, 
+          limit: limitNum, 
+          totalPages: skipCount ? 0 : Math.ceil(total / limitNum),
+          ...(chain && { avgBlockProductionTime, avgBlockSize })
+        } 
+      });
     }
     
     res.json({
@@ -641,7 +676,8 @@ app.get('/api/v1/blocks', async (req, res) => {
         total,
         page: pageNum,
         limit: limitNum,
-        totalPages: skipCount ? 0 : Math.ceil(total / limitNum)
+        totalPages: skipCount ? 0 : Math.ceil(total / limitNum),
+        ...(chain && { avgBlockProductionTime, avgBlockSize })
       }
     });
   } catch (error) {
@@ -739,7 +775,29 @@ app.get('/api/v1/chains', (req, res) => {
 });
 
 // Entities APIs
-// Applications list
+/**
+ * GET /api/v1/applications
+ * 
+ * Retrieve applications with pagination and optional filters.
+ * 
+ * Query Parameters:
+ * - chain (string, optional): Filter by chain identifier
+ * - status (string, optional): Filter by application status
+ * - address (string, optional): Filter by application address
+ * - page (integer, default: 1): Page number for pagination
+ * - limit (integer, default: 25): Number of results per page
+ * 
+ * Returns:
+ * - data: Array of application objects
+ * - meta: Pagination metadata and aggregate statistics
+ *   - total: Total number of applications
+ *   - page: Current page number
+ *   - limit: Results per page
+ *   - totalPages: Total number of pages
+ *   - totalStakedAmount: Total staked amount for all applications (excluding unstaking ones)
+ *   - unstakingCount: Number of applications currently unstaking
+ *   - totalUnstakingTokens: Total amount of tokens being unstaked
+ */
 app.get('/api/v1/applications', async (req, res) => {
   try {
     const { chain, status, address, page = 1, limit = 25 } = req.query;
@@ -753,15 +811,47 @@ app.get('/api/v1/applications', async (req, res) => {
     if (address) { conditions.push(`address = $${idx++}`); values.push(address); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const pageNum = parseInt(page, 10); const limitNum = parseInt(limit, 10); const offset = (pageNum - 1) * limitNum;
+    
+    // Build aggregate queries for statistics
     const countSql = `SELECT COUNT(*) AS total FROM applications ${where}`;
-    const countRes = await client.query(countSql, values);
+    const unstakingCondition = where ? 'AND' : 'WHERE';
+    const totalStakedSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_staked_amount 
+                            FROM applications ${where} ${unstakingCondition} unstake_session_end_height IS NULL`;
+    const unstakingCountSql = `SELECT COUNT(*) AS unstaking_count 
+                               FROM applications ${where} ${unstakingCondition} unstake_session_end_height IS NOT NULL`;
+    const totalUnstakingSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_unstaking_tokens 
+                               FROM applications ${where} ${unstakingCondition} unstake_session_end_height IS NOT NULL`;
+    
+    // Execute all queries in parallel for better performance
+    const [countRes, totalStakedRes, unstakingCountRes, totalUnstakingRes] = await Promise.all([
+      client.query(countSql, values),
+      client.query(totalStakedSql, values),
+      client.query(unstakingCountSql, values),
+      client.query(totalUnstakingSql, values)
+    ]);
+    
     const total = parseInt(countRes.rows[0].total, 10);
+    const totalStakedAmount = parseFloat(totalStakedRes.rows[0].total_staked_amount || '0');
+    const unstakingCount = parseInt(unstakingCountRes.rows[0].unstaking_count || '0', 10);
+    const totalUnstakingTokens = parseFloat(totalUnstakingRes.rows[0].total_unstaking_tokens || '0');
+    
     const listSql = `SELECT address, chain, staked_amount, stake_denom, status, chains, delegated, gateway_address, delegatee_gateway_addresses, unstake_session_end_height, last_seen
                      FROM applications ${where}
                      ORDER BY last_seen DESC NULLS LAST
                      LIMIT $${idx} OFFSET $${idx + 1}`;
     const listRes = await client.query(listSql, [...values, limitNum, offset]);
-    res.json({ data: listRes.rows, meta: { total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) } });
+    res.json({ 
+      data: listRes.rows, 
+      meta: { 
+        total, 
+        page: pageNum, 
+        limit: limitNum, 
+        totalPages: Math.ceil(total / limitNum),
+        totalStakedAmount,
+        unstakingCount,
+        totalUnstakingTokens
+      } 
+    });
   } catch (error) {
     console.error('Error fetching applications:', error);
     res.status(500).json({ error: error.message });
@@ -797,7 +887,29 @@ app.get('/api/v1/applications/:address', async (req, res) => {
   }
 });
 
-// Suppliers list
+/**
+ * GET /api/v1/suppliers
+ * 
+ * Retrieve suppliers with pagination and optional filters.
+ * 
+ * Query Parameters:
+ * - chain (string, optional): Filter by chain identifier
+ * - status (string, optional): Filter by supplier status
+ * - address (string, optional): Filter by supplier address
+ * - page (integer, default: 1): Page number for pagination
+ * - limit (integer, default: 25): Number of results per page
+ * 
+ * Returns:
+ * - data: Array of supplier objects
+ * - meta: Pagination metadata and aggregate statistics
+ *   - total: Total number of suppliers
+ *   - page: Current page number
+ *   - limit: Results per page
+ *   - totalPages: Total number of pages
+ *   - totalStakedTokens: Total staked tokens for all suppliers (excluding unstaking ones)
+ *   - unstakingCount: Number of suppliers currently unstaking
+ *   - totalUnstakingTokens: Total amount of tokens being unstaked
+ */
 app.get('/api/v1/suppliers', async (req, res) => {
   try {
     const { chain, status, address, page = 1, limit = 25 } = req.query;
@@ -811,15 +923,47 @@ app.get('/api/v1/suppliers', async (req, res) => {
     if (address) { conditions.push(`address = $${idx++}`); values.push(address); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const pageNum = parseInt(page, 10); const limitNum = parseInt(limit, 10); const offset = (pageNum - 1) * limitNum;
+    
+    // Build aggregate queries for statistics
     const countSql = `SELECT COUNT(*) AS total FROM suppliers ${where}`;
-    const countRes = await client.query(countSql, values);
+    const unstakingCondition = where ? 'AND' : 'WHERE';
+    const totalStakedSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_staked_tokens 
+                            FROM suppliers ${where} ${unstakingCondition} unstake_session_end_height IS NULL`;
+    const unstakingCountSql = `SELECT COUNT(*) AS unstaking_count 
+                               FROM suppliers ${where} ${unstakingCondition} unstake_session_end_height IS NOT NULL`;
+    const totalUnstakingSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_unstaking_tokens 
+                               FROM suppliers ${where} ${unstakingCondition} unstake_session_end_height IS NOT NULL`;
+    
+    // Execute all queries in parallel for better performance
+    const [countRes, totalStakedRes, unstakingCountRes, totalUnstakingRes] = await Promise.all([
+      client.query(countSql, values),
+      client.query(totalStakedSql, values),
+      client.query(unstakingCountSql, values),
+      client.query(totalUnstakingSql, values)
+    ]);
+    
     const total = parseInt(countRes.rows[0].total, 10);
+    const totalStakedTokens = parseFloat(totalStakedRes.rows[0].total_staked_tokens || '0');
+    const unstakingCount = parseInt(unstakingCountRes.rows[0].unstaking_count || '0', 10);
+    const totalUnstakingTokens = parseFloat(totalUnstakingRes.rows[0].total_unstaking_tokens || '0');
+    
     const listSql = `SELECT address, chain, staked_amount, stake_denom, status, last_seen, unstake_session_end_height
                      FROM suppliers ${where}
                      ORDER BY last_seen DESC NULLS LAST
                      LIMIT $${idx} OFFSET $${idx + 1}`;
     const listRes = await client.query(listSql, [...values, limitNum, offset]);
-    res.json({ data: listRes.rows, meta: { total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) } });
+    res.json({ 
+      data: listRes.rows, 
+      meta: { 
+        total, 
+        page: pageNum, 
+        limit: limitNum, 
+        totalPages: Math.ceil(total / limitNum),
+        totalStakedTokens,
+        unstakingCount,
+        totalUnstakingTokens
+      } 
+    });
   } catch (error) {
     console.error('Error fetching suppliers:', error);
     res.status(500).json({ error: error.message });
@@ -2091,15 +2235,16 @@ app.get('/api/v1/validators/owners', async (req, res) => {
 /**
  * GET /api/v1/services/top-by-compute-units
  * 
- * Returns top N services by total compute units for the specified time period.
+ * Returns services by total compute units for the specified time period with pagination.
  * Perfect for growth graphs showing service adoption over time.
  * 
  * Query Parameters:
- * - limit: Number of top services to return (5, 10, 25, or 50). Default: 10
  * - days: Time period in days (7, 15, or 30). Default: 30
  * - chain: Optional chain filter (e.g., "mainnet", "testnet")
  * - supplier_address: Optional supplier operator address filter (single or comma-separated)
  * - owner_address: Optional owner address filter (filters by supplier owner address)
+ * - page: Optional page number for pagination (default: 1)
+ * - limit: Optional number of results per page (default: 10, max: 1000)
  * 
  * Returns array of services with:
  * - service_id: The service identifier
@@ -2110,24 +2255,28 @@ app.get('/api/v1/validators/owners', async (req, res) => {
  * - period_start: Start timestamp of the period
  * - period_end: End timestamp of the period
  * 
+ * Also returns:
+ * - meta: Pagination and period information (total, page, limit, totalPages, days, chain, period_start, period_end)
+ * 
  * Example:
- * GET /api/v1/services/top-by-compute-units?limit=25&days=7&chain=mainnet
- * GET /api/v1/services/top-by-compute-units?supplier_address=poktvaloper1abc...&days=30
+ * GET /api/v1/services/top-by-compute-units?page=1&limit=25&days=7&chain=mainnet
+ * GET /api/v1/services/top-by-compute-units?supplier_address=poktvaloper1abc...&days=30&page=2&limit=10
  * GET /api/v1/services/top-by-compute-units?owner_address=pokt1xyz...&days=30
  */
 app.get('/api/v1/services/top-by-compute-units', async (req, res) => {
   try {
-    const { limit = '10', days = '30', chain, supplier_address, owner_address } = req.query;
+    const { days = '30', chain, supplier_address, owner_address, page, limit } = req.query;
     
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
     const result = await performanceService.getTopServicesByComputeUnits({
-      limit,
       days,
       chain,
       supplier_address,
-      owner_address
+      owner_address,
+      page,
+      limit
     }, client);
     
     res.json(result);
@@ -2143,21 +2292,22 @@ app.get('/api/v1/services/top-by-compute-units', async (req, res) => {
  * Same as GET but accepts parameters in request body.
  * Recommended for multiple supplier addresses to avoid URL length limits.
  * 
- * Body: { limit, days, chain, supplier_address (string or array), owner_address }
+ * Body: { days, chain, supplier_address (string or array), owner_address, page, limit }
  */
 app.post('/api/v1/services/top-by-compute-units', async (req, res) => {
   try {
-    const { limit = '10', days = '30', chain, supplier_address, owner_address } = req.body;
+    const { days = '30', chain, supplier_address, owner_address, page, limit } = req.body;
     
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
     const result = await performanceService.getTopServicesByComputeUnits({
-      limit,
       days,
       chain,
       supplier_address,
-      owner_address
+      owner_address,
+      page,
+      limit
     }, client);
     
     res.json(result);
@@ -2170,7 +2320,7 @@ app.post('/api/v1/services/top-by-compute-units', async (req, res) => {
 /**
  * GET /api/v1/services/top-by-performance
  * 
- * Returns top 10 services by compute units with percentage distribution.
+ * Returns services by compute units with percentage distribution and pagination.
  * Perfect for displaying a table showing network usage distribution.
  * 
  * Query Parameters:
@@ -2178,28 +2328,30 @@ app.post('/api/v1/services/top-by-compute-units', async (req, res) => {
  * - days: Optional time period in days (default: 30). Only accepts 7, 15, or 30
  * - supplier_address: Optional supplier operator address filter (single or comma-separated)
  * - owner_address: Optional owner address filter (filters by supplier owner address)
+ * - page: Optional page number for pagination (default: 1)
+ * - limit: Optional number of results per page (default: 10, max: 1000)
  * 
- * Returns array of top 10 services with:
+ * Returns array of services with:
  * - service_id: The service identifier
  * - total_claimed_compute_units: Sum of all claimed compute units
  * - total_estimated_compute_units: Sum of all estimated compute units
  * - submission_count: Number of proof submissions
  * - avg_efficiency_percent: Average efficiency percentage
  * - percentage_of_total: Percentage distribution (0-100)
- * - rank: Ranking position (1-10)
+ * - rank: Ranking position (global, not page-based)
  * 
  * Also returns:
  * - total_compute_units: Grand total for percentage calculations
- * - meta: Period information
+ * - meta: Pagination and period information (total, page, limit, totalPages, days, chain, period_start, period_end)
  * 
  * Example:
- * GET /api/v1/services/top-by-performance?chain=mainnet&days=15
- * GET /api/v1/services/top-by-performance?supplier_address=poktvaloper1abc...&days=30
+ * GET /api/v1/services/top-by-performance?chain=mainnet&days=15&page=1&limit=20
+ * GET /api/v1/services/top-by-performance?supplier_address=poktvaloper1abc...&days=30&page=2&limit=10
  * GET /api/v1/services/top-by-performance?owner_address=pokt1xyz...&days=30
  */
 app.get('/api/v1/services/top-by-performance', async (req, res) => {
   try {
-    const { chain, days = '30', supplier_address, owner_address } = req.query;
+    const { chain, days = '30', supplier_address, owner_address, page, limit } = req.query;
     
     await transactionService.connectDB();
     const client = transactionService.pgClient;
@@ -2208,7 +2360,9 @@ app.get('/api/v1/services/top-by-performance', async (req, res) => {
       chain,
       days,
       supplier_address,
-      owner_address
+      owner_address,
+      page,
+      limit
     }, client);
     
     res.json(result);
@@ -2224,11 +2378,11 @@ app.get('/api/v1/services/top-by-performance', async (req, res) => {
  * Same as GET but accepts parameters in request body.
  * Recommended for multiple supplier addresses to avoid URL length limits.
  * 
- * Body: { chain, days, supplier_address (string or array), owner_address }
+ * Body: { chain, days, supplier_address (string or array), owner_address, page, limit }
  */
 app.post('/api/v1/services/top-by-performance', async (req, res) => {
   try {
-    const { chain, days = '30', supplier_address, owner_address } = req.body;
+    const { chain, days = '30', supplier_address, owner_address, page, limit } = req.body;
     
     await transactionService.connectDB();
     const client = transactionService.pgClient;
@@ -2237,7 +2391,9 @@ app.post('/api/v1/services/top-by-performance', async (req, res) => {
       chain,
       days,
       supplier_address,
-      owner_address
+      owner_address,
+      page,
+      limit
     }, client);
     
     res.json(result);
