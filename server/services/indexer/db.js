@@ -189,7 +189,8 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
           messages: [],
           gas_wanted: '0',
           gas_used: '0',
-          tx_data: null
+          tx_data: null,
+          block_height: height || null
         };
 
         let txResponse = null;
@@ -218,7 +219,8 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
                 messages: existingTx.messages || [],
                 gas_wanted: existingTx.gas_wanted || '0',
                 gas_used: existingTx.gas_used || '0',
-                tx_data: existingTx.tx_data || null
+                tx_data: existingTx.tx_data || null,
+                block_height: existingTx.block_height || height || null
               };
               txType = existingTx.type || 'unknown';
             } else {
@@ -273,7 +275,8 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
                   messages: rpcDetails.messages || [],
                   gas_wanted: rpcDetails.gas_wanted || '0',
                   gas_used: rpcDetails.gas_used || '0',
-                  tx_data: JSON.stringify(txResponse)
+                  tx_data: JSON.stringify(txResponse),
+                  block_height: rpcDetails.height || height || null
                 };
               }
             }
@@ -289,6 +292,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
             ...tx,
             type: txType,
             block_id: uniqueBlockId,
+            block_height: tx.block_height || height || null,
             timestamp: blockData.block?.header?.time || blockData.timestamp,
             chain: chain
           });
@@ -459,9 +463,22 @@ async function saveTransaction(tx) {
       console.warn(`Failed to extract addresses for transaction ${tx.hash}:`, extractError.message);
     }
 
+    // Extract block_height from tx_data as fallback if not provided
+    let blockHeight = tx.block_height;
+    if (!blockHeight && tx.tx_data) {
+      try {
+        const txData = typeof tx.tx_data === 'string' ? JSON.parse(tx.tx_data) : tx.tx_data;
+        if (txData?.tx_response?.height) {
+          blockHeight = parseInt(txData.tx_response.height, 10);
+        }
+      } catch (parseError) {
+        // Silently fail - block_height extraction from tx_data is best effort
+      }
+    }
+
     await pgClient.query(
-      `INSERT INTO transactions (id, hash, block_id, sender, recipient, amount, fee, memo, type, status, timestamp, tx_data, chain, amount_denom, fee_denom, addresses)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+      `INSERT INTO transactions (id, hash, block_id, block_height, sender, recipient, amount, fee, memo, type, status, timestamp, tx_data, chain, amount_denom, fee_denom, addresses)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        ON CONFLICT (id) DO UPDATE SET
          type=EXCLUDED.type,
          status=EXCLUDED.status,
@@ -471,11 +488,13 @@ async function saveTransaction(tx) {
          fee=EXCLUDED.fee,
          amount_denom=EXCLUDED.amount_denom,
          fee_denom=EXCLUDED.fee_denom,
-         addresses=EXCLUDED.addresses`,
+         addresses=EXCLUDED.addresses,
+         block_height=COALESCE(EXCLUDED.block_height, transactions.block_height)`,
       [
         tx.hash,
         tx.hash,
-        tx.block_id || tx.block_height, // Use block_id if available, fallback to block_height
+        tx.block_id || null,
+        blockHeight || null,
         tx.sender,
         tx.recipient,
         parseFloat(tx.amount) || 0,
