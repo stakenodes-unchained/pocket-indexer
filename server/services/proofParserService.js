@@ -1,6 +1,6 @@
 const { Client } = require('pg');
-const { parseProofSubmissions } = require('./indexer/entityParser');
-const { bulkSaveProofSubmissions } = require('./proofParserDB');
+const { parseProofSubmissions, parseClaims } = require('./indexer/entityParser.v2');
+const { bulkSaveProofSubmissions, bulkSaveClaims } = require('./proofParserDB');
 
 /**
  * Proof Parser Service
@@ -138,22 +138,18 @@ class ProofParserService {
       }
       
       // Prepare transaction object for parser
-      // parseClaims expects: { body: { messages: [...] } }
-      // parseProofSubmissions expects: { tx_response: { events: [...] } }
+      // Both parseClaims and parseProofSubmissions expect: { tx_response: { events: [...] }, tx: { body: { messages: [...] } } }
       
-      // For parseClaims, pass the tx structure directly
-      // COMMENTED OUT - focusing only on proof submissions
-      // const txObjForClaims = txData?.tx || txData;
-      // const claims = parseClaims(txObjForClaims, block, tx.chain);
-      const claims = [];
-      
-      // For parseProofSubmissions, pass the txObj with tx_response
-      const txObjForProofs = {
+      const txObj = {
         hash: tx.hash,
+        tx: txData?.tx,
         tx_response: txData?.tx_response,
         tx_data: tx.tx_data, // Keep raw data as backup
       };
-      const proofs = parseProofSubmissions(txObjForProofs, block, tx.chain);
+      
+      // Parse both claims and proof submissions
+      const claims = parseClaims(txObj, block, tx.chain);
+      const proofs = parseProofSubmissions(txObj, block, tx.chain);
       
       return { proofs, claims };
       
@@ -230,22 +226,21 @@ class ProofParserService {
       }
     }
     
-    // Bulk save results
-    try {
-      if (allProofs.length > 0) {
-        await bulkSaveProofSubmissions(allProofs);
-        console.log(`[ProofParser] Saved ${allProofs.length} proof submissions`);
+      // Bulk save results
+      try {
+        if (allProofs.length > 0) {
+          await bulkSaveProofSubmissions(allProofs);
+          console.log(`[ProofParser] Saved ${allProofs.length} proof submissions`);
+        }
+        
+        if (allClaims.length > 0) {
+          await bulkSaveClaims(allClaims);
+          console.log(`[ProofParser] Saved ${allClaims.length} claims`);
+        }
+      } catch (error) {
+        console.error(`[ProofParser] Error bulk saving results:`, error.message);
+        throw error;
       }
-      
-      // COMMENTED OUT - focusing only on proof submissions
-      // if (allClaims.length > 0) {
-      //   await bulkSaveClaims(allClaims);
-      //   console.log(`[ProofParser] Saved ${allClaims.length} claims`);
-      // }
-    } catch (error) {
-      console.error(`[ProofParser] Error bulk saving results:`, error.message);
-      throw error;
-    }
     
     this.lastProcessTime = new Date();
     

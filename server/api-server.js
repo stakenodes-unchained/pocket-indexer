@@ -1950,6 +1950,527 @@ app.post('/api/v1/proof-submissions/summary', async (req, res) => {
   }
 });
 
+// CLAIMS ENDPOINTS
+
+// Shared function for claims queries
+async function getClaims(params, client) {
+  const { supplier_address, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = params;
+  
+  const conditions = [];
+  const values = [];
+  let idx = 1;
+  
+  if (chain) {
+    conditions.push(`chain = $${idx}::text`);
+    values.push(chain);
+    idx++;
+  }
+  
+  // Handle supplier_address - can be single string, comma-separated string, or array
+  if (supplier_address) {
+    let addresses;
+    if (Array.isArray(supplier_address)) {
+      addresses = supplier_address;
+    } else if (typeof supplier_address === 'string' && supplier_address.includes(',')) {
+      addresses = supplier_address.split(',').map(addr => addr.trim()).filter(addr => addr.length > 0);
+    } else {
+      addresses = [supplier_address];
+    }
+    
+    if (addresses.length === 1) {
+      conditions.push(`supplier_operator_address = $${idx}::text`);
+      values.push(addresses[0]);
+      idx++;
+    } else if (addresses.length > 1) {
+      const placeholders = addresses.map((_, i) => `$${idx + i}::text`).join(', ');
+      conditions.push(`supplier_operator_address IN (${placeholders})`);
+      values.push(...addresses);
+      idx += addresses.length;
+    }
+  }
+  
+  if (application_address) {
+    conditions.push(`application_address = $${idx}::text`);
+    values.push(application_address);
+    idx++;
+  }
+  if (service_id) {
+    conditions.push(`service_id = $${idx}::text`);
+    values.push(service_id);
+    idx++;
+  }
+  if (start_date) {
+    conditions.push(`timestamp >= $${idx}::timestamp`);
+    values.push(start_date);
+    idx++;
+  }
+  if (end_date) {
+    conditions.push(`timestamp <= $${idx}::timestamp`);
+    values.push(end_date);
+    idx++;
+  }
+  
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const pageNum = parseInt(page, 10);
+  const limitNum = parseInt(limit, 10);
+  const offset = (pageNum - 1) * limitNum;
+  
+  // Get total count
+  const countSql = `SELECT COUNT(*) AS total FROM claims ${where}`;
+  const countRes = await client.query(countSql, values);
+  const total = parseInt(countRes.rows[0].total, 10);
+  
+  // Get paginated results
+  const listSql = `SELECT 
+    id, supplier_operator_address, application_address, service_id, session_id,
+    session_start_block_height, session_end_block_height, root_hash, proof, status,
+    timestamp, chain, claim_proof_status_int, claimed_upokt, claimed_upokt_amount,
+    num_claimed_compute_units, num_estimated_compute_units, num_relays,
+    compute_unit_efficiency, reward_per_relay, created_at
+    FROM claims ${where}
+    ORDER BY timestamp DESC
+    LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
+  
+  const listRes = await client.query(listSql, [...values, limitNum, offset]);
+  
+  return {
+    data: listRes.rows,
+    meta: {
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum)
+    }
+  };
+}
+
+app.get('/api/v1/claims', async (req, res) => {
+  try {
+    const { supplier_address, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const result = await getClaims({
+      supplier_address,
+      application_address,
+      service_id,
+      chain,
+      start_date,
+      end_date,
+      page,
+      limit
+    }, client);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching claims:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/v1/claims', async (req, res) => {
+  try {
+    const { supplier_address, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.body;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const result = await getClaims({
+      supplier_address,
+      application_address,
+      service_id,
+      chain,
+      start_date,
+      end_date,
+      page,
+      limit
+    }, client);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching claims:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Shared function for claim reward analytics queries
+async function getClaimRewardAnalytics(params, client) {
+  const { supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = params;
+  
+  const conditions = [];
+  const values = [];
+  let idx = 1;
+  
+  if (chain) {
+    conditions.push(`chain = $${idx++}`);
+    values.push(chain);
+  }
+  
+  // Handle single supplier_address or array of supplier_addresses
+  if (supplier_addresses && Array.isArray(supplier_addresses) && supplier_addresses.length > 0) {
+    if (supplier_addresses.length === 1) {
+      conditions.push(`supplier_operator_address = $${idx++}`);
+      values.push(supplier_addresses[0]);
+    } else {
+      conditions.push(`supplier_operator_address = ANY($${idx++}::text[])`);
+      values.push(supplier_addresses);
+    }
+  } else if (supplier_address) {
+    conditions.push(`supplier_operator_address = $${idx++}`);
+    values.push(supplier_address);
+  }
+  
+  if (application_address) {
+    conditions.push(`application_address = $${idx++}`);
+    values.push(application_address);
+  }
+  if (service_id) {
+    conditions.push(`service_id = $${idx++}`);
+    values.push(service_id);
+  }
+  if (start_date) {
+    conditions.push(`hour_bucket >= $${idx++}::timestamp`);
+    values.push(start_date);
+  }
+  if (end_date) {
+    conditions.push(`hour_bucket <= $${idx++}::timestamp`);
+    values.push(end_date);
+  }
+  
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const pageNum = parseInt(page, 10);
+  const limitNum = parseInt(limit, 10);
+  const offset = (pageNum - 1) * limitNum;
+  
+  // Get total count
+  const countSql = `SELECT COUNT(*) AS total FROM claim_rewards ${where}`;
+  const countRes = await client.query(countSql, values);
+  const total = parseInt(countRes.rows[0]?.total || 0, 10);
+  
+  // Get paginated results
+  const listSql = `SELECT * FROM claim_rewards ${where}
+    ORDER BY hour_bucket DESC
+    LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
+  
+  const listRes = await client.query(listSql, [...values, limitNum, offset]);
+  
+  return {
+    data: listRes.rows || [],
+    meta: {
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum)
+    }
+  };
+}
+
+// Get claim reward analytics aggregated view (hourly)
+app.get('/api/v1/claims/rewards', async (req, res) => {
+  try {
+    const { supplier_address, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const result = await getClaimRewardAnalytics({
+      supplier_address,
+      application_address,
+      service_id,
+      chain,
+      start_date,
+      end_date,
+      page,
+      limit
+    }, client);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching claim rewards:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/v1/claims/rewards', async (req, res) => {
+  try {
+    const { supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.body;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const result = await getClaimRewardAnalytics({
+      supplier_address,
+      supplier_addresses,
+      application_address,
+      service_id,
+      chain,
+      start_date,
+      end_date,
+      page,
+      limit
+    }, client);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching claim rewards:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Shared function for claims summary queries
+async function getClaimsSummary(params, client) {
+  const { start_date, end_date, supplier_address, supplier_addresses, application_address, service_id, chain } = params;
+  
+  const conditions = [];
+  const values = [];
+  let idx = 1;
+  
+  if (chain) {
+    conditions.push(`chain = $${idx}::text`);
+    values.push(chain);
+    idx++;
+  }
+  
+  if (start_date) {
+    conditions.push(`timestamp >= $${idx}::timestamp`);
+    values.push(start_date);
+    idx++;
+  }
+  if (end_date) {
+    conditions.push(`timestamp <= $${idx}::timestamp`);
+    values.push(end_date);
+    idx++;
+  }
+  // Default to last 24 hours if no explicit date range provided
+  if (!start_date && !end_date) {
+    conditions.push(`timestamp >= NOW() - INTERVAL '24 hours'`);
+  }
+  
+  // Handle supplier_address or supplier_addresses
+  if (supplier_addresses && Array.isArray(supplier_addresses) && supplier_addresses.length > 0) {
+    if (supplier_addresses.length === 1) {
+      conditions.push(`supplier_operator_address = $${idx}::text`);
+      values.push(supplier_addresses[0]);
+      idx++;
+    } else {
+      const placeholders = supplier_addresses.map((_, i) => `$${idx + i}::text`).join(', ');
+      conditions.push(`supplier_operator_address IN (${placeholders})`);
+      values.push(...supplier_addresses);
+      idx += supplier_addresses.length;
+    }
+  } else if (supplier_address) {
+    let addresses;
+    if (Array.isArray(supplier_address)) {
+      addresses = supplier_address;
+    } else if (typeof supplier_address === 'string' && supplier_address.includes(',')) {
+      addresses = supplier_address.split(',').map(addr => addr.trim()).filter(addr => addr.length > 0);
+    } else {
+      addresses = [supplier_address];
+    }
+    
+    if (addresses.length === 1) {
+      conditions.push(`supplier_operator_address = $${idx}::text`);
+      values.push(addresses[0]);
+      idx++;
+    } else if (addresses.length > 1) {
+      const placeholders = addresses.map((_, i) => `$${idx + i}::text`).join(', ');
+      conditions.push(`supplier_operator_address IN (${placeholders})`);
+      values.push(...addresses);
+      idx += addresses.length;
+    }
+  }
+  
+  if (application_address) {
+    conditions.push(`application_address = $${idx}::text`);
+    values.push(application_address);
+    idx++;
+  }
+  if (service_id) {
+    conditions.push(`service_id = $${idx}::text`);
+    values.push(service_id);
+    idx++;
+  }
+  
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  
+  const summarySql = `SELECT 
+    COUNT(*) as total_claims,
+    COUNT(DISTINCT supplier_operator_address) as unique_suppliers,
+    COUNT(DISTINCT application_address) as unique_applications,
+    COUNT(DISTINCT service_id) as unique_services,
+    SUM(claimed_upokt_amount) as total_rewards_upokt,
+    SUM(num_relays) as total_relays,
+    SUM(num_claimed_compute_units) as total_claimed_compute_units,
+    SUM(num_estimated_compute_units) as total_estimated_compute_units,
+    AVG(compute_unit_efficiency) as avg_efficiency_percent,
+    AVG(reward_per_relay) as avg_reward_per_relay,
+    MIN(timestamp) as first_claim,
+    MAX(timestamp) as last_claim
+    FROM claims ${where}`;
+  
+  const result = await client.query(summarySql, values);
+  
+  return { data: result.rows[0] };
+}
+
+app.get('/api/v1/claims/summary', async (req, res) => {
+  try {
+    const { start_date, end_date, supplier_address, application_address, service_id, chain } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const result = await getClaimsSummary({
+      start_date,
+      end_date,
+      supplier_address,
+      application_address,
+      service_id,
+      chain
+    }, client);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching claims summary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/v1/claims/summary', async (req, res) => {
+  try {
+    const { start_date, end_date, supplier_address, supplier_addresses, application_address, service_id, chain } = req.body;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const result = await getClaimsSummary({
+      start_date,
+      end_date,
+      supplier_address,
+      supplier_addresses,
+      application_address,
+      service_id,
+      chain
+    }, client);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching claims summary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get supplier claim performance analytics (daily)
+app.get('/api/v1/suppliers/:address/claims/performance', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { chain, start_date, end_date, page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const conditions = [`supplier_operator_address = $1`];
+    const values = [address];
+    let idx = 2;
+    
+    if (chain) {
+      conditions.push(`chain = $${idx++}`);
+      values.push(chain);
+    }
+    
+    if (start_date) {
+      conditions.push(`day_bucket >= $${idx++}`);
+      values.push(start_date);
+    }
+    if (end_date) {
+      conditions.push(`day_bucket <= $${idx++}`);
+      values.push(end_date);
+    }
+    
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+    
+    // Get total count
+    const countSql = `SELECT COUNT(*) AS total FROM supplier_claim_performance ${where}`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows[0].total, 10);
+    
+    // Get paginated results
+    const listSql = `SELECT * FROM supplier_claim_performance ${where}
+      ORDER BY day_bucket DESC
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+    
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    
+    res.json({
+      data: listRes.rows,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching supplier claim performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get application claim usage analytics (daily)
+app.get('/api/v1/applications/:address/claims/usage', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { chain, start_date, end_date, page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const conditions = [`application_address = $1`];
+    const values = [address];
+    let idx = 2;
+    
+    if (chain) {
+      conditions.push(`chain = $${idx++}`);
+      values.push(chain);
+    }
+    
+    if (start_date) {
+      conditions.push(`day_bucket >= $${idx++}`);
+      values.push(start_date);
+    }
+    if (end_date) {
+      conditions.push(`day_bucket <= $${idx++}`);
+      values.push(end_date);
+    }
+    
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+    
+    // Get total count
+    const countSql = `SELECT COUNT(*) AS total FROM application_claim_usage ${where}`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows[0].total, 10);
+    
+    // Get paginated results
+    const listSql = `SELECT * FROM application_claim_usage ${where}
+      ORDER BY day_bucket DESC
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+    
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+    
+    res.json({
+      data: listRes.rows,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching application claim usage:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Validator and Service Search endpoint
 // GET /api/v1/validators/search
 // Query: q (required), chain (optional), limit (optional, default 20)

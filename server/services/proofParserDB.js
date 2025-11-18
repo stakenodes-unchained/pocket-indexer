@@ -107,7 +107,7 @@ async function bulkSaveClaims(claims) {
     let p = 1;
     
     for (const c of chunk) {
-      values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+      values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
       params.push(
         c.supplier_operator_address,
         c.application_address,
@@ -118,19 +118,33 @@ async function bulkSaveClaims(claims) {
         c.root_hash,
         c.proof || null,
         c.status || 'claimed',
-        c.timestamp || new Date().toISOString()
+        c.timestamp || new Date().toISOString(),
+        c.chain || null,
+        c.claim_proof_status_int !== undefined ? c.claim_proof_status_int : null,
+        c.claimed_upokt || null,
+        c.num_claimed_compute_units !== undefined ? c.num_claimed_compute_units : null,
+        c.num_estimated_compute_units !== undefined ? c.num_estimated_compute_units : null,
+        c.num_relays !== undefined ? c.num_relays : null
       );
     }
     
     const sql = `INSERT INTO claims (
       supplier_operator_address, application_address, service_id, session_id,
-      session_start_block_height, session_end_block_height, root_hash, proof, status, timestamp
+      session_start_block_height, session_end_block_height, root_hash, proof, status, timestamp, chain,
+      claim_proof_status_int, claimed_upokt, num_claimed_compute_units, num_estimated_compute_units, num_relays
     )
     VALUES ${values.join(',')}
     ON CONFLICT (supplier_operator_address, session_id, service_id, application_address) DO UPDATE SET
       root_hash=EXCLUDED.root_hash,
       proof=EXCLUDED.proof,
-      status=EXCLUDED.status`;
+      status=EXCLUDED.status,
+      timestamp=EXCLUDED.timestamp,
+      chain=EXCLUDED.chain,
+      claim_proof_status_int=EXCLUDED.claim_proof_status_int,
+      claimed_upokt=EXCLUDED.claimed_upokt,
+      num_claimed_compute_units=EXCLUDED.num_claimed_compute_units,
+      num_estimated_compute_units=EXCLUDED.num_estimated_compute_units,
+      num_relays=EXCLUDED.num_relays`;
     
     await pgClient.query(sql, params);
   }

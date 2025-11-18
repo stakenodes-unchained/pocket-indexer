@@ -310,36 +310,166 @@ function parseServices(txEnvelope, block, chain) {
   } catch (_) { return []; }
 }
 
-// Claims/Proofs
+// Claims - parse claim creation events from transaction events
 function parseClaims(txEnvelope, block, chain) {
   try {
-    // Skip claims parsing for now due to performance issues
-    // Claims are temporary and should be tracked differently
-    return [];
+    const claims = [];
     
-    // Original logic (commented out for performance):
-    // const out = [];
-    // const messages = getMessages(txEnvelope);
-    // const timestamp = getTimestamp(block);
-    // for (const msg of messages) {
-    //   const msgType = normalizePocketMsgType(typeof msg?.['@type'] === 'string' ? msg['@type'] : '');
-    //   if (msgType === 'pocket.proof.MsgCreateClaim') {
-    //     const sh = msg.session_header || {};
-    //     out.push({
-    //       supplier_operator_address: msg.supplier_operator_address || msg.signer || '',
-    //       application_address: sh.application_address || '',
-    //       service_id: sh.service_id || '',
-    //       session_id: sh.session_id || '',
-    //       session_start_block_height: sh.session_start_block_height || 0,
-    //       session_end_block_height: sh.session_end_block_height || 0,
-    //       status: 'claimed',
-    //       settled: false, // Claims start as unsettled
-    //       last_seen: timestamp,
-    //     });
-    //   }
-    // }
-    // return out;
-  } catch (_) { return []; }
+    if (!txEnvelope) return claims;
+    
+    // Get events from tx_response or from tx_data (which stores the full JSON stringified response)
+    let events = txEnvelope.tx_response?.events || [];
+    
+    // If no events in tx_response, try to parse from tx_data
+    // The tx_data field contains the full transaction response object with nested tx_response
+    if (!Array.isArray(events) || events.length === 0) {
+      try {
+        if (txEnvelope.tx_data) {
+          const txData = typeof txEnvelope.tx_data === 'string' ? JSON.parse(txEnvelope.tx_data) : txEnvelope.tx_data;
+          // Events are nested in tx_response within the stored data
+          events = txData?.tx_response?.events || txData?.events || [];
+        }
+      } catch (parseError) {
+        // If parsing fails, events remains empty array
+      }
+    }
+    
+    if (!Array.isArray(events) || events.length === 0) {
+      return claims;
+    }
+    
+    // Get messages from transaction
+    const messages = getMessages(txEnvelope);
+    const timestamp = getTimestamp(block);
+    
+    // Look for EventClaimCreated events
+    for (const event of events) {
+      if (event.type === 'pocket.proof.EventClaimCreated') {
+        try {
+          // Extract attributes from the event
+          const attributes = event.attributes || [];
+          const claim = {
+            supplier_operator_address: '',
+            application_address: '',
+            service_id: '',
+            session_id: '',
+            session_start_block_height: '0',
+            session_end_block_height: '0',
+            root_hash: '',
+            proof: null,
+            status: 'claimed',
+            timestamp: timestamp,
+            chain: chain || '',
+            claim_proof_status_int: 0,
+            claimed_upokt: '',
+            num_claimed_compute_units: 0,
+            num_estimated_compute_units: 0,
+            num_relays: 0
+          };
+          
+          let msgIndex = -1;
+          
+          // Parse attributes from event
+          for (const attr of attributes) {
+            if (!attr.key || !attr.value) continue;
+            
+            switch (attr.key) {
+              case 'supplier_operator_address':
+                claim.supplier_operator_address = attr.value.replace(/"/g, '');
+                break;
+              case 'application_address':
+                claim.application_address = attr.value.replace(/"/g, '');
+                break;
+              case 'service_id':
+                claim.service_id = attr.value.replace(/"/g, '');
+                break;
+              case 'session_end_block_height':
+                claim.session_end_block_height = attr.value.replace(/"/g, '');
+                break;
+              case 'msg_index':
+                msgIndex = parseInt(attr.value) || -1;
+                break;
+              case 'claim_proof_status_int':
+                claim.claim_proof_status_int = parseInt(attr.value) || 0;
+                break;
+              case 'claimed_upokt':
+                // Handle both formats: "1332061upokt" or {"denom":"upokt","amount":"1332061"}
+                let claimedValue = attr.value.replace(/"/g, '');
+                try {
+                  // Try to parse as JSON first
+                  const parsed = JSON.parse(attr.value);
+                  if (parsed.amount && parsed.denom) {
+                    claimedValue = parsed.amount + parsed.denom;
+                  }
+                } catch (e) {
+                  // Not JSON, use as is
+                }
+                claim.claimed_upokt = claimedValue;
+                break;
+              case 'num_claimed_compute_units':
+                claim.num_claimed_compute_units = parseInt(attr.value.replace(/"/g, '')) || 0;
+                break;
+              case 'num_estimated_compute_units':
+                claim.num_estimated_compute_units = parseInt(attr.value.replace(/"/g, '')) || 0;
+                break;
+              case 'num_relays':
+                claim.num_relays = parseInt(attr.value.replace(/"/g, '')) || 0;
+                break;
+            }
+          }
+          
+          // Get additional data from the corresponding message (root_hash, session_id, session_start_block_height)
+          if (msgIndex >= 0 && messages[msgIndex]) {
+            const msg = messages[msgIndex];
+            const msgType = normalizePocketMsgType(typeof msg?.['@type'] === 'string' ? msg['@type'] : '');
+            
+            if (msgType === 'pocket.proof.MsgCreateClaim') {
+              // Extract root_hash from message
+              if (msg.root_hash) {
+                claim.root_hash = msg.root_hash;
+              }
+              
+              // Extract session_header data from message
+              const sessionHeader = msg.session_header || {};
+              if (sessionHeader.session_id && !claim.session_id) {
+                claim.session_id = sessionHeader.session_id;
+              }
+              if (sessionHeader.session_start_block_height && !claim.session_start_block_height) {
+                claim.session_start_block_height = String(sessionHeader.session_start_block_height);
+              }
+              if (sessionHeader.session_end_block_height && !claim.session_end_block_height) {
+                claim.session_end_block_height = String(sessionHeader.session_end_block_height);
+              }
+              if (sessionHeader.service_id && !claim.service_id) {
+                claim.service_id = sessionHeader.service_id;
+              }
+              if (sessionHeader.application_address && !claim.application_address) {
+                claim.application_address = sessionHeader.application_address;
+              }
+              
+              // Use supplier_operator_address from message if not in event
+              if (!claim.supplier_operator_address && msg.supplier_operator_address) {
+                claim.supplier_operator_address = msg.supplier_operator_address;
+              }
+            }
+          }
+          
+          // Only add claim if we have required fields
+          if (claim.supplier_operator_address && claim.session_id && claim.service_id && claim.application_address) {
+            claims.push(claim);
+          }
+        } catch (eventError) {
+          // Skip invalid events
+          console.log('[parseClaims] Error parsing event:', eventError);
+        }
+      }
+    }
+    
+    return claims;
+  } catch (error) {
+    console.log('[parseClaims] Error:', error);
+    return [];
+  }
 }
 
 // Proof Submissions - parse proof submission events from transaction events
