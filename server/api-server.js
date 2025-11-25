@@ -2791,6 +2791,135 @@ app.get('/api/v1/validators/:operator_address/performance', async (req, res) => 
   }
 });
 
+// POST /api/v1/validators/performance - support for multiple operator addresses
+app.post('/api/v1/validators/performance', async (req, res) => {
+  try {
+    const { operator_addresses, chain, service_id, start_date, end_date, group_by = 'day', page = 1, limit = 100 } = req.body;
+    
+    // Validate input
+    if (!operator_addresses || !Array.isArray(operator_addresses) || operator_addresses.length === 0) {
+      return res.status(400).json({ error: 'operator_addresses must be a non-empty array' });
+    }
+    
+    console.log(`POST /api/v1/validators/performance - Processing request with ${operator_addresses.length} operator addresses`);
+    
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    if (!client) {
+      console.error('Database client is null');
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+
+    const conditions = ["ps.claim_proof_status_int = 0"];
+    const values = [];
+    let idx = 1;
+    
+    // Handle operator addresses - use ANY(array) for multiple, equality for single
+    if (operator_addresses.length === 1) {
+      conditions.push(`ps.supplier_operator_address = $${idx++}`);
+      values.push(operator_addresses[0]);
+    } else {
+      conditions.push(`ps.supplier_operator_address = ANY($${idx++}::text[])`);
+      values.push(operator_addresses);
+    }
+    
+    if (chain) { 
+      conditions.push(`ps.chain = $${idx++}`); 
+      values.push(chain); 
+    }
+    if (service_id) { 
+      conditions.push(`ps.service_id = $${idx++}`); 
+      values.push(service_id); 
+    }
+    if (start_date) { 
+      conditions.push(`ps.timestamp >= $${idx++}::timestamp`); 
+      values.push(start_date); 
+    }
+    if (end_date) { 
+      conditions.push(`ps.timestamp <= $${idx++}::timestamp`); 
+      values.push(end_date); 
+    }
+    
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    let bucketExpr = null;
+    if (group_by === 'hour') bucketExpr = `DATE_TRUNC('hour', ps.timestamp) AS bucket`;
+    else if (group_by === 'total') bucketExpr = `NULL::timestamp AS bucket`;
+    else bucketExpr = `DATE_TRUNC('day', ps.timestamp) AS bucket`;
+
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+
+    const countSql = `
+      SELECT COUNT(*) AS total FROM (
+        SELECT ${bucketExpr.replace(' AS bucket', '')} AS bucket_key
+        FROM proof_submissions ps
+        ${where}
+        GROUP BY bucket_key, ps.supplier_operator_address
+      ) t`;
+    const countRes = await client.query(countSql, values);
+    const total = parseInt(countRes.rows?.[0]?.total || '0', 10);
+
+    const listSql = `
+      SELECT 
+        ${bucketExpr},
+        ps.supplier_operator_address,
+        COALESCE(COUNT(*)::BIGINT, 0) AS submissions,
+        COALESCE(SUM(ps.num_relays)::BIGINT, 0) AS total_relays,
+        COALESCE(SUM(ps.num_claimed_compute_units)::BIGINT, 0) AS total_claimed_compute_units,
+        COALESCE(SUM(ps.num_estimated_compute_units)::BIGINT, 0) AS total_estimated_compute_units,
+        ROUND(AVG(ps.compute_unit_efficiency)::numeric, 2) AS avg_efficiency_percent,
+        ROUND(AVG(ps.reward_per_relay)::numeric, 2) AS avg_reward_per_relay,
+        COUNT(DISTINCT ps.application_address) AS unique_applications,
+        COUNT(DISTINCT ps.service_id) AS unique_services
+      FROM proof_submissions ps
+      ${where}
+      GROUP BY bucket, ps.supplier_operator_address
+      ORDER BY bucket DESC NULLS LAST
+      LIMIT $${idx} OFFSET $${idx + 1}`;
+
+    const listRes = await client.query(listSql, [...values, limitNum, offset]);
+
+    // Fetch metadata for all specified validators
+    let metaSql = `SELECT operator_address, chain, moniker, website, website_domain, status, jailed, tokens FROM validators WHERE operator_address = ANY($1::text[])`;
+    const metaValues = [operator_addresses];
+    if (chain) {
+      metaSql += ` AND chain = $2`;
+      metaValues.push(chain);
+    }
+    const metaRes = await client.query(metaSql, metaValues);
+    
+    // Create a map of operator_address -> validator metadata for easy lookup
+    const validatorsMap = {};
+    metaRes.rows.forEach(row => {
+      validatorsMap[row.operator_address] = row;
+    });
+    
+    // Return validators as an array, maintaining order from request
+    const validators = operator_addresses.map(addr => validatorsMap[addr] || null).filter(v => v !== null);
+
+    res.json({
+      data: listRes.rows,
+      validators: validators,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching validator performance (POST):', error);
+    console.error('Error stack:', error.stack);
+    
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message || 'Internal server error' });
+    }
+  }
+});
+
 // GET /api/v1/validators/domains - leaderboard by domain
 app.get('/api/v1/validators/domains', async (req, res) => {
   try {

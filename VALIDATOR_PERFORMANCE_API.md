@@ -212,6 +212,169 @@ GET /api/v1/validators/poktvaloper1zppmwrdgvywrc66nn2u40ad90na9983fu9yh55/perfor
 
 ---
 
+### 2b. Validator Detail Performance (POST - Multiple Validators)
+
+**POST** `/api/v1/validators/performance`
+
+Retrieve detailed performance metrics for multiple validator operator addresses. This endpoint is useful when you need to fetch performance data for multiple validators in a single request, avoiding URL length limitations.
+
+#### Request Body Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `operator_addresses` | array of strings | Yes | - | Array of validator operator addresses (poktvaloper...) |
+| `chain` | string | No | - | Filter by blockchain chain identifier |
+| `service_id` | string | No | - | Filter by service ID |
+| `start_date` | ISO 8601 | No | - | Start timestamp (e.g., "2025-10-01T00:00:00Z") |
+| `end_date` | ISO 8601 | No | - | End timestamp (e.g., "2025-10-31T23:59:59Z") |
+| `group_by` | enum | No | "day" | Grouping: "day", "hour", or "total" |
+| `page` | integer | No | 1 | Page number for pagination |
+| `limit` | integer | No | 100 | Results per page |
+
+#### Response Schema
+
+```typescript
+interface ValidatorDetailPostResponse {
+  data: ValidatorPerformanceRow[];
+  validators: ValidatorMetadata[];  // Array of validator metadata
+  meta: PaginationMeta;
+}
+
+interface ValidatorPerformanceRow {
+  bucket: string | null;                    // ISO timestamp for day/hour, null for total
+  supplier_operator_address: string;         // poktvaloper... address
+  submissions: number;                       // Number of proof submissions
+  total_relays: number;                      // Total relays processed
+  total_claimed_compute_units: number;       // Total claimed compute units
+  total_estimated_compute_units: number;     // Total estimated compute units
+  avg_efficiency_percent: number | null;    // Average efficiency percentage
+  avg_reward_per_relay: number | null;       // Average reward per relay (upokt)
+  unique_applications: number;               // Count of distinct applications served
+  unique_services: number;                   // Count of distinct services
+}
+
+interface ValidatorMetadata {
+  operator_address: string;
+  moniker: string | null;
+  website: string | null;
+  website_domain: string | null;
+  status: string | null;
+  jailed: boolean | null;
+  tokens: string | null;                    // Staked tokens amount
+}
+```
+
+**Note:** The `validators` array contains metadata for all validators found in the database that match the provided `operator_addresses`. Validators not found in the database will be excluded from the array.
+
+#### Example Request
+
+```bash
+POST /api/v1/validators/performance
+Content-Type: application/json
+
+{
+  "operator_addresses": [
+    "poktvaloper1zppmwrdgvywrc66nn2u40ad90na9983fu9yh55",
+    "poktvaloper1abc123def456ghi789jkl012mno345pqr678stu"
+  ],
+  "chain": "mainnet",
+  "group_by": "day",
+  "start_date": "2025-10-01T00:00:00Z",
+  "end_date": "2025-10-31T23:59:59Z",
+  "limit": 100
+}
+```
+
+#### Example Response
+
+```json
+{
+  "data": [
+    {
+      "bucket": "2025-10-15T00:00:00Z",
+      "supplier_operator_address": "poktvaloper1zppmwrdgvywrc66nn2u40ad90na9983fu9yh55",
+      "submissions": 245,
+      "total_relays": 1250000,
+      "total_claimed_compute_units": 125000000,
+      "total_estimated_compute_units": 125000000,
+      "avg_efficiency_percent": 100.00,
+      "avg_reward_per_relay": 166.67,
+      "unique_applications": 15,
+      "unique_services": 8
+    },
+    {
+      "bucket": "2025-10-15T00:00:00Z",
+      "supplier_operator_address": "poktvaloper1abc123def456ghi789jkl012mno345pqr678stu",
+      "submissions": 180,
+      "total_relays": 900000,
+      "total_claimed_compute_units": 90000000,
+      "total_estimated_compute_units": 95000000,
+      "avg_efficiency_percent": 94.74,
+      "avg_reward_per_relay": 155.56,
+      "unique_applications": 12,
+      "unique_services": 6
+    }
+  ],
+  "validators": [
+    {
+      "operator_address": "poktvaloper1zppmwrdgvywrc66nn2u40ad90na9983fu9yh55",
+      "moniker": "PNF-05",
+      "website": "https://stakenodes.org",
+      "website_domain": "stakenodes.org",
+      "status": "BOND_STATUS_BONDED",
+      "jailed": false,
+      "tokens": "1200049994786"
+    },
+    {
+      "operator_address": "poktvaloper1abc123def456ghi789jkl012mno345pqr678stu",
+      "moniker": "Validator-02",
+      "website": "https://example.com",
+      "website_domain": "example.com",
+      "status": "BOND_STATUS_BONDED",
+      "jailed": false,
+      "tokens": "850000000000"
+    }
+  ],
+  "meta": {
+    "total": 60,
+    "page": 1,
+    "limit": 100,
+    "totalPages": 1
+  }
+}
+```
+
+#### Curl Example
+
+```bash
+curl -X POST "http://localhost:3006/api/v1/validators/performance" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "operator_addresses": [
+      "poktvaloper1zppmwrdgvywrc66nn2u40ad90na9983fu9yh55",
+      "poktvaloper1abc123def456ghi789jkl012mno345pqr678stu"
+    ],
+    "chain": "mainnet",
+    "group_by": "day",
+    "start_date": "2025-10-01T00:00:00Z",
+    "end_date": "2025-10-31T23:59:59Z"
+  }'
+```
+
+#### When to Use POST vs GET
+
+- **Use GET** `/api/v1/validators/:operator_address/performance` when:
+  - You need performance data for a single validator
+  - You want a simpler request (no request body needed)
+  - The validator address fits comfortably in the URL
+
+- **Use POST** `/api/v1/validators/performance` when:
+  - You need performance data for multiple validators (2+)
+  - You want to avoid URL length limitations
+  - You're building a comparison view or batch processing
+
+---
+
 ### 3. Domain Leaderboard
 
 **GET** `/api/v1/validators/domains`
@@ -400,7 +563,7 @@ const domainOptions = domains.map(d => ({
 For a validator detail page:
 
 ```typescript
-// Fetch validator detail with hourly breakdown
+// Fetch validator detail with hourly breakdown (single validator)
 const operatorAddress = 'poktvaloper1...';
 const response = await fetch(
   `/api/v1/validators/${operatorAddress}/performance?` +
@@ -408,6 +571,41 @@ const response = await fetch(
   `start_date=${startDate.toISOString()}`
 );
 const { data, validator, meta } = await response.json();
+```
+
+### 4b. Multiple Validator Comparison
+
+For comparing multiple validators:
+
+```typescript
+// Fetch performance for multiple validators using POST
+const operatorAddresses = [
+  'poktvaloper1zppmwrdgvywrc66nn2u40ad90na9983fu9yh55',
+  'poktvaloper1abc123def456ghi789jkl012mno345pqr678stu'
+];
+
+const response = await fetch('/api/v1/validators/performance', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    operator_addresses: operatorAddresses,
+    chain: 'mainnet',
+    group_by: 'day',
+    start_date: startDate.toISOString(),
+    end_date: endDate.toISOString()
+  })
+});
+
+const { data, validators, meta } = await response.json();
+
+// Group data by validator for comparison
+const byValidator = data.reduce((acc, row) => {
+  if (!acc[row.supplier_operator_address]) {
+    acc[row.supplier_operator_address] = [];
+  }
+  acc[row.supplier_operator_address].push(row);
+  return acc;
+}, {});
 ```
 
 ---
@@ -669,6 +867,25 @@ export interface ValidatorDetailResponse extends ValidatorPerformanceResponse {
   } | null;
 }
 
+export interface ValidatorDetailPostResponse {
+  data: ValidatorPerformanceRow[];
+  validators: {
+    operator_address: string;
+    moniker: string | null;
+    website: string | null;
+    website_domain: string | null;
+    status: string | null;
+    jailed: boolean | null;
+    tokens: string | null;
+  }[];
+  meta: {
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  };
+}
+
 export interface DomainPerformanceRow {
   domain: string | null;
   validator_count: number;
@@ -863,15 +1080,41 @@ const chartData = data.map(row => ({
 For comparing multiple validators or domains:
 
 ```typescript
-// Compare selected validators
+// Compare selected validators using POST endpoint (recommended)
+const selectedValidators = ['addr1', 'addr2', 'addr3'];
+const response = await fetch('/api/v1/validators/performance', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    operator_addresses: selectedValidators,
+    group_by: 'day',
+    start_date: startDate.toISOString(),
+    end_date: endDate.toISOString()
+  })
+});
+const { data, validators } = await response.json();
+
+// Group by validator for comparison
+const byValidator = data.reduce((acc, row) => {
+  if (!acc[row.supplier_operator_address]) {
+    acc[row.supplier_operator_address] = [];
+  }
+  acc[row.supplier_operator_address].push(row);
+  return acc;
+}, {});
+
+// Render side-by-side charts or table
+```
+
+**Alternative**: Use multiple GET requests (less efficient):
+```typescript
+// Compare selected validators (alternative - less efficient)
 const selectedValidators = ['addr1', 'addr2', 'addr3'];
 const comparisonData = await Promise.all(
   selectedValidators.map(addr =>
     fetch(`/api/v1/validators/${addr}/performance?group_by=day`)
   )
 );
-
-// Render side-by-side charts or table
 ```
 
 ### 4. Summary Cards/KPIs
