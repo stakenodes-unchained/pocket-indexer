@@ -8,6 +8,7 @@ const os = require('os');
 const transactionService = require('./services/transactionService');
 const metricsCollector = require('./services/metricsCollector');
 const performanceService = require('./services/performanceService');
+const RewardAnalyticsRefreshService = require('./services/rewardAnalyticsRefreshService');
 const redis = require('./config/redis');
 
 // Load environment variables
@@ -15,6 +16,9 @@ dotenv.config();
 
 const PORT = process.env.PORT || 3006;
 const NUM_WORKERS = process.env.CLUSTER_WORKERS || os.cpus().length;
+
+// Initialize reward analytics refresh service (only in first worker to avoid duplicate refreshes)
+let rewardAnalyticsRefreshService = null;
 
 // Simple Redis cache middleware for GET requests
 const cacheMiddleware = (ttl = 60) => {
@@ -55,6 +59,51 @@ const cacheMiddleware = (ttl = 60) => {
     } catch (err) {
       // If Redis fails, continue without cache
       console.error('Cache middleware error:', err);
+      next();
+    }
+  };
+};
+
+// Cache middleware for POST requests (specifically for reward analytics)
+const postCacheMiddleware = (ttl = 120) => {
+  return async (req, res, next) => {
+    // Only cache POST requests
+    if (req.method !== 'POST') {
+      return next();
+    }
+    
+    // Only cache specific endpoints
+    if (!req.path.includes('/api/v1/proof-submissions/rewards')) {
+      return next();
+    }
+    
+    try {
+      // Create cache key from path and request body (sorted for consistency)
+      const bodyKey = req.body ? JSON.stringify(req.body, Object.keys(req.body).sort()) : '{}';
+      const cacheKey = `api:${req.method}:${req.path}:${bodyKey}`;
+      
+      // Try to get from cache
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        res.set('X-Cache', 'HIT');
+        return res.json(JSON.parse(cached));
+      }
+      
+      // Store original json method
+      const originalJson = res.json.bind(res);
+      res.json = function(data) {
+        // Cache the response
+        redis.set(cacheKey, JSON.stringify(data), 'EX', ttl).catch(err => {
+          console.error('Redis cache set error:', err);
+        });
+        res.set('X-Cache', 'MISS');
+        return originalJson(data);
+      };
+      
+      next();
+    } catch (err) {
+      // If Redis fails, continue without cache
+      console.error('POST cache middleware error:', err);
       next();
     }
   };
@@ -1578,8 +1627,8 @@ async function getRewardAnalytics(params, client) {
   const limitNum = parseInt(limit, 10);
   const offset = (pageNum - 1) * limitNum;
   
-  // Get total count
-  const countSql = `SELECT COUNT(*) AS total FROM proof_submission_rewards ${where}`;
+  // Get total count - query materialized view directly for better performance
+  const countSql = `SELECT COUNT(*) AS total FROM proof_submission_rewards_mv ${where}`;
   
   let countRes;
   try {
@@ -1593,8 +1642,8 @@ async function getRewardAnalytics(params, client) {
   
   const total = parseInt(countRes.rows[0]?.total || 0, 10);
   
-  // Get paginated results
-  const listSql = `SELECT * FROM proof_submission_rewards ${where}
+  // Get paginated results - query materialized view directly for better performance
+  const listSql = `SELECT * FROM proof_submission_rewards_mv ${where}
     ORDER BY hour_bucket DESC
     LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
   
@@ -1647,7 +1696,8 @@ app.get('/api/v1/proof-submissions/rewards', async (req, res) => {
 });
 
 // POST endpoint for reward analytics with support for multiple supplier addresses
-app.post('/api/v1/proof-submissions/rewards', async (req, res) => {
+// Apply POST cache middleware with 2 minute TTL (data refreshes every 15 minutes)
+app.post('/api/v1/proof-submissions/rewards', postCacheMiddleware(120), async (req, res) => {
   try {
     console.log('POST /api/v1/proof-submissions/rewards - Request received');
     console.log('Request body:', JSON.stringify(req.body, null, 2));
@@ -1697,6 +1747,59 @@ app.post('/api/v1/proof-submissions/rewards', async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: error.message || 'Internal server error' });
     }
+  }
+});
+
+// Get reward analytics refresh service status
+app.get('/api/v1/proof-submissions/rewards/refresh/status', async (req, res) => {
+  try {
+    if (!rewardAnalyticsRefreshService) {
+      return res.status(503).json({ 
+        error: 'Refresh service not initialized',
+        message: 'The reward analytics refresh service is not running on this worker'
+      });
+    }
+    
+    const status = rewardAnalyticsRefreshService.getStatus();
+    res.json(status);
+  } catch (error) {
+    console.error('Error fetching refresh status:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Manual refresh endpoint for admin use
+app.post('/api/v1/proof-submissions/rewards/refresh', async (req, res) => {
+  try {
+    if (!rewardAnalyticsRefreshService) {
+      return res.status(503).json({ 
+        error: 'Refresh service not initialized',
+        message: 'The reward analytics refresh service is not running on this worker'
+      });
+    }
+    
+    console.log('Manual refresh requested for proof_submission_rewards_mv');
+    const result = await rewardAnalyticsRefreshService.refresh();
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: 'Materialized view refreshed successfully',
+        duration: result.duration,
+        timestamp: result.timestamp,
+        fallback: result.fallback || false
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error,
+        message: 'Refresh failed',
+        duration: result.duration
+      });
+    }
+  } catch (error) {
+    console.error('Error during manual refresh:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -2941,6 +3044,18 @@ const startServer = async () => {
     console.log(`🔗 Database Pool: ${process.env.DB_POOL_SIZE || '20'} max connections`);
     console.log('='.repeat(80));
     
+    // Initialize reward analytics refresh service (only in first worker to avoid duplicate refreshes)
+    // In cluster mode, only worker 1 should run the refresh service
+    if ((!cluster.worker || cluster.worker.id === 1) && !rewardAnalyticsRefreshService) {
+      rewardAnalyticsRefreshService = new RewardAnalyticsRefreshService({
+        refreshIntervalMs: parseInt(process.env.REWARD_ANALYTICS_REFRESH_INTERVAL_MS || '900000', 10) // 15 minutes default
+      });
+      rewardAnalyticsRefreshService.start();
+      console.log('✅ Reward analytics refresh service started');
+    } else if (cluster.worker && cluster.worker.id !== 1) {
+      console.log('⏭️  Skipping reward analytics refresh service (running on worker 1 only)');
+    }
+    
     // Start the HTTP server
     app.listen(PORT, () => {
       console.log(`🌐 Worker ${cluster.worker.id} API server running on http://localhost:${PORT}`);
@@ -2957,6 +3072,10 @@ const startServer = async () => {
       console.log(`📅 Shutdown Time: ${new Date().toISOString()}`);
       console.log(`⏱️  Uptime: ${Math.round(process.uptime())} seconds`);
       console.log('='.repeat(80));
+      // Stop refresh service gracefully
+      if (rewardAnalyticsRefreshService) {
+        await rewardAnalyticsRefreshService.stop();
+      }
       // Close database pool gracefully
       await transactionService.pgPool.end();
       console.log('👋 Worker shutdown complete');
@@ -2969,6 +3088,10 @@ const startServer = async () => {
       console.log(`📅 Shutdown Time: ${new Date().toISOString()}`);
       console.log(`⏱️  Uptime: ${Math.round(process.uptime())} seconds`);
       console.log('='.repeat(80));
+      // Stop refresh service gracefully
+      if (rewardAnalyticsRefreshService) {
+        await rewardAnalyticsRefreshService.stop();
+      }
       // Close database pool gracefully
       await transactionService.pgPool.end();
       console.log('👋 Worker shutdown complete');

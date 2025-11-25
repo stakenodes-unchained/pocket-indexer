@@ -49,3 +49,5 @@ COMMENT ON COLUMN claims.num_claimed_compute_units IS 'Number of compute units c
 COMMENT ON COLUMN claims.num_estimated_compute_units IS 'Number of estimated compute units';
 COMMENT ON COLUMN claims.num_relays IS 'Number of relays in the claim';
 
+
+
