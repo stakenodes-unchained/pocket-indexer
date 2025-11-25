@@ -1576,12 +1576,32 @@ app.post('/api/v1/proof-submissions', async (req, res) => {
 });
 
 // Shared function for reward analytics queries
+// Aggregates rewards by service across the time period (not by hour or supplier)
 async function getRewardAnalytics(params, client) {
-  const { supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = params;
+  const { supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, days, page = 1, limit = 100 } = params;
   
   const conditions = [];
   const values = [];
   let idx = 1;
+  
+  // Handle time range: either use days parameter or start_date/end_date
+  if (days) {
+    const daysNum = parseInt(days, 10);
+    if (daysNum > 0) {
+      // Use parameterized query for safety
+      conditions.push(`hour_bucket >= NOW() - INTERVAL '1 day' * $${idx++}::integer`);
+      values.push(daysNum);
+    }
+  } else {
+    if (start_date) {
+      conditions.push(`hour_bucket >= $${idx++}::timestamp`);
+      values.push(start_date);
+    }
+    if (end_date) {
+      conditions.push(`hour_bucket <= $${idx++}::timestamp`);
+      values.push(end_date);
+    }
+  }
   
   if (chain) {
     conditions.push(`chain = $${idx++}`);
@@ -1589,7 +1609,7 @@ async function getRewardAnalytics(params, client) {
   }
   
   // Handle single supplier_address or array of supplier_addresses
-  // Use ANY(array) syntax for large arrays as it's more efficient than IN with many parameters
+  // These are used for filtering but we still aggregate by service
   if (supplier_addresses && Array.isArray(supplier_addresses) && supplier_addresses.length > 0) {
     if (supplier_addresses.length === 1) {
       // Single address - use equality for better index usage
@@ -1613,22 +1633,48 @@ async function getRewardAnalytics(params, client) {
     conditions.push(`service_id = $${idx++}`);
     values.push(service_id);
   }
-  if (start_date) {
-    conditions.push(`hour_bucket >= $${idx++}::timestamp`);
-    values.push(start_date);
-  }
-  if (end_date) {
-    conditions.push(`hour_bucket <= $${idx++}::timestamp`);
-    values.push(end_date);
-  }
   
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const pageNum = parseInt(page, 10);
   const limitNum = parseInt(limit, 10);
   const offset = (pageNum - 1) * limitNum;
   
-  // Get total count - query materialized view directly for better performance
-  const countSql = `SELECT COUNT(*) AS total FROM proof_submission_rewards_mv ${where}`;
+  // Aggregate by service_id and chain, summing across all hours in the time period
+  // This gives us total rewards per service, not per hour or per supplier
+  const aggregationSql = `
+    SELECT 
+      service_id,
+      chain,
+      SUM(submission_count) as total_submissions,
+      SUM(total_rewards_upokt) as total_rewards_upokt,
+      SUM(total_relays) as total_relays,
+      SUM(total_claimed_compute_units) as total_claimed_compute_units,
+      SUM(total_estimated_compute_units) as total_estimated_compute_units,
+      -- Calculate weighted average efficiency: total_claimed / total_estimated * 100
+      CASE 
+        WHEN SUM(total_estimated_compute_units) > 0 THEN
+          ROUND((SUM(total_claimed_compute_units)::NUMERIC / SUM(total_estimated_compute_units)::NUMERIC) * 100, 2)
+        ELSE 0
+      END as avg_efficiency_percent,
+      -- Calculate average reward per relay: total_rewards / total_relays
+      CASE 
+        WHEN SUM(total_relays) > 0 THEN
+          ROUND(SUM(total_rewards_upokt)::NUMERIC / SUM(total_relays)::NUMERIC, 2)
+        ELSE 0
+      END as avg_reward_per_relay,
+      MAX(max_reward_per_submission) as max_reward_per_submission,
+      MIN(min_reward_per_submission) as min_reward_per_submission
+    FROM proof_submission_rewards_mv
+    ${where}
+    GROUP BY service_id, chain
+  `;
+  
+  // Get total count of unique services
+  const countSql = `
+    SELECT COUNT(DISTINCT (service_id, chain)) AS total 
+    FROM proof_submission_rewards_mv
+    ${where}
+  `;
   
   let countRes;
   try {
@@ -1642,10 +1688,12 @@ async function getRewardAnalytics(params, client) {
   
   const total = parseInt(countRes.rows[0]?.total || 0, 10);
   
-  // Get paginated results - query materialized view directly for better performance
-  const listSql = `SELECT * FROM proof_submission_rewards_mv ${where}
-    ORDER BY hour_bucket DESC
-    LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
+  // Get paginated results - aggregated by service, sorted by total rewards
+  const listSql = `
+    ${aggregationSql}
+    ORDER BY total_rewards_upokt DESC
+    LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
+  `;
   
   let listRes;
   try {
@@ -1670,10 +1718,10 @@ async function getRewardAnalytics(params, client) {
   return result;
 }
 
-// Get reward analytics aggregated view (hourly)
+// Get reward analytics aggregated by service (across time period)
 app.get('/api/v1/proof-submissions/rewards', async (req, res) => {
   try {
-    const { supplier_address, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.query;
+    const { supplier_address, application_address, service_id, chain, start_date, end_date, days, page = 1, limit = 100 } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
@@ -1684,6 +1732,7 @@ app.get('/api/v1/proof-submissions/rewards', async (req, res) => {
       chain,
       start_date,
       end_date,
+      days,
       page,
       limit
     }, client);
@@ -1702,7 +1751,7 @@ app.post('/api/v1/proof-submissions/rewards', postCacheMiddleware(120), async (r
     console.log('POST /api/v1/proof-submissions/rewards - Request received');
     console.log('Request body:', JSON.stringify(req.body, null, 2));
     
-    const { supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.body;
+    const { supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, days, page = 1, limit = 100 } = req.body;
     
     // Validate input
     if (supplier_addresses && !Array.isArray(supplier_addresses)) {
@@ -1728,6 +1777,7 @@ app.post('/api/v1/proof-submissions/rewards', postCacheMiddleware(120), async (r
       chain,
       start_date,
       end_date,
+      days,
       page,
       limit
     }, client);

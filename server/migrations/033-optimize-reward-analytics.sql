@@ -27,7 +27,11 @@ WHERE claim_proof_status_int = 0  -- Only successful submissions
 GROUP BY supplier_operator_address, application_address, service_id, hour_bucket, chain;
 
 -- Create indexes on the materialized view for optimal query performance
--- Primary index for ORDER BY hour_bucket DESC (most common query pattern)
+-- Primary index for ORDER BY total_rewards_upokt DESC (reward amount sorting)
+CREATE INDEX IF NOT EXISTS idx_proof_submission_rewards_mv_rewards_desc 
+ON proof_submission_rewards_mv(total_rewards_upokt DESC);
+
+-- Index for ORDER BY hour_bucket DESC (for time-based queries)
 CREATE INDEX IF NOT EXISTS idx_proof_submission_rewards_mv_hour_bucket 
 ON proof_submission_rewards_mv(hour_bucket DESC);
 
@@ -67,7 +71,7 @@ ON proof_submission_rewards_mv(supplier_operator_address, application_address, s
 -- Recreate the regular view pointing to the materialized view for backward compatibility
 CREATE VIEW proof_submission_rewards AS
 SELECT * FROM proof_submission_rewards_mv
-ORDER BY hour_bucket DESC, total_rewards_upokt DESC;
+ORDER BY total_rewards_upokt DESC;
 
 -- Add comments for documentation
 COMMENT ON MATERIALIZED VIEW proof_submission_rewards_mv IS 'Materialized view for hourly aggregated reward and performance metrics for proof submissions. Refreshed every 15 minutes for optimal performance.';
