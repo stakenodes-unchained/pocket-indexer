@@ -6,7 +6,7 @@
 DROP VIEW IF EXISTS proof_submission_rewards;
 
 -- Create materialized view with the same structure as the original view
-CREATE MATERIALIZED VIEW proof_submission_rewards_mv AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proof_submission_rewards_mv AS
 SELECT 
   supplier_operator_address,
   application_address,
