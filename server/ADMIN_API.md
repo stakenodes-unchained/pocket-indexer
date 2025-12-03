@@ -1194,6 +1194,3 @@ Each endpoint includes:
 - Status codes
 - Frontend integration examples
 - UI considerations
-
-Use this documentation to build a comprehensive admin panel for monitoring and managing the Pocket Network Indexer.
-

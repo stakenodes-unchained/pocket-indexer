@@ -2,11 +2,9 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const path = require('path');
 const cluster = require('cluster');
 const os = require('os');
 const transactionService = require('./services/transactionService');
-const metricsCollector = require('./services/metricsCollector');
 const performanceService = require('./services/performanceService');
 const RewardAnalyticsRefreshService = require('./services/rewardAnalyticsRefreshService');
 const redis = require('./config/redis');
@@ -173,7 +171,7 @@ app.use((req, res, next) => {
 
 // API endpoints
 // Network growth (apps, services, gateways, suppliers, relays, compute units)
-app.get('/api/v1/network-growth', cacheMiddleware(300), async (req, res) => {
+app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
     await transactionService.connectDB();
@@ -339,7 +337,7 @@ app.get('/api/v1/network-growth', cacheMiddleware(300), async (req, res) => {
 });
 
 // Network growth summary (aggregate over window)
-app.get('/api/v1/network-growth/summary', cacheMiddleware(300), async (req, res) => {
+app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
     await transactionService.connectDB();
@@ -2882,6 +2880,52 @@ app.post('/api/v1/validators/performance', async (req, res) => {
 
     const listRes = await client.query(listSql, [...values, limitNum, offset]);
 
+    // Create a Set of requested addresses for fast lookup (case-insensitive, trimmed)
+    const requestedAddressesSet = new Set(
+      operator_addresses.map(addr => (addr || '').toLowerCase().trim())
+    );
+    
+    // Filter results to only include supplier_operator_addresses that were explicitly requested
+    // This ensures we don't return data for suppliers that weren't in the request
+    // This handles edge cases like case sensitivity, whitespace, or data inconsistencies
+    const filteredRows = listRes.rows.filter(row => {
+      const supplierAddr = (row.supplier_operator_address || '').toLowerCase().trim();
+      return requestedAddressesSet.has(supplierAddr);
+    });
+    
+    // Log if we filtered out any rows (indicates data inconsistency or query issue)
+    if (listRes.rows.length !== filteredRows.length) {
+      const filteredOut = listRes.rows.length - filteredRows.length;
+      const uniqueFilteredOut = new Set(
+        listRes.rows
+          .filter(row => !requestedAddressesSet.has((row.supplier_operator_address || '').toLowerCase().trim()))
+          .map(row => row.supplier_operator_address)
+      );
+      console.warn(
+        `POST /api/v1/validators/performance - Filtered out ${filteredOut} rows ` +
+        `(${uniqueFilteredOut.size} unique supplier addresses not in request):`,
+        Array.from(uniqueFilteredOut).slice(0, 10) // Log first 10 for debugging
+      );
+    }
+    
+    // Recalculate total based on filtered results
+    // Count only the unique combinations (bucket, supplier) that match our requested addresses
+    // Use the same WHERE conditions but add HAVING to ensure we only count requested addresses
+    const countFilteredSql = `
+      SELECT COUNT(*) AS total FROM (
+        SELECT ${bucketExpr.replace(' AS bucket', '')} AS bucket_key, ps.supplier_operator_address
+        FROM proof_submissions ps
+        ${where}
+        GROUP BY bucket_key, ps.supplier_operator_address
+        HAVING LOWER(TRIM(ps.supplier_operator_address)) = ANY($${values.length + 1}::text[])
+      ) t`;
+    const countFilteredValues = [
+      ...values,
+      operator_addresses.map(addr => (addr || '').toLowerCase().trim())
+    ];
+    const countFilteredRes = await client.query(countFilteredSql, countFilteredValues);
+    const filteredTotal = parseInt(countFilteredRes.rows?.[0]?.total || '0', 10);
+
     // Fetch metadata for all specified validators
     let metaSql = `SELECT operator_address, chain, moniker, website, website_domain, status, jailed, tokens FROM validators WHERE operator_address = ANY($1::text[])`;
     const metaValues = [operator_addresses];
@@ -2901,13 +2945,13 @@ app.post('/api/v1/validators/performance', async (req, res) => {
     const validators = operator_addresses.map(addr => validatorsMap[addr] || null).filter(v => v !== null);
 
     res.json({
-      data: listRes.rows,
+      data: filteredRows,
       validators: validators,
       meta: {
-        total,
+        total: filteredTotal,
         page: pageNum,
         limit: limitNum,
-        totalPages: Math.ceil(total / limitNum)
+        totalPages: Math.ceil(filteredTotal / limitNum)
       }
     });
   } catch (error) {
