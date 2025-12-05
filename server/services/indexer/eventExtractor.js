@@ -1,0 +1,119 @@
+/**
+ * Event Extractor
+ * Extracts events from block data (both transaction events and block-level events)
+ */
+
+/**
+ * Extract all events from a block
+ * @param {Object} blockData - The block data from RPC
+ * @returns {Array} Array of events with metadata
+ */
+function extractEventsFromBlock(blockData) {
+  const events = [];
+  
+  if (!blockData) {
+    return events;
+  }
+
+  const blockHeight = parseInt(blockData.block?.header?.height || blockData.sdk_block?.header?.height || '0', 10);
+  const blockTimestamp = blockData.block?.header?.time || blockData.sdk_block?.header?.time || new Date().toISOString();
+  
+  // Extract transaction events
+  // Events are in block.txs_results[].events or in individual transaction responses
+  const txsResults = blockData.txs_results || [];
+  
+  for (let txIndex = 0; txIndex < txsResults.length; txIndex++) {
+    const txResult = txsResults[txIndex];
+    const txHash = txResult.tx_hash || txResult.hash || null;
+    const txEvents = txResult.events || [];
+    
+    for (let eventIndex = 0; eventIndex < txEvents.length; eventIndex++) {
+      const event = txEvents[eventIndex];
+      events.push({
+        event,
+        metadata: {
+          block_height: blockHeight,
+          block_timestamp: blockTimestamp,
+          transaction_hash: txHash,
+          event_source: 'transaction',
+          event_index: eventIndex,
+          tx_index: txIndex,
+          created_timestamp: new Date().toISOString()
+        }
+      });
+    }
+  }
+  
+  // Extract block-level events (from BeginBlock/EndBlock hooks)
+  // These are in block.finalize_block_events or block.result_begin_block.events / block.result_end_block.events
+  const finalizeBlockEvents = blockData.finalize_block_events || [];
+  const beginBlockEvents = blockData.result_begin_block?.events || [];
+  const endBlockEvents = blockData.result_end_block?.events || [];
+  
+  // Combine all block-level events
+  const allBlockEvents = [...finalizeBlockEvents, ...beginBlockEvents, ...endBlockEvents];
+  
+  for (let eventIndex = 0; eventIndex < allBlockEvents.length; eventIndex++) {
+    const event = allBlockEvents[eventIndex];
+    events.push({
+      event,
+      metadata: {
+        block_height: blockHeight,
+        block_timestamp: blockTimestamp,
+        transaction_hash: null, // Block-level events are not linked to transactions
+        event_source: 'block',
+        event_index: eventIndex,
+        tx_index: null,
+        created_timestamp: new Date().toISOString()
+      }
+    });
+  }
+  
+  return events;
+}
+
+/**
+ * Extract events from transaction data (when processing individual transactions)
+ * @param {Object} txData - Transaction data with tx_response
+ * @param {Object} blockData - Block data for metadata
+ * @returns {Array} Array of events with metadata
+ */
+function extractEventsFromTransaction(txData, blockData) {
+  const events = [];
+  
+  if (!txData) {
+    return events;
+  }
+
+  const blockHeight = parseInt(blockData?.block?.header?.height || blockData?.height || '0', 10);
+  const blockTimestamp = blockData?.block?.header?.time || blockData?.timestamp || new Date().toISOString();
+  
+  // Get events from tx_response
+  const txResponse = txData.tx_response || txData;
+  const txHash = txResponse.txhash || txResponse.hash || txData.hash || null;
+  const txEvents = txResponse.events || [];
+  
+  for (let eventIndex = 0; eventIndex < txEvents.length; eventIndex++) {
+    const event = txEvents[eventIndex];
+    events.push({
+      event,
+      metadata: {
+        block_height: blockHeight,
+        block_timestamp: blockTimestamp,
+        transaction_hash: txHash,
+        event_source: 'transaction',
+        event_index: eventIndex,
+        tx_index: null,
+        created_timestamp: new Date().toISOString()
+      }
+    });
+  }
+  
+  return events;
+}
+
+module.exports = {
+  extractEventsFromBlock,
+  extractEventsFromTransaction
+};
+

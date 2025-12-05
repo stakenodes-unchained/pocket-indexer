@@ -686,6 +686,23 @@ class ProductionDataProcessor {
       const stakingEvents = parseStakingEvents(txData, blockData, tx.chain);
       const relationships = parseRelationships(txData, blockData, tx.chain);
       
+      // Process transaction events (from tx_response.events)
+      // These events complement the message parsing and provide actual outcomes
+      try {
+        const { processTransactionEvents } = require('./services/indexer/eventProcessor');
+        const eventResults = await processTransactionEvents(txData, blockData);
+        if (eventResults.length > 0) {
+          const successCount = eventResults.filter(r => r.success).length;
+          // Log only if there are failures (to reduce noise)
+          if (successCount < eventResults.length) {
+            console.warn(`Transaction ${tx.hash?.substring(0, 16)}... had ${eventResults.length - successCount} failed events`);
+          }
+        }
+      } catch (e) {
+        console.error(`Error processing transaction events:`, e.message);
+        // Don't fail transaction processing if event processing fails
+      }
+      
       // Update statistics (defensive)
       this.stats.entities.applicationEvents += (Array.isArray(applications) ? applications.length : 0);
       this.stats.entities.suppliers += (Array.isArray(suppliers) ? suppliers.length : 0);

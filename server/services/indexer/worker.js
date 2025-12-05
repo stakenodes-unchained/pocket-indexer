@@ -28,6 +28,7 @@ const {
   parseProofSubmissions,
   parseClaims
 } = require('./entityParser.v2');
+const { processBlockEvents, processTransactionEvents } = require('./eventProcessor');
 
 const { rpcName, rpcUrl, batchSize, processType } = workerData;
 
@@ -83,6 +84,28 @@ async function processBlock(blockData) {
         console.log("proofSubmissions", proofSubmissions.length)
         if (Array.isArray(proofSubmissions) && proofSubmissions.length) {
           proofSubmissionsBuffer.push(...proofSubmissions);
+        }
+        
+        // Process transaction events (from tx_response.events)
+        // These events complement the message parsing and provide actual outcomes
+        try {
+          // Create tx data structure for event processing
+          const txData = {
+            tx_response: tx.tx_response || {},
+            hash: tx.hash,
+            tx: tx.tx || {}
+          };
+          const eventResults = await processTransactionEvents(txData, blockData);
+          if (eventResults.length > 0) {
+            const successCount = eventResults.filter(r => r.success).length;
+            // Log only if there are events (to reduce noise)
+            if (eventResults.length > 0 && successCount < eventResults.length) {
+              console.warn(`[Worker ${workerData.id}] Transaction ${tx.hash?.substring(0, 16)}... had ${eventResults.length - successCount} failed events`);
+            }
+          }
+        } catch (e) {
+          console.error(`[Worker ${workerData.id}] Error processing transaction events:`, e.message);
+          // Don't fail transaction processing if event processing fails
         }
 
         // Full parsing for non-claim transactions
@@ -201,6 +224,20 @@ async function processBlock(blockData) {
     } catch (e) {
       console.error(`[Worker ${workerData.id}] Error bulk saving proof submissions:`, e.message);
     }
+    
+    // Process block-level events (from finalize_block_events, BeginBlock/EndBlock hooks)
+    // These events are critical for claim settlements and other automatic operations
+    try {
+      const eventResults = await processBlockEvents(blockData);
+      if (eventResults.length > 0) {
+        const successCount = eventResults.filter(r => r.success).length;
+        console.log(`[Worker ${workerData.id}] Processed ${eventResults.length} block events (${successCount} successful)`);
+      }
+    } catch (e) {
+      console.error(`[Worker ${workerData.id}] Error processing block events:`, e.message);
+      // Don't fail block processing if event processing fails
+    }
+    
     console.log(`[Worker ${workerData.id}] Successfully processed block ${blockData.block?.header?.height || 'unknown'}`);
   } catch (error) {
     console.error(`[Worker ${workerData.id}] Error processing block:`, error);
