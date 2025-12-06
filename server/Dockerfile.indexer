@@ -32,7 +32,7 @@ RUN chown -R node:node .
 USER node
 
 # Expose the port your app runs on
-EXPOSE 3006
+EXPOSE 3007
 
 # Command to run the startup script
 CMD ["./start_indexer_server.sh"]
