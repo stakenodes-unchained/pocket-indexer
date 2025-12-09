@@ -32,6 +32,7 @@ async function handleClaimSettled(event) {
     const client = pgClient;
     
     const {
+      session_id,
       supplier_operator_address,
       application_address,
       service_id,
@@ -45,12 +46,21 @@ async function handleClaimSettled(event) {
       metadata
     } = event;
     
-    const sessionId = createSessionId(
+    // Use actual session_id from event if available (hash-based format from blockchain)
+    // Otherwise construct it (fallback for compatibility)
+    const sessionId = session_id || createSessionId(
       supplier_operator_address,
       application_address,
       service_id,
       session_end_block_height
     );
+    
+    // Log for debugging
+    console.log(`[TokenomicsHandler] Processing EventClaimSettled: session_id=${sessionId || 'CONSTRUCTED'}, supplier=${supplier_operator_address?.substring(0, 20)}..., estimated_cu=${num_estimated_compute_units}`);
+    
+    if (!session_id) {
+      console.warn(`[TokenomicsHandler] EventClaimSettled missing session_id, constructed: ${sessionId}`);
+    }
     
     // Update claim status
     await client.query(`

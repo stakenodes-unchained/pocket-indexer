@@ -53,6 +53,15 @@ function extractEventsFromBlock(blockData) {
   // Combine all block-level events
   const allBlockEvents = [...finalizeBlockEvents, ...beginBlockEvents, ...endBlockEvents];
   
+  // Log block-level events for debugging
+  if (allBlockEvents.length > 0) {
+    console.log(`[EventExtractor] Block ${blockHeight}: Found ${allBlockEvents.length} block-level events`);
+    const eventTypes = allBlockEvents.map(e => e.type || e.event_type || 'unknown').filter(Boolean);
+    if (eventTypes.length > 0) {
+      console.log(`[EventExtractor] Block-level event types:`, [...new Set(eventTypes)].join(', '));
+    }
+  }
+  
   for (let eventIndex = 0; eventIndex < allBlockEvents.length; eventIndex++) {
     const event = allBlockEvents[eventIndex];
     events.push({
@@ -92,6 +101,14 @@ function extractEventsFromTransaction(txData, blockData) {
   const txResponse = txData.tx_response || txData;
   const txHash = txResponse.txhash || txResponse.hash || txData.hash || null;
   const txEvents = txResponse.events || [];
+  
+  // Log EventClaimSettled events in transactions for debugging
+  const claimSettledEvents = txEvents.filter(e => 
+    e.type?.includes('ClaimSettled') || e.type?.includes('claim_settled')
+  );
+  if (claimSettledEvents.length > 0) {
+    console.log(`[EventExtractor] Transaction ${txHash?.substring(0, 16)}... has ${claimSettledEvents.length} EventClaimSettled event(s)`);
+  }
   
   for (let eventIndex = 0; eventIndex < txEvents.length; eventIndex++) {
     const event = txEvents[eventIndex];

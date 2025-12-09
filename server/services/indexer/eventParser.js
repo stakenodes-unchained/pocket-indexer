@@ -60,6 +60,11 @@ function parseTypedEvent(event, metadata) {
   const eventType = event.type;
   const attributes = parseEventAttributes(event.attributes || []);
   
+  // Log EventClaimSettled events for debugging
+  if (eventType.includes('ClaimSettled') || eventType.includes('claim_settled')) {
+    console.log(`[EventParser] Found claim settled event: type=${eventType}, block=${metadata?.block_height}`);
+  }
+  
   // Create base event structure
   const parsedEvent = {
     event_type: eventType,
@@ -200,6 +205,7 @@ function parseClaimSettledEvent(attributes, metadata) {
   
   return {
     event_type: 'EventClaimSettled',
+    session_id: extractString(attributes, 'session_id') || claim.session_id || claim.session_header?.session_id,
     proof_requirement_int: extractNumeric(attributes, 'proof_requirement_int'),
     num_relays: extractNumeric(attributes, 'num_relays'),
     num_claimed_compute_units: extractNumeric(attributes, 'num_claimed_compute_units'),

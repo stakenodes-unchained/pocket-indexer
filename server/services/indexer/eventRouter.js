@@ -26,7 +26,7 @@ async function routeEvent(parsedEvent) {
   
   try {
     // Tokenomics events
-    if (eventType.startsWith('EventClaim') || 
+    if (eventType.includes('EventClaim') || eventType.includes('tokenomics') ||
         eventType === 'EventSupplierSlashed' ||
         eventType === 'EventApplicationOverserviced' ||
         eventType === 'EventApplicationReimbursementRequest') {
