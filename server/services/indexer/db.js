@@ -1299,6 +1299,8 @@ async function upsertGateway(gateway) {
 }
 
 module.exports = {
+  connectClients,
+  pgClient,
   saveBlock,
   saveTransaction,
   getLastProcessedHeight,
