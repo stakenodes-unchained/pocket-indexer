@@ -31,7 +31,6 @@ async function handleApplicationStaked(event) {
         staked_amount = $1,
         stake_denom = $2,
         status = 'staked',
-        is_active = true,
         last_seen = $3
       WHERE 
         address = $4
@@ -216,7 +215,6 @@ async function handleTransferEnd(event) {
           staked_amount = $2,
           stake_denom = $3,
           status = 'staked',
-          is_active = true,
           last_seen = $4
         WHERE 
           address = $1
@@ -417,7 +415,6 @@ async function handleApplicationUnbondingEnd(event) {
     await client.query(`
       UPDATE applications 
       SET 
-        is_active = false,
         status = 'unstaked',
         last_seen = $1
       WHERE 
@@ -488,7 +485,6 @@ async function handleApplicationUnbondingCanceled(event) {
       SET 
         unstake_session_end_height = NULL,
         status = 'staked',
-        is_active = true,
         last_seen = $1
       WHERE 
         address = $2

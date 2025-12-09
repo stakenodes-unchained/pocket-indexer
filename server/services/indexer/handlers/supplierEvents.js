@@ -25,7 +25,6 @@ async function handleSupplierStaked(event) {
     await client.query(`
       UPDATE suppliers 
       SET 
-        is_active = true,
         status = 'staked',
         last_seen = $1
       WHERE 
@@ -162,7 +161,6 @@ async function handleSupplierUnbondingEnd(event) {
     await client.query(`
       UPDATE suppliers 
       SET 
-        is_active = false,
         status = 'unstaked',
         last_seen = $1
       WHERE 
@@ -234,7 +232,6 @@ async function handleSupplierUnbondingCanceled(event) {
       SET 
         unstake_session_end_height = NULL,
         status = 'staked',
-        is_active = true,
         last_seen = $1
       WHERE 
         address = $2

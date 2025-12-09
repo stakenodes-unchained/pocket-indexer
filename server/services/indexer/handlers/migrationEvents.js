@@ -157,7 +157,6 @@ async function handleMorseApplicationClaimed(event) {
           staked_amount = $1,
           stake_denom = $2,
           status = 'staked',
-          is_active = true,
           last_seen = $3
         WHERE 
           address = $4
@@ -234,7 +233,6 @@ async function handleMorseSupplierClaimed(event) {
           SET 
             staked_amount = $1,
             status = 'staked',
-            is_active = true,
             last_seen = $2
           WHERE 
             address = $3

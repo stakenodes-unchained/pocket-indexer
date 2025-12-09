@@ -31,7 +31,6 @@ async function handleGatewayStaked(event) {
         staked_amount = $1,
         stake_denom = $2,
         status = 'staked',
-        is_active = true,
         last_seen = $3
       WHERE 
         address = $4
@@ -167,7 +166,6 @@ async function handleGatewayUnbondingEnd(event) {
     await client.query(`
       UPDATE gateways 
       SET 
-        is_active = false,
         status = 'unstaked',
         last_seen = $1
       WHERE 
@@ -236,7 +234,6 @@ async function handleGatewayUnbondingCanceled(event) {
       SET 
         unstake_session_end_height = NULL,
         status = 'staked',
-        is_active = true,
         last_seen = $1
       WHERE 
         address = $2
