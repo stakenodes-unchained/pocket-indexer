@@ -127,9 +127,21 @@ async function fetchTransactionByHash(txHash, rpcUrl) {
   }
 }
 
+async function fetchBlockResultsByHeight(height, rpcUrl) {
+  try {
+    return await retryRequest(
+      () => fetch(`${rpcUrl}/block_results?height=${height}`),
+      `Fetch block results ${height}`
+    );
+  } catch (error) {
+    throw new Error(`Error fetching block results ${height}: ${error.message}`);
+  }
+}
+
 module.exports = {
   fetchBlockByHeight,
   fetchLatestBlock,
   fetchTransactionByHash,
+  fetchBlockResultsByHeight,
   RPC_RETRY_CONFIG,
 }; 

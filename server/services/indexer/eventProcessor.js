@@ -10,12 +10,13 @@ const { routeEvents } = require('./eventRouter');
 /**
  * Process events from a block
  * @param {Object} blockData - Block data from RPC
+ * @param {Object} blockResultsData - Optional block_results data from Tendermint block_results endpoint
  * @returns {Promise<Array>} Array of processing results
  */
-async function processBlockEvents(blockData) {
+async function processBlockEvents(blockData, blockResultsData = null) {
   try {
     // Extract events from block (both transaction and block-level events)
-    const eventData = extractEventsFromBlock(blockData);
+    const eventData = extractEventsFromBlock(blockData, blockResultsData);
     
     if (eventData.length === 0) {
       return [];

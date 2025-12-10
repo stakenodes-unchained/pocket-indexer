@@ -6,9 +6,10 @@
 /**
  * Extract all events from a block
  * @param {Object} blockData - The block data from RPC
+ * @param {Object} blockResultsData - Optional block_results data from Tendermint block_results endpoint
  * @returns {Array} Array of events with metadata
  */
-function extractEventsFromBlock(blockData) {
+function extractEventsFromBlock(blockData, blockResultsData = null) {
   const events = [];
   
   if (!blockData) {
@@ -45,12 +46,22 @@ function extractEventsFromBlock(blockData) {
   }
   
   // Extract block-level events (from BeginBlock/EndBlock hooks)
-  // These are in block.finalize_block_events or block.result_begin_block.events / block.result_end_block.events
-  const finalizeBlockEvents = blockData.finalize_block_events || [];
+  // These can come from multiple sources:
+  // 1. blockData.finalize_block_events (if present in block data)
+  // 2. blockResultsData.result.finalize_block_events (from block_results API - primary source)
+  // 3. blockData.result_begin_block?.events / blockData.result_end_block?.events (legacy)
+  
+  const finalizeBlockEventsFromBlock = blockData.finalize_block_events || [];
+  const finalizeBlockEventsFromResults = blockResultsData?.result?.finalize_block_events || [];
   const beginBlockEvents = blockData.result_begin_block?.events || [];
   const endBlockEvents = blockData.result_end_block?.events || [];
   
-  // Combine all block-level events
+  // Combine all block-level events, prioritizing block_results API data
+  // Use block_results finalize_block_events if available, otherwise fallback to blockData
+  const finalizeBlockEvents = finalizeBlockEventsFromResults.length > 0 
+    ? finalizeBlockEventsFromResults 
+    : finalizeBlockEventsFromBlock;
+  
   const allBlockEvents = [...finalizeBlockEvents, ...beginBlockEvents, ...endBlockEvents];
   
   // Log block-level events for debugging
