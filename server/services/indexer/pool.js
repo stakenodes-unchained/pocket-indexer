@@ -39,6 +39,7 @@ class TransactionWorkerPool {
           workerData: {
             rpcName: rpc.name,
             rpcUrl: rpc.url,
+            blockResultsRpcUrl: rpc.blockResultsUrl,
             batchSize: this.batchSize,
             id: `${rpc.name}-historical`,
             processType: 'historical'

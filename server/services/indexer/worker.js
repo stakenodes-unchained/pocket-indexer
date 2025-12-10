@@ -30,7 +30,7 @@ const {
 } = require('./entityParser.v2');
 const { processBlockEvents, processTransactionEvents } = require('./eventProcessor');
 
-const { rpcName, rpcUrl, batchSize, processType } = workerData;
+const { rpcName, rpcUrl, batchSize, processType, blockResultsRpcUrl } = workerData;
 
 function log(message) {
   parentPort.postMessage({ type: 'log', data: message });
@@ -235,7 +235,7 @@ async function processBlock(blockData) {
         // Convert to number if it's a string, block_results API accepts both
         const height = typeof blockHeight === 'string' ? parseInt(blockHeight, 10) : blockHeight;
         if (!isNaN(height)) {
-          blockResultsData = await fetchBlockResultsByHeight(height, rpcUrl);
+          blockResultsData = await fetchBlockResultsByHeight(height, blockResultsRpcUrl);
         }
       }
     } catch (error) {

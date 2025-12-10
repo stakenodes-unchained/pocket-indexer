@@ -24,7 +24,7 @@ function parseRpcEndpoints() {
           console.warn(`Invalid RPC endpoint format: ${endpoint}`);
           return null;
         }
-        return { name: name.trim(), url: url.trim() };
+        return { name: name.trim(), url: url.trim(), blockResultsUrl: name.trim() == 'pocket-mainnet' ? 'https://sauron-rpc.infra.pocket.network' : 'https://sauron-rpc.beta.infra.pocket.network' };
       })
       .filter(Boolean);
     
