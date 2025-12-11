@@ -9,6 +9,7 @@ class TransactionWorkerPool {
     this.workers = new Map();
     this.historicalWorkers = new Map();
     this.monitorWorkers = new Map();
+    this.blockResultsWorkers = new Map();
     this.rpcEndpoints = getRpcEndpoints();
     this.concurrency = parseInt(process.env.WORKER_CONCURRENCY || '2', 2);
     this.batchSize = parseInt(process.env.HISTORICAL_BATCH_SIZE || '50', 10);
@@ -76,6 +77,7 @@ class TransactionWorkerPool {
           workerData: {
             rpcName: rpc.name,
             rpcUrl: rpc.url,
+            blockResultsRpcUrl: rpc.blockResultsUrl,
             batchSize: this.batchSize,
             id: `${rpc.name}-monitor`,
             processType: 'monitor'
@@ -106,6 +108,41 @@ class TransactionWorkerPool {
 
         this.monitorWorkers.set(rpc.name, monitorWorker);
         console.log(`Started monitor worker for RPC endpoint ${rpc.name} (${rpc.url})`);
+
+        // Create block_results worker (only if blockResultsUrl is configured)
+        if (rpc.blockResultsUrl) {
+          const blockResultsWorker = new Worker(path.join(__dirname, 'blockResultsWorker.js'), {
+            workerData: {
+              rpcName: rpc.name,
+              rpcUrl: rpc.url,
+              blockResultsRpcUrl: rpc.blockResultsUrl,
+              id: `${rpc.name}-block-results`
+            }
+          });
+
+          blockResultsWorker.on('message', (message) => {
+            if (message.type === 'log') {
+              console.log(`[BlockResults Worker ${rpc.name}]`, message.data);
+            } else if (message.type === 'error') {
+              console.error(`[BlockResults Worker ${rpc.name}]`, message.data);
+            }
+          });
+
+          blockResultsWorker.on('error', (err) => {
+            console.error(`BlockResults worker for ${rpc.name} encountered an error:`, err);
+            this.restartBlockResultsWorker(rpc.name, rpc.blockResultsUrl);
+          });
+
+          blockResultsWorker.on('exit', (code) => {
+            if (code !== 0) {
+              console.error(`BlockResults worker for ${rpc.name} exited with code ${code}`);
+              this.restartBlockResultsWorker(rpc.name, rpc.blockResultsUrl);
+            }
+          });
+
+          this.blockResultsWorkers.set(rpc.name, blockResultsWorker);
+          console.log(`Started block_results worker for RPC endpoint ${rpc.name} (${rpc.blockResultsUrl})`);
+        }
       } catch (error) {
         console.error(`Failed to start workers for RPC endpoint ${rpc.name}:`, error);
       }
@@ -130,10 +167,12 @@ class TransactionWorkerPool {
     await new Promise(resolve => setTimeout(resolve, 5000));
     
     try {
+      const rpc = this.rpcEndpoints.find(e => e.name === rpcName);
       const newWorker = new Worker(path.join(__dirname, 'worker.js'), {
         workerData: {
           rpcName,
           rpcUrl,
+          blockResultsRpcUrl: rpc?.blockResultsUrl,
           batchSize: this.batchSize,
           id: `${rpcName}-historical`,
           processType: 'historical'
@@ -170,6 +209,60 @@ class TransactionWorkerPool {
   }
 
   /**
+   * Restart a block_results worker that has crashed or exited
+   */
+  async restartBlockResultsWorker(rpcName, blockResultsRpcUrl) {
+    console.log(`Restarting block_results worker for RPC endpoint ${rpcName}...`);
+    
+    // Remove the old worker reference
+    if (this.blockResultsWorkers.has(rpcName)) {
+      this.blockResultsWorkers.delete(rpcName);
+    }
+    
+    // Wait before restarting to avoid rapid restart cycles
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    try {
+      const rpc = this.rpcEndpoints.find(e => e.name === rpcName);
+      const newWorker = new Worker(path.join(__dirname, 'blockResultsWorker.js'), {
+        workerData: {
+          rpcName,
+          rpcUrl: rpc?.url,
+          blockResultsRpcUrl,
+          id: `${rpcName}-block-results`
+        }
+      });
+
+      newWorker.on('message', (message) => {
+        if (message.type === 'log') {
+          console.log(`[BlockResults Worker ${rpcName}]`, message.data);
+        } else if (message.type === 'error') {
+          console.error(`[BlockResults Worker ${rpcName}]`, message.data);
+        }
+      });
+
+      newWorker.on('error', (err) => {
+        console.error(`BlockResults worker for ${rpcName} encountered an error:`, err);
+        this.restartBlockResultsWorker(rpcName, blockResultsRpcUrl);
+      });
+
+      newWorker.on('exit', (code) => {
+        if (code !== 0) {
+          console.error(`BlockResults worker for ${rpcName} exited with code ${code}`);
+          this.restartBlockResultsWorker(rpcName, blockResultsRpcUrl);
+        }
+      });
+
+      this.blockResultsWorkers.set(rpcName, newWorker);
+      console.log(`Restarted block_results worker for RPC endpoint ${rpcName}`);
+    } catch (error) {
+      console.error(`Failed to restart block_results worker for RPC endpoint ${rpcName}:`, error);
+      // Try again after a longer delay
+      setTimeout(() => this.restartBlockResultsWorker(rpcName, blockResultsRpcUrl), 10000);
+    }
+  }
+
+  /**
    * Restart a monitor worker that has crashed or exited
    */
   async restartMonitorWorker(rpcName, rpcUrl) {
@@ -184,10 +277,12 @@ class TransactionWorkerPool {
     await new Promise(resolve => setTimeout(resolve, 5000));
     
     try {
+      const rpc = this.rpcEndpoints.find(e => e.name === rpcName);
       const newWorker = new Worker(path.join(__dirname, 'worker.js'), {
         workerData: {
           rpcName,
           rpcUrl,
+          blockResultsRpcUrl: rpc?.blockResultsUrl,
           batchSize: this.batchSize,
           id: `${rpcName}-monitor`,
           processType: 'monitor'
@@ -300,6 +395,16 @@ class TransactionWorkerPool {
       });
     }
     
+    // Add block_results workers
+    for (const [name, worker] of this.blockResultsWorkers.entries()) {
+      list.push({
+        name: `${name}-block-results`,
+        type: 'block-results',
+        threadId: worker.threadId,
+        isRunning: worker.threadId != null,
+      });
+    }
+    
     // Add legacy workers for backward compatibility
     for (const [name, worker] of this.workers.entries()) {
       list.push({
@@ -353,6 +458,12 @@ class TransactionWorkerPool {
       promises.push(worker.terminate());
     }
     
+    // Shutdown block_results workers
+    for (const [name, worker] of this.blockResultsWorkers.entries()) {
+      console.log(`Terminating block_results worker for ${name}...`);
+      promises.push(worker.terminate());
+    }
+    
     // Shutdown legacy workers
     for (const [name, worker] of this.workers.entries()) {
       console.log(`Terminating legacy worker for ${name}...`);
@@ -362,6 +473,7 @@ class TransactionWorkerPool {
     await Promise.all(promises);
     this.historicalWorkers.clear();
     this.monitorWorkers.clear();
+    this.blockResultsWorkers.clear();
     this.workers.clear();
     console.log('All transaction workers have been terminated');
   }

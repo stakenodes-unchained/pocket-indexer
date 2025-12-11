@@ -10,6 +10,7 @@ const gatewayHandlers = require('./handlers/gatewayEvents');
 const proofHandlers = require('./handlers/proofEvents');
 const serviceHandlers = require('./handlers/serviceEvents');
 const migrationHandlers = require('./handlers/migrationEvents');
+const accountHandlers = require('./handlers/accountEvents');
 
 /**
  * Route an event to the appropriate handler
@@ -66,6 +67,17 @@ async function routeEvent(parsedEvent) {
     else if (eventType.startsWith('EventMorse') || 
              eventType === 'EventImportMorseClaimableAccounts') {
       return await handleMigrationEvent(parsedEvent);
+    }
+    
+    // Account/Balance events (Cosmos SDK standard events)
+    else if (eventType === 'coin_spent' ||
+             eventType === 'coin_received' ||
+             eventType === 'transfer' ||
+             eventType === 'message' ||
+             eventType === 'mint' ||
+             eventType === 'commission' ||
+             eventType === 'rewards') {
+      return await handleAccountEvent(parsedEvent);
     }
     
     // Unknown event type
@@ -228,6 +240,32 @@ async function handleMigrationEvent(event) {
       return await migrationHandlers.handleMorseAccountRecovered(event);
     default:
       return { success: false, error: `Unknown migration event: ${event_type}` };
+  }
+}
+
+/**
+ * Handle account/balance events
+ */
+async function handleAccountEvent(event) {
+  const { event_type } = event;
+  
+  switch (event_type) {
+    case 'coin_spent':
+      return await accountHandlers.handleCoinSpent(event);
+    case 'coin_received':
+      return await accountHandlers.handleCoinReceived(event);
+    case 'transfer':
+      return await accountHandlers.handleTransfer(event);
+    case 'message':
+      return await accountHandlers.handleMessage(event);
+    case 'mint':
+      return await accountHandlers.handleMint(event);
+    case 'commission':
+      return await accountHandlers.handleCommission(event);
+    case 'rewards':
+      return await accountHandlers.handleRewards(event);
+    default:
+      return { success: false, error: `Unknown account event: ${event_type}` };
   }
 }
 

@@ -27,16 +27,25 @@ function parseEventAttributes(attributes) {
     
     // Try to parse JSON values
     if (typeof value === 'string') {
-      // Remove quotes if present
-      value = value.replace(/^["']|["']$/g, '');
+      // Handle escaped quotes and remove outer quotes
+      // Values can be like: "\"value\"" or "value" or just value
+      let cleanedValue = value;
       
-      // Try to parse as JSON
+      // First, try to parse as JSON (handles escaped quotes)
       try {
         const jsonValue = JSON.parse(value);
-        parsed[key] = jsonValue;
+        // If it parsed to a string, use that (removes outer quotes and unescapes)
+        if (typeof jsonValue === 'string') {
+          parsed[key] = jsonValue;
+        } else {
+          parsed[key] = jsonValue;
+        }
       } catch (e) {
-        // Not JSON, use as string
-        parsed[key] = value;
+        // If JSON parsing fails, try simple quote removal
+        cleanedValue = value.replace(/^["']|["']$/g, '');
+        // Also handle escaped quotes
+        cleanedValue = cleanedValue.replace(/\\"/g, '"');
+        parsed[key] = cleanedValue;
       }
     } else {
       parsed[key] = value;
@@ -162,6 +171,23 @@ function parseTypedEvent(event, metadata) {
     return parseMorseAccountRecoveredEvent(attributes, metadata);
   }
   
+  // Account/Balance events (Cosmos SDK standard events)
+  else if (eventType === 'coin_spent') {
+    return parseCoinSpentEvent(attributes, metadata);
+  } else if (eventType === 'coin_received') {
+    return parseCoinReceivedEvent(attributes, metadata);
+  } else if (eventType === 'transfer') {
+    return parseTransferEvent(attributes, metadata);
+  } else if (eventType === 'message') {
+    return parseMessageEvent(attributes, metadata);
+  } else if (eventType === 'mint') {
+    return parseMintEvent(attributes, metadata);
+  } else if (eventType === 'commission') {
+    return parseCommissionEvent(attributes, metadata);
+  } else if (eventType === 'rewards') {
+    return parseRewardsEvent(attributes, metadata);
+  }
+  
   // Unknown event type - return generic structure
   return parsedEvent;
 }
@@ -203,9 +229,25 @@ function parseClaimSettledEvent(attributes, metadata) {
   const claim = extractNestedObject(attributes, 'claim') || {};
   const rewardDistribution = extractNestedObject(attributes, 'reward_distribution') || {};
   
+  // Extract session_id - check multiple possible locations
+  // 1. Direct attribute (most common)
+  // 2. From nested claim object
+  // 3. From claim.session_header
+  let sessionId = extractString(attributes, 'session_id');
+  if (!sessionId && claim) {
+    sessionId = claim.session_id || claim.session_header?.session_id;
+  }
+  
+  // Log if session_id was found for debugging
+  if (sessionId) {
+    console.log(`[EventParser] EventClaimSettled: Found session_id=${sessionId.substring(0, 20)}...`);
+  } else {
+    console.log(`[EventParser] EventClaimSettled: No session_id found in attributes or claim object`);
+  }
+  
   return {
     event_type: 'EventClaimSettled',
-    session_id: extractString(attributes, 'session_id') || claim.session_id || claim.session_header?.session_id,
+    session_id: sessionId || null, // Explicitly set to null if not found
     proof_requirement_int: extractNumeric(attributes, 'proof_requirement_int'),
     num_relays: extractNumeric(attributes, 'num_relays'),
     num_claimed_compute_units: extractNumeric(attributes, 'num_claimed_compute_units'),
@@ -662,6 +704,79 @@ function parseMorseAccountRecoveredEvent(attributes, metadata) {
     recovered_balance: extractString(attributes, 'recovered_balance'),
     shannon_dest_address: extractString(attributes, 'shannon_dest_address'),
     morse_src_address: extractString(attributes, 'morse_src_address'),
+    metadata
+  };
+}
+
+// Account/Balance event parsers
+function parseCoinSpentEvent(attributes, metadata) {
+  return {
+    event_type: 'coin_spent',
+    spender: extractString(attributes, 'spender'),
+    amount: extractString(attributes, 'amount'),
+    mode: extractString(attributes, 'mode'),
+    metadata
+  };
+}
+
+function parseCoinReceivedEvent(attributes, metadata) {
+  return {
+    event_type: 'coin_received',
+    receiver: extractString(attributes, 'receiver'),
+    amount: extractString(attributes, 'amount'),
+    mode: extractString(attributes, 'mode'),
+    metadata
+  };
+}
+
+function parseTransferEvent(attributes, metadata) {
+  return {
+    event_type: 'transfer',
+    sender: extractString(attributes, 'sender'),
+    recipient: extractString(attributes, 'recipient'),
+    amount: extractString(attributes, 'amount'),
+    mode: extractString(attributes, 'mode'),
+    metadata
+  };
+}
+
+function parseMessageEvent(attributes, metadata) {
+  return {
+    event_type: 'message',
+    sender: extractString(attributes, 'sender'),
+    mode: extractString(attributes, 'mode'),
+    metadata
+  };
+}
+
+function parseMintEvent(attributes, metadata) {
+  return {
+    event_type: 'mint',
+    amount: extractString(attributes, 'amount'),
+    bonded_ratio: extractString(attributes, 'bonded_ratio'),
+    inflation: extractString(attributes, 'inflation'),
+    annual_provisions: extractString(attributes, 'annual_provisions'),
+    mode: extractString(attributes, 'mode'),
+    metadata
+  };
+}
+
+function parseCommissionEvent(attributes, metadata) {
+  return {
+    event_type: 'commission',
+    validator: extractString(attributes, 'validator'),
+    amount: extractString(attributes, 'amount'),
+    mode: extractString(attributes, 'mode'),
+    metadata
+  };
+}
+
+function parseRewardsEvent(attributes, metadata) {
+  return {
+    event_type: 'rewards',
+    validator: extractString(attributes, 'validator'),
+    amount: extractString(attributes, 'amount'),
+    mode: extractString(attributes, 'mode'),
     metadata
   };
 }

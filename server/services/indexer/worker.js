@@ -29,6 +29,7 @@ const {
   parseClaims
 } = require('./entityParser.v2');
 const { processBlockEvents, processTransactionEvents } = require('./eventProcessor');
+const { enqueueBlockResults } = require('./blockResultsQueue');
 
 const { rpcName, rpcUrl, batchSize, processType, blockResultsRpcUrl } = workerData;
 
@@ -227,25 +228,23 @@ async function processBlock(blockData) {
     
     // Process block-level events (from finalize_block_events, BeginBlock/EndBlock hooks)
     // These events are critical for claim settlements and other automatic operations
-    // Fetch block_results to get finalize_block_events from the Tendermint endpoint
-    let blockResultsData = null;
-    try {
-      const blockHeight = blockData.block?.header?.height || blockData.sdk_block?.header?.height;
-      if (blockHeight) {
-        // Convert to number if it's a string, block_results API accepts both
-        const height = typeof blockHeight === 'string' ? parseInt(blockHeight, 10) : blockHeight;
-        if (!isNaN(height)) {
-          blockResultsData = await fetchBlockResultsByHeight(height, blockResultsRpcUrl);
-        }
+    // Enqueue block_results for asynchronous processing (non-blocking)
+    const blockHeightForResults = blockData.block?.header?.height || blockData.sdk_block?.header?.height;
+    if (blockHeightForResults && blockResultsRpcUrl) {
+      const height = typeof blockHeightForResults === 'string' ? parseInt(blockHeightForResults, 10) : blockHeightForResults;
+      if (!isNaN(height)) {
+        // Enqueue for async processing - don't block on this
+        enqueueBlockResults(rpcName, height).catch(error => {
+          // Log but don't fail - queue failures shouldn't block block processing
+          console.warn(`[Worker ${workerData.id}] Failed to enqueue block_results for block ${height}: ${error.message}`);
+        });
       }
-    } catch (error) {
-      // Log warning but continue - block_results may not be available for all blocks
-      console.warn(`[Worker ${workerData.id}] Could not fetch block_results for block ${blockData.block?.header?.height || 'unknown'}: ${error.message}`);
-      // Continue with existing event extraction from blockData
     }
     
+    // Process block events immediately without waiting for block_results
+    // block_results will be processed asynchronously by blockResultsWorker
     try {
-      const eventResults = await processBlockEvents(blockData, blockResultsData);
+      const eventResults = await processBlockEvents(blockData, null);
       if (eventResults.length > 0) {
         const successCount = eventResults.filter(r => r.success).length;
         console.log(`[Worker ${workerData.id}] Processed ${eventResults.length} block events (${successCount} successful)`);
