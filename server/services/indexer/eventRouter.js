@@ -3,7 +3,6 @@
  * Routes parsed events to appropriate handlers based on event type and module
  */
 
-const pLimit = require('p-limit');
 const tokenomicsHandlers = require('./handlers/tokenomicsEvents');
 const applicationHandlers = require('./handlers/applicationEvents');
 const supplierHandlers = require('./handlers/supplierEvents');
@@ -14,8 +13,42 @@ const migrationHandlers = require('./handlers/migrationEvents');
 const accountHandlers = require('./handlers/accountEvents');
 
 // Concurrency limit for event routing (default: 10)
-const EVENT_CONCURRENCY_LIMIT = parseInt(process.env.BLOCK_RESULTS_EVENT_CONCURRENCY || '10', 10);
-const limit = pLimit(EVENT_CONCURRENCY_LIMIT);
+const EVENT_CONCURRENCY_LIMIT = parseInt(process.env.BLOCK_RESULTS_EVENT_CONCURRENCY || '50', 10);
+
+/**
+ * Simple concurrency limiter (replacement for p-limit to avoid ESM issues)
+ */
+function createConcurrencyLimiter(concurrency) {
+  let running = 0;
+  const queue = [];
+  
+  return function limit(fn) {
+    return new Promise((resolve, reject) => {
+      const run = async () => {
+        running++;
+        try {
+          const result = await fn();
+          resolve(result);
+        } catch (error) {
+          reject(error);
+        } finally {
+          running--;
+          if (queue.length > 0) {
+            queue.shift()();
+          }
+        }
+      };
+      
+      if (running < concurrency) {
+        run();
+      } else {
+        queue.push(run);
+      }
+    });
+  };
+}
+
+const limit = createConcurrencyLimiter(EVENT_CONCURRENCY_LIMIT);
 
 /**
  * Route an event to the appropriate handler
