@@ -179,6 +179,49 @@ async function getQueueSize(rpcName) {
 }
 
 /**
+ * Get delayed items count
+ * @param {string} rpcName - RPC endpoint name
+ * @returns {Promise<number>} Number of delayed items
+ */
+async function getDelayedItemsCount(rpcName) {
+  try {
+    const delayKey = `block_results_delay:${rpcName}`;
+    return await redis.zcard(delayKey);
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error getting delayed items count:`, error.message);
+    return 0;
+  }
+}
+
+/**
+ * Get processing items count (items with active processing locks)
+ * @param {string} rpcName - RPC endpoint name
+ * @returns {Promise<number>} Number of items being processed
+ */
+async function getProcessingItemsCount(rpcName) {
+  try {
+    const pattern = `block_results_processing:${rpcName}:*`;
+    const keys = await redis.keys(pattern);
+    // Filter out stale locks (older than timeout)
+    const now = Date.now();
+    let count = 0;
+    for (const key of keys) {
+      const lockTimestamp = await redis.get(key);
+      if (lockTimestamp) {
+        const timestamp = parseInt(lockTimestamp, 10);
+        if (now - timestamp < PROCESSING_TIMEOUT_SEC * 1000) {
+          count++;
+        }
+      }
+    }
+    return count;
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error getting processing items count:`, error.message);
+    return 0;
+  }
+}
+
+/**
  * Clear queue (for testing/maintenance)
  * @param {string} rpcName - RPC endpoint name
  * @returns {Promise<void>}
@@ -201,6 +244,8 @@ module.exports = {
   markFailed,
   getReadyDelayedItems,
   getQueueSize,
+  getDelayedItemsCount,
+  getProcessingItemsCount,
   clearQueue,
   MAX_RETRIES,
   PROCESSING_TIMEOUT_SEC

@@ -1249,6 +1249,18 @@ app.get('/api/v1/health/rpc', async (req, res) => {
   }
 });
 
+app.get('/api/v1/health/block-results-workers', async (req, res) => {
+  try {
+    // proxy to 3007 - indexer service
+    const response = await fetch(`http://pocket_indexer_service:3007/api/v1/health/block-results-workers`);
+    const data = await response.json();
+    res.json({ data: data.data });
+  } catch (error) {
+    console.error('Error fetching block results workers health:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // // Proof parser service health endpoints
 // app.get('/api/v1/health/proof-parser', async (req, res) => {
 //   try {
@@ -1333,6 +1345,25 @@ app.get('/api/v1/health/workers/history', async (req, res) => {
     res.json({ data: result.rows });
   } catch (error) {
     console.error('Error fetching workers history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/v1/health/block-results-workers/history', async (req, res) => {
+  try {
+    // proxy to 3007 - indexer service, pass through query parameters
+    const queryParams = new URLSearchParams();
+    if (req.query.from) queryParams.append('from', req.query.from);
+    if (req.query.to) queryParams.append('to', req.query.to);
+    if (req.query.limit) queryParams.append('limit', req.query.limit);
+    if (req.query.rpc_name) queryParams.append('rpc_name', req.query.rpc_name);
+    
+    const url = `http://pocket_indexer_service:3007/api/v1/health/block-results-workers/history${queryParams.toString() ? '?' + queryParams.toString() : ''}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    res.json({ data: data.data });
+  } catch (error) {
+    console.error('Error fetching block results workers history:', error);
     res.status(500).json({ error: error.message });
   }
 });

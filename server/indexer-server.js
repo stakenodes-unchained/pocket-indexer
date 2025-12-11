@@ -228,6 +228,88 @@ app.get('/api/v1/health/gaps', async (req, res) => {
   }
 });
 
+// Block Results Worker Health Endpoints
+app.get('/api/v1/health/block-results-workers', async (req, res) => {
+  try {
+    const allStats = await indexerPool.getAllBlockResultsWorkerStats();
+    
+    const summary = {
+      total_workers: allStats.length,
+      active_workers: allStats.filter(s => s.status === 'running').length,
+      total_queue_size: allStats.reduce((sum, s) => sum + (s.queue_size || 0), 0),
+      total_delayed_items: allStats.reduce((sum, s) => sum + (s.delayed_items || 0), 0),
+      total_processing_items: allStats.reduce((sum, s) => sum + (s.processing_items || 0), 0)
+    };
+    
+    res.json({
+      data: {
+        workers: allStats,
+        summary
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching block results workers health:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/v1/health/block-results-workers/history', async (req, res) => {
+  try {
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const from = req.query.from ? new Date(req.query.from) : new Date(Date.now() - 3600000); // Default: 1 hour ago
+    const to = req.query.to ? new Date(req.query.to) : new Date();
+    const limit = parseInt(req.query.limit || '200', 10);
+    const rpcName = req.query.rpc_name;
+    
+    let query = `
+      SELECT 
+        ts,
+        rpc_name,
+        queue_size,
+        delayed_items,
+        processing_items,
+        processed_count,
+        failed_count,
+        success_rate,
+        avg_processing_time_ms,
+        worker_status
+      FROM health_block_results_worker
+      WHERE ts >= $1 AND ts <= $2
+    `;
+    const params = [from, to];
+    
+    if (rpcName) {
+      query += ` AND rpc_name = $${params.length + 1}`;
+      params.push(rpcName);
+    }
+    
+    query += ` ORDER BY ts DESC LIMIT $${params.length + 1}`;
+    params.push(limit);
+    
+    const result = await client.query(query, params);
+    
+    res.json({
+      data: result.rows.map(row => ({
+        ts: row.ts,
+        rpc_name: row.rpc_name,
+        queue_size: row.queue_size,
+        delayed_items: row.delayed_items,
+        processing_items: row.processing_items,
+        processed_count: parseInt(row.processed_count || 0, 10),
+        failed_count: parseInt(row.failed_count || 0, 10),
+        success_rate: row.success_rate ? parseFloat(row.success_rate) : null,
+        avg_processing_time_ms: row.avg_processing_time_ms ? parseFloat(row.avg_processing_time_ms) : null,
+        worker_status: row.worker_status
+      }))
+    });
+  } catch (error) {
+    console.error('Error fetching block results workers history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Admin endpoints for enrichment
 // POST /api/v1/admin/suppliers/enrich
 app.post('/api/v1/admin/suppliers/enrich', async (req, res) => {

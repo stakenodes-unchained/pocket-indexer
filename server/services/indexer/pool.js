@@ -10,6 +10,7 @@ class TransactionWorkerPool {
     this.historicalWorkers = new Map();
     this.monitorWorkers = new Map();
     this.blockResultsWorkers = new Map();
+    this.blockResultsWorkerStats = new Map(); // Store stats from block results workers
     this.rpcEndpoints = getRpcEndpoints();
     this.concurrency = parseInt(process.env.WORKER_CONCURRENCY || '2', 2);
     this.batchSize = parseInt(process.env.HISTORICAL_BATCH_SIZE || '50', 10);
@@ -125,6 +126,12 @@ class TransactionWorkerPool {
               console.log(`[BlockResults Worker ${rpc.name}]`, message.data);
             } else if (message.type === 'error') {
               console.error(`[BlockResults Worker ${rpc.name}]`, message.data);
+            } else if (message.type === 'stats') {
+              // Store stats from worker
+              this.blockResultsWorkerStats.set(rpc.name, {
+                ...message.data,
+                lastUpdate: Date.now()
+              });
             }
           });
 
@@ -233,13 +240,19 @@ class TransactionWorkerPool {
         }
       });
 
-      newWorker.on('message', (message) => {
-        if (message.type === 'log') {
-          console.log(`[BlockResults Worker ${rpcName}]`, message.data);
-        } else if (message.type === 'error') {
-          console.error(`[BlockResults Worker ${rpcName}]`, message.data);
-        }
-      });
+          newWorker.on('message', (message) => {
+            if (message.type === 'log') {
+              console.log(`[BlockResults Worker ${rpcName}]`, message.data);
+            } else if (message.type === 'error') {
+              console.error(`[BlockResults Worker ${rpcName}]`, message.data);
+            } else if (message.type === 'stats') {
+              // Store stats from worker
+              this.blockResultsWorkerStats.set(rpcName, {
+                ...message.data,
+                lastUpdate: Date.now()
+              });
+            }
+          });
 
       newWorker.on('error', (err) => {
         console.error(`BlockResults worker for ${rpcName} encountered an error:`, err);
@@ -430,6 +443,91 @@ class TransactionWorkerPool {
     } catch (e) {
       return { error: e.message };
     }
+  }
+
+  /**
+   * Get block results worker stats for a specific RPC endpoint
+   * @param {string} rpcName - RPC endpoint name
+   * @returns {Promise<Object>} Stats object
+   */
+  async getBlockResultsWorkerStats(rpcName) {
+    const {
+      getQueueSize,
+      getDelayedItemsCount,
+      getProcessingItemsCount
+    } = require('./blockResultsQueue');
+    
+    try {
+      // Get queue stats from Redis
+      const queueSize = await getQueueSize(rpcName);
+      const delayedItems = await getDelayedItemsCount(rpcName);
+      const processingItems = await getProcessingItemsCount(rpcName);
+      
+      // Get worker stats (from worker messages)
+      const workerStats = this.blockResultsWorkerStats.get(rpcName) || {};
+      
+      // Check if worker is running
+      const worker = this.blockResultsWorkers.get(rpcName);
+      const isRunning = worker && worker.threadId != null;
+      
+      // Determine worker status
+      let workerStatus = 'stopped';
+      if (isRunning) {
+        const lastUpdate = workerStats.lastUpdate || 0;
+        const timeSinceUpdate = Date.now() - lastUpdate;
+        // If no update in last 2 minutes, consider it stale
+        if (timeSinceUpdate < 120000) {
+          workerStatus = workerStats.status || 'running';
+        } else {
+          workerStatus = 'stale';
+        }
+      }
+      
+      return {
+        rpc_name: rpcName,
+        status: workerStatus,
+        queue_size: queueSize,
+        delayed_items: delayedItems,
+        processing_items: processingItems,
+        processed_count: workerStats.processedCount || 0,
+        failed_count: workerStats.failedCount || 0,
+        success_rate: workerStats.successRate !== undefined ? workerStats.successRate : null,
+        avg_processing_time_ms: workerStats.avgProcessingTimeMs !== undefined ? workerStats.avgProcessingTimeMs : null,
+        last_update: workerStats.lastUpdate || null
+      };
+    } catch (error) {
+      console.error(`[Pool] Error getting block results worker stats for ${rpcName}:`, error);
+      return {
+        rpc_name: rpcName,
+        status: 'error',
+        queue_size: 0,
+        delayed_items: 0,
+        processing_items: 0,
+        processed_count: 0,
+        failed_count: 0,
+        success_rate: null,
+        avg_processing_time_ms: null,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Get block results worker stats for all RPC endpoints
+   * @returns {Promise<Array>} Array of stats objects
+   */
+  async getAllBlockResultsWorkerStats() {
+    const stats = [];
+    
+    // Get stats for all RPC endpoints that have blockResultsUrl configured
+    for (const rpc of this.rpcEndpoints) {
+      if (rpc.blockResultsUrl) {
+        const rpcStats = await this.getBlockResultsWorkerStats(rpc.name);
+        stats.push(rpcStats);
+      }
+    }
+    
+    return stats;
   }
 
   /**

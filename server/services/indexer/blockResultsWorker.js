@@ -20,6 +20,14 @@ const { rpcName, blockResultsRpcUrl, rpcUrl, id } = workerData;
 const POLL_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_POLL_INTERVAL_MS || '5000', 10); // 5 seconds default
 const BATCH_SIZE = parseInt(process.env.BLOCK_RESULTS_BATCH_SIZE || '1', 10); // Process 1 at a time by default
 const RATE_LIMIT_DELAY_MS = parseInt(process.env.BLOCK_RESULTS_RATE_LIMIT_MS || '100', 10); // 100ms between requests
+const STATS_REPORT_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_STATS_INTERVAL_MS || '30000', 10); // 30 seconds default
+
+// Stats tracking
+let stats = {
+  processedCount: 0,
+  failedCount: 0,
+  processingTimes: [] // Keep last 100 processing times for average calculation
+};
 
 function log(message) {
   parentPort.postMessage({ type: 'log', data: message });
@@ -29,11 +37,34 @@ function reportError(message) {
   parentPort.postMessage({ type: 'error', data: message });
 }
 
+function reportStats() {
+  const avgProcessingTime = stats.processingTimes.length > 0
+    ? stats.processingTimes.reduce((sum, t) => sum + t, 0) / stats.processingTimes.length
+    : 0;
+  
+  const successRate = (stats.processedCount + stats.failedCount) > 0
+    ? (stats.processedCount / (stats.processedCount + stats.failedCount)) * 100
+    : 100;
+  
+  parentPort.postMessage({
+    type: 'stats',
+    data: {
+      rpcName,
+      processedCount: stats.processedCount,
+      failedCount: stats.failedCount,
+      successRate: parseFloat(successRate.toFixed(2)),
+      avgProcessingTimeMs: parseFloat(avgProcessingTime.toFixed(2)),
+      status: 'running'
+    }
+  });
+}
+
 /**
  * Process a single block_results item
  */
 async function processBlockResultsItem(item) {
   const { height } = item;
+  const startTime = Date.now();
   
   try {
     log(`[BlockResultsWorker ${id}] Processing block_results for height ${height}`);
@@ -87,6 +118,15 @@ async function processBlockResultsItem(item) {
     // Mark as processed
     await markProcessed(rpcName, height);
     
+    // Update stats
+    const processingTime = Date.now() - startTime;
+    stats.processedCount++;
+    stats.processingTimes.push(processingTime);
+    // Keep only last 100 processing times
+    if (stats.processingTimes.length > 100) {
+      stats.processingTimes.shift();
+    }
+    
     return { success: true, height };
   } catch (error) {
     console.error(`[BlockResultsWorker ${id}] Error processing block_results for height ${height}:`, error.message);
@@ -98,6 +138,11 @@ async function processBlockResultsItem(item) {
       log(`[BlockResultsWorker ${id}] Requeued block ${height} for retry (attempt ${item.retries})`);
     } else {
       reportError(`Block ${height} failed after ${item.retries} retries`);
+    }
+    
+    // Update stats (only count final failures, not retries)
+    if (!requeued) {
+      stats.failedCount++;
     }
     
     return { success: false, height, error: error.message };
@@ -124,6 +169,7 @@ async function processDelayedItems() {
 async function processQueue() {
   let consecutiveEmptyPolls = 0;
   const maxEmptyPolls = 10; // After 10 empty polls, increase interval
+  let lastStatsReport = Date.now();
   
   while (true) {
     try {
@@ -164,6 +210,13 @@ async function processQueue() {
         }
       }
       
+      // Report stats periodically
+      const now = Date.now();
+      if (now - lastStatsReport >= STATS_REPORT_INTERVAL_MS) {
+        reportStats();
+        lastStatsReport = now;
+      }
+      
       // Adjust polling interval based on queue activity
       const pollInterval = consecutiveEmptyPolls > maxEmptyPolls 
         ? POLL_INTERVAL_MS * 2  // Double interval if queue is consistently empty
@@ -188,11 +241,30 @@ async function start() {
   log(`[BlockResultsWorker ${id}] Starting block_results worker for ${rpcName}`);
   log(`[BlockResultsWorker ${id}] Poll interval: ${POLL_INTERVAL_MS}ms, Batch size: ${BATCH_SIZE}, Rate limit: ${RATE_LIMIT_DELAY_MS}ms`);
   
+  // Send initial stats
+  reportStats();
+  
   try {
     await processQueue();
   } catch (error) {
     console.error(`[BlockResultsWorker ${id}] Fatal error:`, error);
     reportError(`Fatal error: ${error.message}`);
+    // Send final stats with error status
+    parentPort.postMessage({
+      type: 'stats',
+      data: {
+        rpcName,
+        processedCount: stats.processedCount,
+        failedCount: stats.failedCount,
+        successRate: (stats.processedCount + stats.failedCount) > 0
+          ? parseFloat(((stats.processedCount / (stats.processedCount + stats.failedCount)) * 100).toFixed(2))
+          : 100,
+        avgProcessingTimeMs: stats.processingTimes.length > 0
+          ? parseFloat((stats.processingTimes.reduce((sum, t) => sum + t, 0) / stats.processingTimes.length).toFixed(2))
+          : 0,
+        status: 'error'
+      }
+    });
     process.exit(1);
   }
 }

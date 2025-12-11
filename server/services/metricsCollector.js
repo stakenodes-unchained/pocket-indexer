@@ -119,6 +119,7 @@ class MetricsCollector {
         await this.snapshotRedis();
         await this.snapshotRpc();
         await this.snapshotWorkers();
+        await this.snapshotBlockResultsWorkers();
       }
     }, this.intervalMs);
     // Kick immediately
@@ -131,6 +132,7 @@ class MetricsCollector {
         await this.snapshotRedis();
         await this.snapshotRpc();
         await this.snapshotWorkers();
+        await this.snapshotBlockResultsWorkers();
       }
     })();
     console.log(`MetricsCollector started (${this.intervalMs}ms)`);
@@ -231,6 +233,36 @@ class MetricsCollector {
         [heartbeats, heartbeats, avg_lag]
       );
     } catch (_) {}
+  }
+
+  async snapshotBlockResultsWorkers() {
+    try {
+      await this.connect();
+      const indexerPool = require('./indexer/pool');
+      const allStats = await indexerPool.getAllBlockResultsWorkerStats();
+      
+      for (const stats of allStats) {
+        await this.pg.query(
+          `INSERT INTO health_block_results_worker (
+            rpc_name, queue_size, delayed_items, processing_items,
+            processed_count, failed_count, success_rate, avg_processing_time_ms, worker_status
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            stats.rpc_name,
+            stats.queue_size,
+            stats.delayed_items,
+            stats.processing_items,
+            stats.processed_count,
+            stats.failed_count,
+            stats.success_rate,
+            stats.avg_processing_time_ms,
+            stats.status
+          ]
+        );
+      }
+    } catch (error) {
+      console.warn('Block results workers snapshot failed:', error.message);
+    }
   }
 }
 

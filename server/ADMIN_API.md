@@ -698,6 +698,199 @@ const fetchWorkersHistory = async (from, to, chain, limit = 200) => {
 
 ---
 
+### GET `/api/v1/health/block-results-workers`
+
+Get current health status of block results workers.
+
+**Business Logic:**
+- Proxies request to indexer service on port 3007
+- Returns real-time stats for all block results workers
+- Combines queue metrics from Redis with worker performance stats
+- Queue metrics include pending items, delayed retry items, and items currently being processed
+- Worker stats include processed count, failed count, success rate, and average processing time
+- Used to monitor the asynchronous block_results processing pipeline
+
+**Response:**
+```json
+{
+  "data": {
+    "workers": [
+      {
+        "rpc_name": "mainnet",
+        "status": "running",
+        "queue_size": 150,
+        "delayed_items": 5,
+        "processing_items": 2,
+        "processed_count": 10000,
+        "failed_count": 50,
+        "success_rate": 99.5,
+        "avg_processing_time_ms": 250,
+        "last_update": 1705312800000
+      }
+    ],
+    "summary": {
+      "total_workers": 1,
+      "active_workers": 1,
+      "total_queue_size": 150,
+      "total_delayed_items": 5,
+      "total_processing_items": 2
+    }
+  }
+}
+```
+
+**Response Fields:**
+- `workers`: Array of worker stats, one per RPC endpoint
+  - `rpc_name`: RPC endpoint name
+  - `status`: Worker status (`running`, `stopped`, `stale`, `error`)
+  - `queue_size`: Number of items in the main queue
+  - `delayed_items`: Number of items in the delayed retry queue
+  - `processing_items`: Number of items currently being processed
+  - `processed_count`: Total number of successfully processed items (cumulative)
+  - `failed_count`: Total number of failed items after max retries (cumulative)
+  - `success_rate`: Success rate percentage (0-100)
+  - `avg_processing_time_ms`: Average processing time per item in milliseconds
+  - `last_update`: Timestamp of last stats update from worker (milliseconds)
+- `summary`: Aggregated summary across all workers
+  - `total_workers`: Total number of block results workers
+  - `active_workers`: Number of workers with status `running`
+  - `total_queue_size`: Sum of all queue sizes
+  - `total_delayed_items`: Sum of all delayed items
+  - `total_processing_items`: Sum of all processing items
+
+**Status Codes:**
+- `200`: Success
+- `500`: Server error
+
+**Frontend Integration:**
+```javascript
+// Fetch block results workers health
+const fetchBlockResultsWorkersHealth = async () => {
+  const response = await fetch('/api/v1/health/block-results-workers');
+  return response.json();
+};
+
+// Display health in dashboard
+const health = await fetchBlockResultsWorkersHealth();
+health.data.workers.forEach(worker => {
+  console.log(`${worker.rpc_name}: ${worker.queue_size} items in queue, ${worker.success_rate}% success rate`);
+});
+```
+
+**UI Considerations:**
+- Display workers in a table or cards
+- Show queue size with color coding (green: < 100, yellow: 100-1000, red: > 1000)
+- Display success rate as percentage with trend indicator
+- Show processing items count
+- Display average processing time
+- Color-code worker status (running: green, stopped: gray, error: red, stale: yellow)
+- Show last update time with relative time (e.g., "2 minutes ago")
+- Add auto-refresh every 10-30 seconds
+- Show alerts for high queue sizes or low success rates
+
+---
+
+### GET `/api/v1/health/block-results-workers/history`
+
+Get historical block results worker health data.
+
+**Business Logic:**
+- Proxies request to indexer service on port 3007
+- Returns time-series data of block results worker health from the `health_block_results_worker` table
+- Data points include queue metrics, processing counts, success rates, and performance metrics
+- Useful for monitoring queue growth, identifying performance degradation, and analyzing trends over time
+- Metrics are collected periodically by the metrics collector service
+
+**Query Parameters:**
+- `from` (optional): Start timestamp (ISO 8601). Default: 1 hour ago
+- `to` (optional): End timestamp (ISO 8601). Default: now
+- `limit` (optional): Maximum number of records. Default: 200
+- `rpc_name` (optional): Filter by RPC endpoint name
+
+**Response:**
+```json
+{
+  "data": [
+    {
+      "ts": "2024-01-15T10:00:00Z",
+      "rpc_name": "mainnet",
+      "queue_size": 150,
+      "delayed_items": 5,
+      "processing_items": 2,
+      "processed_count": 10000,
+      "failed_count": 50,
+      "success_rate": 99.5,
+      "avg_processing_time_ms": 250,
+      "worker_status": "running"
+    },
+    {
+      "ts": "2024-01-15T10:05:00Z",
+      "rpc_name": "mainnet",
+      "queue_size": 120,
+      "delayed_items": 3,
+      "processing_items": 1,
+      "processed_count": 10100,
+      "failed_count": 52,
+      "success_rate": 99.48,
+      "avg_processing_time_ms": 245,
+      "worker_status": "running"
+    }
+  ]
+}
+```
+
+**Response Fields:**
+- `ts`: Timestamp of the snapshot
+- `rpc_name`: RPC endpoint name
+- `queue_size`: Number of items in the main queue at snapshot time
+- `delayed_items`: Number of items in the delayed retry queue at snapshot time
+- `processing_items`: Number of items currently being processed at snapshot time
+- `processed_count`: Total number of successfully processed items (cumulative)
+- `failed_count`: Total number of failed items after max retries (cumulative)
+- `success_rate`: Success rate percentage (0-100)
+- `avg_processing_time_ms`: Average processing time per item in milliseconds
+- `worker_status`: Worker status at snapshot time
+
+**Status Codes:**
+- `200`: Success
+- `500`: Server error
+
+**Frontend Integration:**
+```javascript
+// Fetch block results workers health history
+const fetchBlockResultsWorkersHistory = async (from, to, rpcName, limit = 200) => {
+  const params = new URLSearchParams({
+    from: from.toISOString(),
+    to: to.toISOString(),
+    limit
+  });
+  if (rpcName) params.append('rpc_name', rpcName);
+  const response = await fetch(`/api/v1/health/block-results-workers/history?${params}`);
+  return response.json();
+};
+
+// Display in chart
+const history = await fetchBlockResultsWorkersHistory(
+  new Date(Date.now() - 3600000), // 1 hour ago
+  new Date(),
+  'mainnet'
+);
+// Plot queue_size, success_rate, avg_processing_time_ms over time
+```
+
+**UI Considerations:**
+- Display multiple metrics in a multi-line chart
+- Show queue_size, delayed_items, processing_items trends
+- Display success_rate and avg_processing_time_ms trends
+- Add RPC name filter dropdown
+- Group by RPC name if multiple RPCs
+- Add time range selector (last hour, 6 hours, 24 hours, custom)
+- Show alerts for queue growth or success rate drops
+- Display processed_count and failed_count as cumulative counters
+- Add zoom/pan functionality for detailed view
+
+---
+
 ### GET `/api/v1/health/process/history`
 
 Get historical process health data (memory, CPU usage).
