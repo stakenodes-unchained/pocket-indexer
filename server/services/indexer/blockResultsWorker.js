@@ -18,7 +18,7 @@ const { rpcName, blockResultsRpcUrl, rpcUrl, id } = workerData;
 
 // Configuration
 const POLL_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_POLL_INTERVAL_MS || '5000', 10); // 5 seconds default
-const BATCH_SIZE = parseInt(process.env.BLOCK_RESULTS_BATCH_SIZE || '1', 10); // Process 1 at a time by default
+const BATCH_SIZE = parseInt(process.env.BLOCK_RESULTS_BATCH_SIZE || '10', 10); // Process 1 at a time by default
 const RATE_LIMIT_DELAY_MS = parseInt(process.env.BLOCK_RESULTS_RATE_LIMIT_MS || '100', 10); // 100ms between requests
 const STATS_REPORT_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_STATS_INTERVAL_MS || '30000', 10); // 30 seconds default
 
