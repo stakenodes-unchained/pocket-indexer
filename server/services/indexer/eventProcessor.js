@@ -22,19 +22,19 @@ async function processBlockEvents(blockData, blockResultsData = null) {
       return [];
     }
     
-    // Parse all events
-    const parsedEvents = [];
-    for (const { event, metadata } of eventData) {
+    // Parse all events in parallel
+    const parsePromises = eventData.map(async ({ event, metadata }) => {
       try {
         const parsed = parseTypedEvent(event, metadata);
-        if (parsed) {
-          parsedEvents.push(parsed);
-        }
+        return parsed;
       } catch (error) {
         console.error(`Error parsing event ${event?.type}:`, error);
-        // Continue with other events
+        return null; // Return null for failed parsing
       }
-    }
+    });
+    
+    const parsedResults = await Promise.all(parsePromises);
+    const parsedEvents = parsedResults.filter(parsed => parsed !== null);
     
     if (parsedEvents.length === 0) {
       return [];
@@ -65,19 +65,19 @@ async function processTransactionEvents(txData, blockData) {
       return [];
     }
     
-    // Parse all events
-    const parsedEvents = [];
-    for (const { event, metadata } of eventData) {
+    // Parse all events in parallel
+    const parsePromises = eventData.map(async ({ event, metadata }) => {
       try {
         const parsed = parseTypedEvent(event, metadata);
-        if (parsed) {
-          parsedEvents.push(parsed);
-        }
+        return parsed;
       } catch (error) {
         console.error(`Error parsing event ${event?.type}:`, error);
-        // Continue with other events
+        return null; // Return null for failed parsing
       }
-    }
+    });
+    
+    const parsedResults = await Promise.all(parsePromises);
+    const parsedEvents = parsedResults.filter(parsed => parsed !== null);
     
     if (parsedEvents.length === 0) {
       return [];

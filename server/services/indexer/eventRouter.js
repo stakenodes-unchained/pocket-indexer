@@ -3,6 +3,7 @@
  * Routes parsed events to appropriate handlers based on event type and module
  */
 
+const pLimit = require('p-limit');
 const tokenomicsHandlers = require('./handlers/tokenomicsEvents');
 const applicationHandlers = require('./handlers/applicationEvents');
 const supplierHandlers = require('./handlers/supplierEvents');
@@ -11,6 +12,10 @@ const proofHandlers = require('./handlers/proofEvents');
 const serviceHandlers = require('./handlers/serviceEvents');
 const migrationHandlers = require('./handlers/migrationEvents');
 const accountHandlers = require('./handlers/accountEvents');
+
+// Concurrency limit for event routing (default: 10)
+const EVENT_CONCURRENCY_LIMIT = parseInt(process.env.BLOCK_RESULTS_EVENT_CONCURRENCY || '10', 10);
+const limit = pLimit(EVENT_CONCURRENCY_LIMIT);
 
 /**
  * Route an event to the appropriate handler
@@ -270,23 +275,24 @@ async function handleAccountEvent(event) {
 }
 
 /**
- * Process multiple events in order
+ * Process multiple events in parallel with concurrency control
  * @param {Array} parsedEvents - Array of parsed events
  * @returns {Promise<Array>} Array of handler results
  */
 async function routeEvents(parsedEvents) {
-  const results = [];
+  // Process all events in parallel with concurrency limit
+  const promises = parsedEvents.map(event => 
+    limit(async () => {
+      try {
+        return await routeEvent(event);
+      } catch (error) {
+        console.error(`Error processing event ${event?.event_type}:`, error);
+        return { success: false, error: error.message, event_type: event?.event_type };
+      }
+    })
+  );
   
-  for (const event of parsedEvents) {
-    try {
-      const result = await routeEvent(event);
-      results.push(result);
-    } catch (error) {
-      console.error(`Error processing event ${event?.event_type}:`, error);
-      results.push({ success: false, error: error.message, event_type: event?.event_type });
-    }
-  }
-  
+  const results = await Promise.all(promises);
   return results;
 }
 

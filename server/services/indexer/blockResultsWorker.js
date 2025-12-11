@@ -18,9 +18,11 @@ const { rpcName, blockResultsRpcUrl, rpcUrl, id } = workerData;
 
 // Configuration
 const POLL_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_POLL_INTERVAL_MS || '5000', 10); // 5 seconds default
-const BATCH_SIZE = parseInt(process.env.BLOCK_RESULTS_BATCH_SIZE || '10', 10); // Process 1 at a time by default
+const BATCH_SIZE = parseInt(process.env.BLOCK_RESULTS_BATCH_SIZE || '10', 10); // Batch size for dequeuing
+const PARALLEL_PROCESSING_LIMIT = parseInt(process.env.BLOCK_RESULTS_PARALLEL_LIMIT || '5', 10); // Max parallel block processing
 const RATE_LIMIT_DELAY_MS = parseInt(process.env.BLOCK_RESULTS_RATE_LIMIT_MS || '100', 10); // 100ms between requests
 const STATS_REPORT_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_STATS_INTERVAL_MS || '30000', 10); // 30 seconds default
+const ASYNC_EVENTS = process.env.BLOCK_RESULTS_ASYNC_EVENTS !== 'false'; // Process events asynchronously (default: true)
 
 // Stats tracking
 let stats = {
@@ -107,16 +109,32 @@ async function processBlockResultsItem(item) {
       };
     }
     
-    // Process block events with block_results data
-    const eventResults = await processBlockEvents(blockData, blockResultsData);
-    
-    if (eventResults.length > 0) {
-      const successCount = eventResults.filter(r => r.success).length;
-      log(`[BlockResultsWorker ${id}] Processed ${eventResults.length} block events from block_results (${successCount} successful) for height ${height}`);
-    }
-    
-    // Mark as processed
+    // Mark as processed immediately (before event processing)
+    // This allows the queue to continue processing other blocks
     await markProcessed(rpcName, height);
+    
+    // Process events asynchronously (fire-and-forget if ASYNC_EVENTS is true)
+    const processEvents = async () => {
+      try {
+        const eventResults = await processBlockEvents(blockData, blockResultsData);
+        if (eventResults.length > 0) {
+          const successCount = eventResults.filter(r => r.success).length;
+          log(`[BlockResultsWorker ${id}] Processed ${eventResults.length} block events from block_results (${successCount} successful) for height ${height}`);
+        }
+      } catch (error) {
+        console.error(`[BlockResultsWorker ${id}] Error processing events for height ${height}:`, error.message);
+      }
+    };
+    
+    if (ASYNC_EVENTS) {
+      // Fire-and-forget: process events in background
+      processEvents().catch(error => {
+        console.error(`[BlockResultsWorker ${id}] Unhandled error in async event processing for height ${height}:`, error);
+      });
+    } else {
+      // Wait for event processing (for backward compatibility)
+      await processEvents();
+    }
     
     // Update stats
     const processingTime = Date.now() - startTime;
@@ -164,6 +182,30 @@ async function processDelayedItems() {
 }
 
 /**
+ * Process items with concurrency limit
+ */
+async function processItemsWithConcurrency(items, limit) {
+  const results = [];
+  const executing = [];
+  
+  for (const item of items) {
+    const promise = processBlockResultsItem(item).then(result => {
+      executing.splice(executing.indexOf(promise), 1);
+      return result;
+    });
+    
+    results.push(promise);
+    executing.push(promise);
+    
+    if (executing.length >= limit) {
+      await Promise.race(executing);
+    }
+  }
+  
+  return Promise.allSettled(results);
+}
+
+/**
  * Main processing loop
  */
 async function processQueue() {
@@ -176,28 +218,27 @@ async function processQueue() {
       // First, check for delayed items that are ready
       await processDelayedItems();
       
-      // Process items from queue
-      let processedCount = 0;
-      
+      // Dequeue items up to batch size
+      const items = [];
       for (let i = 0; i < BATCH_SIZE; i++) {
         const item = await dequeueBlockResults(rpcName);
-        
         if (!item) {
           break; // Queue is empty
         }
-        
-        await processBlockResultsItem(item);
-        processedCount++;
-        
-        // Rate limiting between requests
-        if (i < BATCH_SIZE - 1) {
-          await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY_MS));
-        }
+        items.push(item);
       }
       
-      if (processedCount > 0) {
+      if (items.length > 0) {
         consecutiveEmptyPolls = 0;
-        log(`[BlockResultsWorker ${id}] Processed ${processedCount} block_results items`);
+        
+        // Process items in parallel with concurrency limit
+        const results = await processItemsWithConcurrency(items, PARALLEL_PROCESSING_LIMIT);
+        const processedCount = results.filter(r => r.status === 'fulfilled' && r.value?.success).length;
+        const failedCount = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value?.success)).length;
+        
+        if (processedCount > 0 || failedCount > 0) {
+          log(`[BlockResultsWorker ${id}] Processed ${processedCount} block_results items (${failedCount} failed)`);
+        }
       } else {
         consecutiveEmptyPolls++;
         
@@ -239,7 +280,7 @@ async function processQueue() {
  */
 async function start() {
   log(`[BlockResultsWorker ${id}] Starting block_results worker for ${rpcName}`);
-  log(`[BlockResultsWorker ${id}] Poll interval: ${POLL_INTERVAL_MS}ms, Batch size: ${BATCH_SIZE}, Rate limit: ${RATE_LIMIT_DELAY_MS}ms`);
+  log(`[BlockResultsWorker ${id}] Poll interval: ${POLL_INTERVAL_MS}ms, Batch size: ${BATCH_SIZE}, Parallel limit: ${PARALLEL_PROCESSING_LIMIT}, Async events: ${ASYNC_EVENTS}, Rate limit: ${RATE_LIMIT_DELAY_MS}ms`);
   
   // Send initial stats
   reportStats();
