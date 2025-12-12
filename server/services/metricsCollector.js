@@ -245,8 +245,9 @@ class MetricsCollector {
         await this.pg.query(
           `INSERT INTO health_block_results_worker (
             rpc_name, queue_size, delayed_items, processing_items,
-            processed_count, failed_count, success_rate, avg_processing_time_ms, worker_status
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            processed_count, failed_count, success_rate, avg_processing_time_ms, worker_status,
+            current_block_height, last_processed_block_height
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
           [
             stats.rpc_name,
             stats.queue_size,
@@ -256,7 +257,9 @@ class MetricsCollector {
             stats.failed_count,
             stats.success_rate,
             stats.avg_processing_time_ms,
-            stats.status
+            stats.status,
+            stats.current_block_height || null,
+            stats.last_processed_block_height || null
           ]
         );
       }

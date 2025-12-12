@@ -274,7 +274,9 @@ app.get('/api/v1/health/block-results-workers/history', async (req, res) => {
         failed_count,
         success_rate,
         avg_processing_time_ms,
-        worker_status
+        worker_status,
+        current_block_height,
+        last_processed_block_height
       FROM health_block_results_worker
       WHERE ts >= $1 AND ts <= $2
     `;
@@ -301,7 +303,9 @@ app.get('/api/v1/health/block-results-workers/history', async (req, res) => {
         failed_count: parseInt(row.failed_count || 0, 10),
         success_rate: row.success_rate ? parseFloat(row.success_rate) : null,
         avg_processing_time_ms: row.avg_processing_time_ms ? parseFloat(row.avg_processing_time_ms) : null,
-        worker_status: row.worker_status
+        worker_status: row.worker_status,
+        current_block_height: row.current_block_height ? parseInt(row.current_block_height, 10) : null,
+        last_processed_block_height: row.last_processed_block_height ? parseInt(row.last_processed_block_height, 10) : null
       }))
     });
   } catch (error) {

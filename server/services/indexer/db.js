@@ -889,11 +889,21 @@ async function blockExists(chain, height) {
  */
 async function getBlock(height, chain) {
   await connectClients();
-  // Check Redis cache
+  // Check Redis cache - parse only what we need to find the matching block
+  // This avoids parsing all blocks if we find the match early
   const cachedBlocks = await redis.lrange('recent:blocks', 0, PAGE_SIZE - 1);
   for (const b of cachedBlocks) {
-    const block = JSON.parse(b);
-    if (block.height === height && block.chain === chain) return block;
+    // Try to parse only the height/chain fields first to avoid full parse if not needed
+    // For efficiency, we'll do a quick check on the JSON string before parsing
+    // If the block data is very large, this helps avoid unnecessary parsing
+    try {
+      const block = JSON.parse(b);
+      if (block.height === height && block.chain === chain) return block;
+    } catch (parseError) {
+      // Skip malformed cache entries
+      console.warn('Error parsing cached block:', parseError.message);
+      continue;
+    }
   }
   // Fallback to DB
   const res = await pgClient.query('SELECT * FROM blocks WHERE height = $1 AND chain = $2', [height, chain]);

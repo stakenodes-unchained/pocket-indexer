@@ -15,6 +15,12 @@ COPY . .
 RUN chmod +x start_proof_parser.sh && \
     chown -R node:node /app
 
+# Set Node.js environment to production
+ENV NODE_ENV=production
+
+# Increase Node.js memory limit for larger datasets (32GB for very large blocks)
+ENV NODE_OPTIONS="--max-old-space-size=32768"
+
 USER node
 
 EXPOSE 3008

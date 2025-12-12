@@ -725,6 +725,8 @@ Get current health status of block results workers.
         "failed_count": 50,
         "success_rate": 99.5,
         "avg_processing_time_ms": 250,
+        "current_block_height": 12345678,
+        "last_processed_block_height": 12345675,
         "last_update": 1705312800000
       }
     ],
@@ -750,6 +752,8 @@ Get current health status of block results workers.
   - `failed_count`: Total number of failed items after max retries (cumulative)
   - `success_rate`: Success rate percentage (0-100)
   - `avg_processing_time_ms`: Average processing time per item in milliseconds
+  - `current_block_height`: Block height currently being processed (or highest queued block). `null` if no blocks are queued or being processed
+  - `last_processed_block_height`: Last successfully processed block height. `null` if no blocks have been processed yet
   - `last_update`: Timestamp of last stats update from worker (milliseconds)
 - `summary`: Aggregated summary across all workers
   - `total_workers`: Total number of block results workers
@@ -774,6 +778,10 @@ const fetchBlockResultsWorkersHealth = async () => {
 const health = await fetchBlockResultsWorkersHealth();
 health.data.workers.forEach(worker => {
   console.log(`${worker.rpc_name}: ${worker.queue_size} items in queue, ${worker.success_rate}% success rate`);
+  if (worker.current_block_height !== null && worker.last_processed_block_height !== null) {
+    const lag = worker.current_block_height - worker.last_processed_block_height;
+    console.log(`  Block progress: ${worker.last_processed_block_height}/${worker.current_block_height} (lag: ${lag})`);
+  }
 });
 ```
 
@@ -783,10 +791,12 @@ health.data.workers.forEach(worker => {
 - Display success rate as percentage with trend indicator
 - Show processing items count
 - Display average processing time
+- **Display current block height and last processed block height** - Critical for monitoring worker progress
+- Show block height lag (difference between current and last processed) to identify processing delays
 - Color-code worker status (running: green, stopped: gray, error: red, stale: yellow)
 - Show last update time with relative time (e.g., "2 minutes ago")
 - Add auto-refresh every 10-30 seconds
-- Show alerts for high queue sizes or low success rates
+- Show alerts for high queue sizes, low success rates, or stale block heights
 
 ---
 
@@ -821,7 +831,9 @@ Get historical block results worker health data.
       "failed_count": 50,
       "success_rate": 99.5,
       "avg_processing_time_ms": 250,
-      "worker_status": "running"
+      "worker_status": "running",
+      "current_block_height": 12345678,
+      "last_processed_block_height": 12345675
     },
     {
       "ts": "2024-01-15T10:05:00Z",
@@ -833,7 +845,9 @@ Get historical block results worker health data.
       "failed_count": 52,
       "success_rate": 99.48,
       "avg_processing_time_ms": 245,
-      "worker_status": "running"
+      "worker_status": "running",
+      "current_block_height": 12345680,
+      "last_processed_block_height": 12345678
     }
   ]
 }
@@ -850,6 +864,8 @@ Get historical block results worker health data.
 - `success_rate`: Success rate percentage (0-100)
 - `avg_processing_time_ms`: Average processing time per item in milliseconds
 - `worker_status`: Worker status at snapshot time
+- `current_block_height`: Block height currently being processed (or highest queued block) at snapshot time. `null` if no blocks were queued or being processed
+- `last_processed_block_height`: Last successfully processed block height at snapshot time. `null` if no blocks had been processed yet
 
 **Status Codes:**
 - `200`: Success
@@ -876,12 +892,16 @@ const history = await fetchBlockResultsWorkersHistory(
   'mainnet'
 );
 // Plot queue_size, success_rate, avg_processing_time_ms over time
+// Plot current_block_height and last_processed_block_height to track progress
+// Calculate and display block height lag (current - last_processed) over time
 ```
 
 **UI Considerations:**
 - Display multiple metrics in a multi-line chart
 - Show queue_size, delayed_items, processing_items trends
 - Display success_rate and avg_processing_time_ms trends
+- **Display current_block_height and last_processed_block_height trends** - Track worker progress over time
+- Show block height lag (difference between current and last processed) to identify processing delays
 - Add RPC name filter dropdown
 - Group by RPC name if multiple RPCs
 - Add time range selector (last hour, 6 hours, 24 hours, custom)

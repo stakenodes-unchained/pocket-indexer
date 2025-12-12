@@ -22,8 +22,8 @@ RUN chmod +x start_indexer_server.sh
 # Set Node.js environment to production
 ENV NODE_ENV=production
 
-# Increase Node.js memory limit for larger datasets
-ENV NODE_OPTIONS="--max-old-space-size=8192"
+# Increase Node.js memory limit for larger datasets (32GB for very large blocks)
+ENV NODE_OPTIONS="--max-old-space-size=32768"
 
 # Change ownership of the working directory to the 'node' user
 RUN chown -R node:node .
