@@ -51,8 +51,9 @@ async function handleGatewayStaked(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `, [
       'gateway',
       address,
@@ -61,6 +62,7 @@ async function handleGatewayStaked(event) {
       JSON.stringify(gateway),
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -130,6 +132,7 @@ async function handleGatewayUnbondingBegin(event) {
       JSON.stringify(gateway),
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -197,6 +200,7 @@ async function handleGatewayUnbondingEnd(event) {
       JSON.stringify(gateway),
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -252,8 +256,9 @@ async function handleGatewayUnbondingCanceled(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `, [
       'gateway',
       address,
@@ -262,6 +267,7 @@ async function handleGatewayUnbondingCanceled(event) {
       JSON.stringify(gateway),
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     

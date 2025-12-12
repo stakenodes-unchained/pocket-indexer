@@ -96,7 +96,7 @@ async function processBlock(blockData) {
             hash: tx.hash,
             tx: tx.tx || {}
           };
-          const eventResults = await processTransactionEvents(txData, blockData);
+          const eventResults = await processTransactionEvents(txData, blockData, rpcName);
           if (eventResults.length > 0) {
             const successCount = eventResults.filter(r => r.success).length;
             // Log only if there are events (to reduce noise)
@@ -244,7 +244,7 @@ async function processBlock(blockData) {
     // Process block events immediately without waiting for block_results
     // block_results will be processed asynchronously by blockResultsWorker
     try {
-      const eventResults = await processBlockEvents(blockData, null);
+      const eventResults = await processBlockEvents(blockData, null, rpcName);
       if (eventResults.length > 0) {
         const successCount = eventResults.filter(r => r.success).length;
         console.log(`[Worker ${workerData.id}] Processed ${eventResults.length} block events (${successCount} successful)`);

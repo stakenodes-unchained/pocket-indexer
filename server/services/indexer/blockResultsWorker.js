@@ -116,7 +116,7 @@ async function processBlockResultsItem(item) {
     // Process events asynchronously (fire-and-forget if ASYNC_EVENTS is true)
     const processEvents = async () => {
       try {
-        const eventResults = await processBlockEvents(blockData, blockResultsData);
+        const eventResults = await processBlockEvents(blockData, blockResultsData, rpcName);
         if (eventResults.length > 0) {
           const successCount = eventResults.filter(r => r.success).length;
           log(`[BlockResultsWorker ${id}] Processed ${eventResults.length} block events from block_results (${successCount} successful) for height ${height}`);

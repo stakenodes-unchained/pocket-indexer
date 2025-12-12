@@ -11,12 +11,13 @@ const { routeEvents } = require('./eventRouter');
  * Process events from a block
  * @param {Object} blockData - Block data from RPC
  * @param {Object} blockResultsData - Optional block_results data from Tendermint block_results endpoint
+ * @param {String} chain - Chain identifier (e.g., "pokt-mainnet")
  * @returns {Promise<Array>} Array of processing results
  */
-async function processBlockEvents(blockData, blockResultsData = null) {
+async function processBlockEvents(blockData, blockResultsData = null, chain = null) {
   try {
     // Extract events from block (both transaction and block-level events)
-    const eventData = extractEventsFromBlock(blockData, blockResultsData);
+    const eventData = extractEventsFromBlock(blockData, blockResultsData, chain);
     
     if (eventData.length === 0) {
       return [];
@@ -54,12 +55,13 @@ async function processBlockEvents(blockData, blockResultsData = null) {
  * Process events from a transaction
  * @param {Object} txData - Transaction data with tx_response
  * @param {Object} blockData - Block data for metadata
+ * @param {String} chain - Chain identifier (e.g., "pokt-mainnet")
  * @returns {Promise<Array>} Array of processing results
  */
-async function processTransactionEvents(txData, blockData) {
+async function processTransactionEvents(txData, blockData, chain = null) {
   try {
     // Extract events from transaction
-    const eventData = extractEventsFromTransaction(txData, blockData);
+    const eventData = extractEventsFromTransaction(txData, blockData, chain);
     
     if (eventData.length === 0) {
       return [];

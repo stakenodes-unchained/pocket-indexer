@@ -70,8 +70,9 @@ async function handleClaimCreated(event) {
         claim_proof_status_int,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
     `, [
       sessionId,
       supplier_operator_address,
@@ -86,6 +87,7 @@ async function handleClaimCreated(event) {
       claim_proof_status_int,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -167,8 +169,9 @@ async function handleClaimUpdated(event) {
         claim_proof_status_int,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
     `, [
       sessionId,
       supplier_operator_address,
@@ -183,6 +186,7 @@ async function handleClaimUpdated(event) {
       claim_proof_status_int,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -264,8 +268,9 @@ async function handleProofSubmitted(event) {
         claim_proof_status_int,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
     `, [
       sessionId,
       supplier_operator_address,
@@ -280,6 +285,7 @@ async function handleProofSubmitted(event) {
       claim_proof_status_int,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -335,8 +341,9 @@ async function handleProofUpdated(event) {
         claim_proof_status_int,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
     `, [
       sessionId,
       supplier_operator_address,
@@ -351,6 +358,7 @@ async function handleProofUpdated(event) {
       claim_proof_status_int,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -400,8 +408,9 @@ async function handleProofValidityChecked(event) {
         failure_reason,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     `, [
       sessionId,
       supplier_operator_address,
@@ -413,6 +422,7 @@ async function handleProofValidityChecked(event) {
       failure_reason,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     

@@ -43,8 +43,9 @@ async function handleSupplierStaked(event) {
         session_end_height,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     `, [
       'supplier',
       operator_address,
@@ -52,6 +53,7 @@ async function handleSupplierStaked(event) {
       session_end_height,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -124,6 +126,7 @@ async function handleSupplierUnbondingBegin(event) {
       supplier ? JSON.stringify(supplier) : null,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -194,6 +197,7 @@ async function handleSupplierUnbondingEnd(event) {
       supplier ? JSON.stringify(supplier) : null,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -260,6 +264,7 @@ async function handleSupplierUnbondingCanceled(event) {
       supplier ? JSON.stringify(supplier) : null,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -298,14 +303,16 @@ async function handleSupplierServiceConfigActivated(event) {
         activation_height,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
     `, [
       operator_address,
       service_id,
       activation_height,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     

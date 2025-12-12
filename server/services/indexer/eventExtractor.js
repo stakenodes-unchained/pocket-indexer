@@ -7,9 +7,10 @@
  * Extract all events from a block
  * @param {Object} blockData - The block data from RPC
  * @param {Object} blockResultsData - Optional block_results data from Tendermint block_results endpoint
+ * @param {String} chain - Chain identifier (e.g., "pokt-mainnet")
  * @returns {Array} Array of events with metadata
  */
-function extractEventsFromBlock(blockData, blockResultsData = null) {
+function extractEventsFromBlock(blockData, blockResultsData = null, chain = null) {
   const events = [];
   
   if (!blockData) {
@@ -39,6 +40,7 @@ function extractEventsFromBlock(blockData, blockResultsData = null) {
           event_source: 'transaction',
           event_index: eventIndex,
           tx_index: txIndex,
+          chain: chain,
           created_timestamp: new Date().toISOString()
         }
       });
@@ -84,6 +86,7 @@ function extractEventsFromBlock(blockData, blockResultsData = null) {
         event_source: 'block',
         event_index: eventIndex,
         tx_index: null,
+        chain: chain,
         created_timestamp: new Date().toISOString()
       }
     });
@@ -96,9 +99,10 @@ function extractEventsFromBlock(blockData, blockResultsData = null) {
  * Extract events from transaction data (when processing individual transactions)
  * @param {Object} txData - Transaction data with tx_response
  * @param {Object} blockData - Block data for metadata
+ * @param {String} chain - Chain identifier (e.g., "pokt-mainnet")
  * @returns {Array} Array of events with metadata
  */
-function extractEventsFromTransaction(txData, blockData) {
+function extractEventsFromTransaction(txData, blockData, chain = null) {
   const events = [];
   
   if (!txData) {
@@ -132,6 +136,7 @@ function extractEventsFromTransaction(txData, blockData) {
         event_source: 'transaction',
         event_index: eventIndex,
         tx_index: null,
+        chain: chain,
         created_timestamp: new Date().toISOString()
       }
     });

@@ -51,8 +51,9 @@ async function handleApplicationStaked(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `, [
       'application',
       address,
@@ -61,6 +62,7 @@ async function handleApplicationStaked(event) {
       JSON.stringify(application),
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -114,8 +116,9 @@ async function handleRedelegation(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `, [
       'application',
       address,
@@ -124,6 +127,7 @@ async function handleRedelegation(event) {
       JSON.stringify(application),
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -165,8 +169,9 @@ async function handleTransferBegin(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     `, [
       'application',
       source_address,
@@ -178,6 +183,7 @@ async function handleTransferBegin(event) {
       source_application ? JSON.stringify(source_application) : null,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -239,8 +245,9 @@ async function handleTransferEnd(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     `, [
       'application',
       destination_address,
@@ -252,6 +259,7 @@ async function handleTransferEnd(event) {
       destination_application ? JSON.stringify(destination_application) : null,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -293,8 +301,9 @@ async function handleTransferError(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     `, [
       'application',
       source_address,
@@ -306,6 +315,7 @@ async function handleTransferError(event) {
       source_application ? JSON.stringify(source_application) : null,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -366,8 +376,9 @@ async function handleApplicationUnbondingBegin(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     `, [
       'application',
       address,
@@ -378,6 +389,7 @@ async function handleApplicationUnbondingBegin(event) {
       JSON.stringify(application),
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -436,8 +448,9 @@ async function handleApplicationUnbondingEnd(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     `, [
       'application',
       address,
@@ -448,6 +461,7 @@ async function handleApplicationUnbondingEnd(event) {
       JSON.stringify(application),
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -503,8 +517,9 @@ async function handleApplicationUnbondingCanceled(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `, [
       'application',
       address,
@@ -513,6 +528,7 @@ async function handleApplicationUnbondingCanceled(event) {
       JSON.stringify(application),
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     

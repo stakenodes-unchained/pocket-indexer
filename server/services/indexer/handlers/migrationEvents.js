@@ -40,8 +40,9 @@ async function handleImportMorseClaimableAccounts(event) {
         created_at_height,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     `, [
       'EventImportMorseClaimableAccounts',
       morse_account_state_hash ? Buffer.from(morse_account_state_hash, 'hex') : null,
@@ -49,6 +50,7 @@ async function handleImportMorseClaimableAccounts(event) {
       created_at_height,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -86,8 +88,9 @@ async function handleMorseAccountClaimed(event) {
         session_end_height,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `, [
       'EventMorseAccountClaimed',
       morse_src_address,
@@ -96,6 +99,7 @@ async function handleMorseAccountClaimed(event) {
       session_end_height,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -135,8 +139,9 @@ async function handleMorseApplicationClaimed(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     `, [
       'EventMorseApplicationClaimed',
       morse_src_address,
@@ -146,6 +151,7 @@ async function handleMorseApplicationClaimed(event) {
       application ? JSON.stringify(application) : null,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -221,6 +227,7 @@ async function handleMorseSupplierClaimed(event) {
       supplier ? JSON.stringify(supplier) : null,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -278,8 +285,9 @@ async function handleMorseAccountRecovered(event) {
         session_end_height,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `, [
       'EventMorseAccountRecovered',
       morse_src_address,
@@ -288,6 +296,7 @@ async function handleMorseAccountRecovered(event) {
       session_end_height,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     

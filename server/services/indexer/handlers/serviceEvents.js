@@ -37,8 +37,9 @@ async function handleRelayMiningDifficultyUpdated(event) {
         new_num_relays_ema,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `, [
       service_id,
       prev_target_hash_hex_encoded || null,
@@ -47,6 +48,7 @@ async function handleRelayMiningDifficultyUpdated(event) {
       new_num_relays_ema,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     

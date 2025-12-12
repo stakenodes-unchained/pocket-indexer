@@ -109,8 +109,9 @@ async function handleClaimSettled(event) {
         claim_proof_status_int,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       ON CONFLICT (session_id, supplier_operator_address) 
       DO UPDATE SET
         settlement_type = EXCLUDED.settlement_type,
@@ -120,7 +121,8 @@ async function handleClaimSettled(event) {
         claimed_upokt = EXCLUDED.claimed_upokt,
         claim_proof_status_int = EXCLUDED.claim_proof_status_int,
         block_height = EXCLUDED.block_height,
-        transaction_hash = EXCLUDED.transaction_hash
+        transaction_hash = EXCLUDED.transaction_hash,
+        chain = EXCLUDED.chain
       RETURNING id
     `, [
       sessionId,
@@ -137,6 +139,7 @@ async function handleClaimSettled(event) {
       claim_proof_status_int,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -152,8 +155,9 @@ async function handleClaimSettled(event) {
             amount,
             block_height,
             transaction_hash,
+            chain,
             created_timestamp
-          ) VALUES ($1, $2, $3, $4, $5, $6)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7)
           ON CONFLICT DO NOTHING
         `, [
           settlementId,
@@ -161,6 +165,7 @@ async function handleClaimSettled(event) {
           parseUpokt(amount),
           metadata.block_height,
           metadata.transaction_hash,
+          metadata.chain || null,
           metadata.created_timestamp
         ]);
       }
@@ -259,8 +264,9 @@ async function handleClaimExpired(event) {
         claim_proof_status_int,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       ON CONFLICT (session_id, supplier_operator_address) 
       DO UPDATE SET
         settlement_type = EXCLUDED.settlement_type,
@@ -271,7 +277,8 @@ async function handleClaimExpired(event) {
         claimed_upokt = EXCLUDED.claimed_upokt,
         claim_proof_status_int = EXCLUDED.claim_proof_status_int,
         block_height = EXCLUDED.block_height,
-        transaction_hash = EXCLUDED.transaction_hash
+        transaction_hash = EXCLUDED.transaction_hash,
+        chain = EXCLUDED.chain
     `, [
       sessionId,
       supplier_operator_address,
@@ -287,6 +294,7 @@ async function handleClaimExpired(event) {
       claim_proof_status_int,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -327,8 +335,9 @@ async function handleSupplierSlashed(event) {
         claim_proof_status_int,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     `, [
       supplier_operator_address,
       service_id,
@@ -338,6 +347,7 @@ async function handleSupplierSlashed(event) {
       claim_proof_status_int,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -386,8 +396,9 @@ async function handleApplicationOverserviced(event) {
         effective_burn,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     `, [
       application_addr,
       supplier_operator_addr,
@@ -395,6 +406,7 @@ async function handleApplicationOverserviced(event) {
       parseUpokt(effective_burn),
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     
@@ -479,15 +491,17 @@ async function handleClaimDiscarded(event) {
         claim_proof_status_int,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       ON CONFLICT (session_id, supplier_operator_address) 
       DO UPDATE SET
         settlement_type = EXCLUDED.settlement_type,
         error_message = EXCLUDED.error_message,
         claim_proof_status_int = EXCLUDED.claim_proof_status_int,
         block_height = EXCLUDED.block_height,
-        transaction_hash = EXCLUDED.transaction_hash
+        transaction_hash = EXCLUDED.transaction_hash,
+        chain = EXCLUDED.chain
     `, [
       sessionId,
       supplier_operator_address,
@@ -499,6 +513,7 @@ async function handleClaimDiscarded(event) {
       claim_proof_status_int,
       metadata.block_height,
       metadata.transaction_hash,
+      metadata.chain || null,
       metadata.created_timestamp
     ]);
     

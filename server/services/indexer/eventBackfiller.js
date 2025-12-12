@@ -100,7 +100,7 @@ async function backfillEvents(chain, rpcUrl, startHeight, endHeight, batchSize =
           }
           
           // Process events from block
-          const results = await processBlockEvents(blockData);
+          const results = await processBlockEvents(blockData, null, chain);
           batchEventsProcessed += results.length;
           
           // Small delay to prevent overwhelming RPC

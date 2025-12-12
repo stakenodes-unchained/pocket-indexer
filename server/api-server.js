@@ -270,7 +270,7 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
 
     // Aggregate relays and compute units from claim_settlements
     // Using EST/EDT timezone for day boundaries and num_claimed_compute_units
-    // Joining with transactions table to get chain for filtering
+    // Filter directly on claim_settlements.chain column
     const perfSql = `
       WITH bounds AS (
         SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date) AS end_day,
@@ -285,10 +285,9 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
                SUM(cs.num_relays) AS relays,
                SUM(cs.num_claimed_compute_units) AS compute_units
         FROM claim_settlements cs
-        LEFT JOIN transactions t ON cs.transaction_hash = t.hash
         WHERE cs.settlement_type = 'settled'
           AND cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
-          AND ($1::text IS NULL OR t.chain = $1)
+          AND ($1::text IS NULL OR cs.chain = $1)
         GROUP BY 1
       )
       SELECT d.day,
@@ -351,7 +350,7 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
 
     // Aggregate relays and compute units from claim_settlements
     // Using EST/EDT timezone for day boundaries and num_claimed_compute_units
-    // Joining with transactions table to get chain for filtering
+    // Filter directly on claim_settlements.chain column
     const perfSql = `
       WITH bounds AS (
         SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date) AS end_day,
@@ -366,10 +365,9 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
                SUM(cs.num_relays) AS relays,
                SUM(cs.num_claimed_compute_units) AS compute_units
         FROM claim_settlements cs
-        LEFT JOIN transactions t ON cs.transaction_hash = t.hash
         WHERE cs.settlement_type = 'settled'
           AND cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
-          AND ($1::text IS NULL OR t.chain = $1)
+          AND ($1::text IS NULL OR cs.chain = $1)
         GROUP BY 1
       )
       SELECT d.day,

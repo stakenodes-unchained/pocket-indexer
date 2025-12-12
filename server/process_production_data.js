@@ -690,7 +690,7 @@ class ProductionDataProcessor {
       // These events complement the message parsing and provide actual outcomes
       try {
         const { processTransactionEvents } = require('./services/indexer/eventProcessor');
-        const eventResults = await processTransactionEvents(txData, blockData);
+        const eventResults = await processTransactionEvents(txData, blockData, this.chain);
         if (eventResults.length > 0) {
           const successCount = eventResults.filter(r => r.success).length;
           // Log only if there are failures (to reduce noise)
