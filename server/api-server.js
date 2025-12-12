@@ -268,8 +268,9 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
     const entitiesRes = await client.query(entitiesSql, [chain || null, windowDays]);
     const entitySeries = entitiesRes.rows || [];
 
-    // Aggregate relays and compute units from proof_submissions (optimized by existing indexes)
-    // Using EST/EDT timezone for day boundaries to match POKTScan calculation method
+    // Aggregate relays and compute units from claim_settlements
+    // Using EST/EDT timezone for day boundaries and num_claimed_compute_units
+    // Joining with transactions table to get chain for filtering
     const perfSql = `
       WITH bounds AS (
         SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date) AS end_day,
@@ -280,13 +281,14 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
         FROM bounds b
       ),
       agg AS (
-        SELECT DATE_TRUNC('day', timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day,
-               SUM(num_relays) AS relays,
-               SUM(num_estimated_compute_units) AS compute_units
-        FROM proof_submissions
-        WHERE claim_proof_status_int = 0
-          AND timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
-          AND ($1::text IS NULL OR chain = $1)
+        SELECT DATE_TRUNC('day', cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day,
+               SUM(cs.num_relays) AS relays,
+               SUM(cs.num_claimed_compute_units) AS compute_units
+        FROM claim_settlements cs
+        LEFT JOIN transactions t ON cs.transaction_hash = t.hash
+        WHERE cs.settlement_type = 'settled'
+          AND cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+          AND ($1::text IS NULL OR t.chain = $1)
         GROUP BY 1
       )
       SELECT d.day,
@@ -333,6 +335,172 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
     res.json({ data: { window_days: windowDays, timeline } });
   } catch (error) {
     console.error('Error fetching network growth:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fast endpoint for network growth performance metrics (compute units and relays only)
+app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req, res) => {
+  try {
+    const { chain, window } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    // Window in days (default 7)
+    const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
+
+    // Aggregate relays and compute units from claim_settlements
+    // Using EST/EDT timezone for day boundaries and num_claimed_compute_units
+    // Joining with transactions table to get chain for filtering
+    const perfSql = `
+      WITH bounds AS (
+        SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date) AS end_day,
+               ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
+      ),
+      days AS (
+        SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
+        FROM bounds b
+      ),
+      agg AS (
+        SELECT DATE_TRUNC('day', cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day,
+               SUM(cs.num_relays) AS relays,
+               SUM(cs.num_claimed_compute_units) AS compute_units
+        FROM claim_settlements cs
+        LEFT JOIN transactions t ON cs.transaction_hash = t.hash
+        WHERE cs.settlement_type = 'settled'
+          AND cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+          AND ($1::text IS NULL OR t.chain = $1)
+        GROUP BY 1
+      )
+      SELECT d.day,
+             COALESCE(a.relays, 0) AS relays,
+             COALESCE(a.compute_units, 0) AS compute_units
+      FROM days d
+      LEFT JOIN agg a USING(day)
+      ORDER BY d.day ASC;
+    `;
+
+    const perfRes = await client.query(perfSql, [chain || null, windowDays]);
+    const timeline = (perfRes.rows || []).map(row => ({
+      day: row.day,
+      relays: Number(row.relays || 0),
+      compute_units: Number(row.compute_units || 0)
+    }));
+
+    res.json({ data: { window_days: windowDays, timeline } });
+  } catch (error) {
+    console.error('Error fetching network growth performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint for network growth entity statistics (applications, suppliers, gateways, services)
+app.get('/api/v1/network-growth/entities', cacheMiddleware(1800), async (req, res) => {
+  try {
+    const { chain, window } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    // Window in days (default 7)
+    const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
+
+    // Build daily series for the selected window, counting new entities first seen per day
+    const entitiesSql = `
+      WITH bounds AS (
+        SELECT (NOW()::date) AS end_day,
+               (NOW()::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
+      ),
+      days AS (
+        SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
+        FROM bounds b
+      ),
+      txw AS (
+        SELECT timestamp, tx_data
+        FROM transactions
+        WHERE timestamp >= (SELECT start_day FROM bounds)
+          AND ($1::text IS NULL OR chain = $1)
+          AND (tx_data->'tx'->'body'->'messages') IS NOT NULL
+      ),
+      msgs AS (
+        SELECT 
+          t.timestamp,
+          COALESCE(m->>'@type', m->>'type', m->>'type_url') AS type_url,
+          COALESCE(
+            m->>'address',
+            m->>'app_address',
+            m->>'gateway_address',
+            m->>'operator_address',
+            m->>'owner_address'
+          ) AS addr,
+          (m->'service'->>'id') AS service_id
+        FROM txw t
+        JOIN LATERAL jsonb_array_elements(t.tx_data->'tx'->'body'->'messages') AS m ON TRUE
+      ),
+      apps_first AS (
+        SELECT DATE_TRUNC('day', MIN(timestamp))::date AS first_day
+        FROM msgs
+        WHERE type_url ILIKE '%pocket.application.MsgStakeApplication%'
+          AND addr IS NOT NULL
+        GROUP BY addr
+      ),
+      sups_first AS (
+        SELECT DATE_TRUNC('day', MIN(timestamp))::date AS first_day
+        FROM msgs
+        WHERE type_url ILIKE '%pocket.supplier.MsgStakeSupplier%'
+          AND addr IS NOT NULL
+        GROUP BY addr
+      ),
+      gws_first AS (
+        SELECT DATE_TRUNC('day', MIN(timestamp))::date AS first_day
+        FROM msgs
+        WHERE type_url ILIKE '%pocket.gateway.MsgStakeGateway%'
+          AND addr IS NOT NULL
+        GROUP BY addr
+      ),
+      svcs_first AS (
+        SELECT DATE_TRUNC('day', MIN(timestamp))::date AS first_day
+        FROM msgs
+        WHERE type_url ILIKE '%pocket.service.MsgAddService%'
+          AND service_id IS NOT NULL
+        GROUP BY service_id
+      ),
+      apps_counts AS (
+        SELECT first_day AS day, COUNT(*) AS cnt FROM apps_first GROUP BY first_day
+      ),
+      sups_counts AS (
+        SELECT first_day AS day, COUNT(*) AS cnt FROM sups_first GROUP BY first_day
+      ),
+      gws_counts AS (
+        SELECT first_day AS day, COUNT(*) AS cnt FROM gws_first GROUP BY first_day
+      ),
+      svcs_counts AS (
+        SELECT first_day AS day, COUNT(*) AS cnt FROM svcs_first GROUP BY first_day
+      )
+      SELECT d.day,
+             COALESCE(a.cnt, 0) AS applications,
+             COALESCE(s.cnt, 0) AS suppliers,
+             COALESCE(g.cnt, 0) AS gateways,
+             COALESCE(v.cnt, 0) AS services
+      FROM days d
+      LEFT JOIN apps_counts a USING(day)
+      LEFT JOIN sups_counts s USING(day)
+      LEFT JOIN gws_counts g USING(day)
+      LEFT JOIN svcs_counts v USING(day)
+      ORDER BY d.day ASC;
+    `;
+
+    const entitiesRes = await client.query(entitiesSql, [chain || null, windowDays]);
+    const timeline = (entitiesRes.rows || []).map(row => ({
+      day: row.day,
+      applications: Number(row.applications || 0),
+      suppliers: Number(row.suppliers || 0),
+      gateways: Number(row.gateways || 0),
+      services: Number(row.services || 0)
+    }));
+
+    res.json({ data: { window_days: windowDays, timeline } });
+  } catch (error) {
+    console.error('Error fetching network growth entities:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -411,16 +579,18 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
     const entitiesRes = await client.query(entitiesSql, [chain || null, windowDays]);
     const entities = entitiesRes.rows[0] || {};
 
-    // Using EST/EDT timezone for day boundaries and num_estimated_compute_units to match POKTScan calculation method
+    // Using claim_settlements table with EST/EDT timezone for day boundaries and num_claimed_compute_units
+    // Joining with transactions table to get chain for filtering
     const perfSql = `
       SELECT
-        COALESCE(SUM(num_relays), 0) AS relays,
-        COALESCE(SUM(num_estimated_compute_units), 0) AS compute_units
-      FROM proof_submissions
-      WHERE claim_proof_status_int = 0
-        AND timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= 
+        COALESCE(SUM(cs.num_relays), 0) AS relays,
+        COALESCE(SUM(cs.num_claimed_compute_units), 0) AS compute_units
+      FROM claim_settlements cs
+      LEFT JOIN transactions t ON cs.transaction_hash = t.hash
+      WHERE cs.settlement_type = 'settled'
+        AND cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= 
             ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date - make_interval(days => $2::int))
-        AND ($1::text IS NULL OR chain = $1);
+        AND ($1::text IS NULL OR t.chain = $1);
     `;
 
     const perfRes = await client.query(perfSql, [chain || null, windowDays]);
