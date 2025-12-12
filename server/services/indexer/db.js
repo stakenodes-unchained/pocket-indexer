@@ -19,10 +19,10 @@ const pgPool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
-  max: parseInt(process.env.DB_POOL_SIZE || '3', 10), // Max 2-3 connections per worker thread
+  max: parseInt(process.env.DB_POOL_SIZE || '10', 10), // Max 2-3 connections per worker thread
   min: 1, // Maintain at least 1 connection
-  idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
-  connectionTimeoutMillis: 10000, // 10 second connection timeout
+  idleTimeoutMillis: 60000, // Close idle clients after 60 seconds
+  connectionTimeoutMillis: 60000, // Increased to 60 seconds to handle connection delays
   statement_timeout: 120000, // 120 second query timeout
 });
 
@@ -37,15 +37,7 @@ const redis = new Redis(process.env.REDIS_URL);
 let redisConnectingPromise = null;
 
 async function connectClients() {
-  // Postgres: Pool manages connections automatically, no need to connect manually
-  // Just ensure pool is ready by testing a simple query
-  try {
-    await pgPool.query('SELECT 1');
-  } catch (error) {
-    console.error('PostgreSQL pool connection error:', error);
-    throw error;
-  }
-
+  
   // Redis: guard concurrent connects
   if (!redis.status || redis.status !== 'ready') {
     if (!redisConnectingPromise) {
