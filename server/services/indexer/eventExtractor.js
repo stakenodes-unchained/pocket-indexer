@@ -41,7 +41,7 @@ function extractEventsFromBlock(blockData, blockResultsData = null, chain = null
           event_index: eventIndex,
           tx_index: txIndex,
           chain: chain,
-          created_timestamp: new Date().toISOString()
+          created_timestamp: blockTimestamp
         }
       });
     }
@@ -87,7 +87,7 @@ function extractEventsFromBlock(blockData, blockResultsData = null, chain = null
         event_index: eventIndex,
         tx_index: null,
         chain: chain,
-        created_timestamp: new Date().toISOString()
+        created_timestamp: blockTimestamp
       }
     });
   }
@@ -137,7 +137,7 @@ function extractEventsFromTransaction(txData, blockData, chain = null) {
         event_index: eventIndex,
         tx_index: null,
         chain: chain,
-        created_timestamp: new Date().toISOString()
+        created_timestamp: blockTimestamp
       }
     });
   }
