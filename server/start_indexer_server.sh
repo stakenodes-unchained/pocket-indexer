@@ -15,4 +15,6 @@ node migrate.js
 
 # Start the application
 echo "Starting the application..."
+# Set Node.js memory limit (8GB) to prevent heap out of memory errors
+export NODE_OPTIONS="--max-old-space-size=8192"
 node indexer-server.js 

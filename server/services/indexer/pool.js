@@ -493,6 +493,8 @@ class TransactionWorkerPool {
         failed_count: workerStats.failedCount || 0,
         success_rate: workerStats.successRate !== undefined ? workerStats.successRate : null,
         avg_processing_time_ms: workerStats.avgProcessingTimeMs !== undefined ? workerStats.avgProcessingTimeMs : null,
+        current_block_height: workerStats.currentBlockHeight !== undefined ? workerStats.currentBlockHeight : null,
+        last_processed_block_height: workerStats.lastProcessedBlockHeight !== undefined ? workerStats.lastProcessedBlockHeight : null,
         last_update: workerStats.lastUpdate || null
       };
     } catch (error) {
@@ -507,6 +509,8 @@ class TransactionWorkerPool {
         failed_count: 0,
         success_rate: null,
         avg_processing_time_ms: null,
+        current_block_height: null,
+        last_processed_block_height: null,
         error: error.message
       };
     }

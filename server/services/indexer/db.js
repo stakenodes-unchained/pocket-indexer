@@ -92,7 +92,8 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
     const rawTxs = blockData.block?.data?.txs || blockData.sdk_block?.data?.txs || [];
 
     // Calculate raw block size in bytes (serialized block size as received over the wire)
-    // Serialize the block data to JSON and get the byte length
+    // Serialize the block data to JSON once and reuse for both size calculation and storage
+    // This avoids double stringification which can cause memory issues with large blocks
     const blockJson = JSON.stringify(blockData);
     const rawBlockSize = Buffer.byteLength(blockJson, 'utf8');
 
@@ -133,7 +134,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
          block_production_time = EXCLUDED.block_production_time,
          block_data = EXCLUDED.block_data
        RETURNING id`,
-        [uniqueBlockId, height, hash, timestamp, proposer, chain, rawBlockSize, blockProductionTime, JSON.stringify(blockData)]
+        [uniqueBlockId, height, hash, timestamp, proposer, chain, rawBlockSize, blockProductionTime, blockJson]
       );
       // Use the returned id (inserted or existing)
       persistedBlockId = result.rows[0]?.id || uniqueBlockId;

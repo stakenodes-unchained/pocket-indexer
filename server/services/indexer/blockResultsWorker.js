@@ -28,7 +28,9 @@ const ASYNC_EVENTS = process.env.BLOCK_RESULTS_ASYNC_EVENTS !== 'false'; // Proc
 let stats = {
   processedCount: 0,
   failedCount: 0,
-  processingTimes: [] // Keep last 100 processing times for average calculation
+  processingTimes: [], // Keep last 100 processing times for average calculation
+  currentBlockHeight: null, // Current/last processed block height
+  lastProcessedBlockHeight: null // Last successfully processed block height
 };
 
 function log(message) {
@@ -56,6 +58,8 @@ function reportStats() {
       failedCount: stats.failedCount,
       successRate: parseFloat(successRate.toFixed(2)),
       avgProcessingTimeMs: parseFloat(avgProcessingTime.toFixed(2)),
+      currentBlockHeight: stats.currentBlockHeight,
+      lastProcessedBlockHeight: stats.lastProcessedBlockHeight,
       status: 'running'
     }
   });
@@ -67,6 +71,9 @@ function reportStats() {
 async function processBlockResultsItem(item) {
   const { height } = item;
   const startTime = Date.now();
+  
+  // Update current block height when starting to process
+  stats.currentBlockHeight = height;
   
   try {
     log(`[BlockResultsWorker ${id}] Processing block_results for height ${height}`);
@@ -144,6 +151,10 @@ async function processBlockResultsItem(item) {
     if (stats.processingTimes.length > 100) {
       stats.processingTimes.shift();
     }
+    
+    // Update block height tracking
+    stats.currentBlockHeight = height;
+    stats.lastProcessedBlockHeight = height;
     
     return { success: true, height };
   } catch (error) {
@@ -226,6 +237,10 @@ async function processQueue() {
           break; // Queue is empty
         }
         items.push(item);
+        // Update current block height to the highest queued item
+        if (item.height && (!stats.currentBlockHeight || item.height > stats.currentBlockHeight)) {
+          stats.currentBlockHeight = item.height;
+        }
       }
       
       if (items.length > 0) {
@@ -303,6 +318,8 @@ async function start() {
         avgProcessingTimeMs: stats.processingTimes.length > 0
           ? parseFloat((stats.processingTimes.reduce((sum, t) => sum + t, 0) / stats.processingTimes.length).toFixed(2))
           : 0,
+        currentBlockHeight: stats.currentBlockHeight,
+        lastProcessedBlockHeight: stats.lastProcessedBlockHeight,
         status: 'error'
       }
     });
