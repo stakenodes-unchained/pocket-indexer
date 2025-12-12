@@ -269,22 +269,23 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
     const entitySeries = entitiesRes.rows || [];
 
     // Aggregate relays and compute units from proof_submissions (optimized by existing indexes)
+    // Using EST/EDT timezone for day boundaries to match POKTScan calculation method
     const perfSql = `
       WITH bounds AS (
-        SELECT (NOW()::date) AS end_day,
-               (NOW()::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
+        SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date) AS end_day,
+               ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
       ),
       days AS (
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
         FROM bounds b
       ),
       agg AS (
-        SELECT DATE_TRUNC('day', timestamp)::date AS day,
+        SELECT DATE_TRUNC('day', timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day,
                SUM(num_relays) AS relays,
-               SUM(num_claimed_compute_units) AS compute_units
+               SUM(num_estimated_compute_units) AS compute_units
         FROM proof_submissions
         WHERE claim_proof_status_int = 0
-          AND timestamp >= (SELECT start_day FROM bounds)
+          AND timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
           AND ($1::text IS NULL OR chain = $1)
         GROUP BY 1
       )
@@ -410,13 +411,15 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
     const entitiesRes = await client.query(entitiesSql, [chain || null, windowDays]);
     const entities = entitiesRes.rows[0] || {};
 
+    // Using EST/EDT timezone for day boundaries and num_estimated_compute_units to match POKTScan calculation method
     const perfSql = `
       SELECT
         COALESCE(SUM(num_relays), 0) AS relays,
-        COALESCE(SUM(num_claimed_compute_units), 0) AS compute_units
+        COALESCE(SUM(num_estimated_compute_units), 0) AS compute_units
       FROM proof_submissions
       WHERE claim_proof_status_int = 0
-        AND timestamp >= NOW() - make_interval(days => $2::int)
+        AND timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= 
+            ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date - make_interval(days => $2::int))
         AND ($1::text IS NULL OR chain = $1);
     `;
 
