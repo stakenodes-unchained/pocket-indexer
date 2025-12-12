@@ -18,8 +18,10 @@ const { rpcName, blockResultsRpcUrl, rpcUrl, id } = workerData;
 
 // Configuration
 const POLL_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_POLL_INTERVAL_MS || '5000', 10); // 5 seconds default
-const BATCH_SIZE = parseInt(process.env.BLOCK_RESULTS_BATCH_SIZE || '10', 10); // Batch size for dequeuing
-const PARALLEL_PROCESSING_LIMIT = parseInt(process.env.BLOCK_RESULTS_PARALLEL_LIMIT || '5', 10); // Max parallel block processing
+// Reduced default batch size from 10 to 5 to reduce memory usage
+const BATCH_SIZE = parseInt(process.env.BLOCK_RESULTS_BATCH_SIZE || '5', 10); // Batch size for dequeuing
+// Reduced default parallel limit from 5 to 3 to reduce memory usage
+const PARALLEL_PROCESSING_LIMIT = parseInt(process.env.BLOCK_RESULTS_PARALLEL_LIMIT || '3', 10); // Max parallel block processing
 const RATE_LIMIT_DELAY_MS = parseInt(process.env.BLOCK_RESULTS_RATE_LIMIT_MS || '100', 10); // 100ms between requests
 const STATS_REPORT_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_STATS_INTERVAL_MS || '30000', 10); // 30 seconds default
 const ASYNC_EVENTS = process.env.BLOCK_RESULTS_ASYNC_EVENTS !== 'false'; // Process events asynchronously (default: true)
@@ -28,7 +30,7 @@ const ASYNC_EVENTS = process.env.BLOCK_RESULTS_ASYNC_EVENTS !== 'false'; // Proc
 let stats = {
   processedCount: 0,
   failedCount: 0,
-  processingTimes: [], // Keep last 100 processing times for average calculation
+  processingTimes: [], // Keep last 50 processing times for average calculation (reduced from 100 to save memory)
   currentBlockHeight: null, // Current/last processed block height
   lastProcessedBlockHeight: null // Last successfully processed block height
 };
@@ -147,8 +149,8 @@ async function processBlockResultsItem(item) {
     const processingTime = Date.now() - startTime;
     stats.processedCount++;
     stats.processingTimes.push(processingTime);
-    // Keep only last 100 processing times
-    if (stats.processingTimes.length > 100) {
+    // Keep only last 50 processing times (reduced from 100 to save memory)
+    if (stats.processingTimes.length > 50) {
       stats.processingTimes.shift();
     }
     

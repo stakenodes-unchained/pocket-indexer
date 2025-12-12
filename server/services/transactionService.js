@@ -17,8 +17,8 @@ class TransactionService {
       user: process.env.DB_USER,
       password: process.env.DB_PASS,
       database: process.env.DB_NAME,
-      // Connection pool settings for performance
-      max: parseInt(process.env.DB_POOL_SIZE || '20', 10), // Max connections in pool
+      // Connection pool settings for performance - reduced defaults to save memory
+      max: parseInt(process.env.DB_POOL_SIZE || '10', 10), // Max connections in pool (reduced from 20 to 10)
       min: parseInt(process.env.DB_POOL_MIN || '2', 10),   // Min connections to maintain
       idleTimeoutMillis: 30000,  // Close idle clients after 30 seconds
       connectionTimeoutMillis: 10000, // 10 second connection timeout

@@ -22,8 +22,12 @@ RUN chmod +x start_indexer_server.sh
 # Set Node.js environment to production
 ENV NODE_ENV=production
 
-# Increase Node.js memory limit for larger datasets (32GB for very large blocks)
-ENV NODE_OPTIONS="--max-old-space-size=32768"
+# Node.js memory limit - configurable via NODE_HEAP_SIZE_MB env var
+# Default to 32GB (32768 MB) for systems with 64GB RAM
+# Can be overridden in docker-compose.yml or .env file
+ARG NODE_HEAP_SIZE_MB=32768
+ENV NODE_HEAP_SIZE_MB=${NODE_HEAP_SIZE_MB}
+ENV NODE_OPTIONS="--max-old-space-size=${NODE_HEAP_SIZE_MB}"
 
 # Change ownership of the working directory to the 'node' user
 RUN chown -R node:node .

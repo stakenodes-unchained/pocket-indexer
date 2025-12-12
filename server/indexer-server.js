@@ -228,6 +228,72 @@ app.get('/api/v1/health/gaps', async (req, res) => {
   }
 });
 
+// Memory monitoring endpoint
+app.get('/api/v1/health/memory', async (req, res) => {
+  try {
+    const memUsage = process.memoryUsage();
+    const heapSizeMB = parseInt(process.env.NODE_HEAP_SIZE_MB || '32768', 10);
+    
+    // Calculate memory breakdown
+    const heapUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+    const heapTotalMB = Math.round(memUsage.heapTotal / 1024 / 1024);
+    const rssMB = Math.round(memUsage.rss / 1024 / 1024);
+    const externalMB = Math.round(memUsage.external / 1024 / 1024);
+    const arrayBuffersMB = Math.round((memUsage.arrayBuffers || 0) / 1024 / 1024);
+    
+    // Calculate percentages
+    const heapUsedPercent = heapSizeMB > 0 ? Math.round((heapUsedMB / heapSizeMB) * 100) : 0;
+    const heapTotalPercent = heapSizeMB > 0 ? Math.round((heapTotalMB / heapSizeMB) * 100) : 0;
+    
+    // Warning threshold (default 12GB RSS)
+    const warningThresholdGB = parseInt(process.env.MEMORY_WARNING_THRESHOLD_GB || '12', 10);
+    const warningThresholdMB = warningThresholdGB * 1024;
+    const isWarning = rssMB > warningThresholdMB;
+    
+    // Get worker stats
+    const workers = indexerPool.getWorkersStatus();
+    
+    res.json({
+      data: {
+        process: {
+          pid: process.pid,
+          uptime_s: Math.round(process.uptime()),
+        },
+        memory: {
+          heap: {
+            used_mb: heapUsedMB,
+            total_mb: heapTotalMB,
+            limit_mb: heapSizeMB,
+            used_percent: heapUsedPercent,
+            total_percent: heapTotalPercent,
+          },
+          rss_mb: rssMB,
+          external_mb: externalMB,
+          array_buffers_mb: arrayBuffersMB,
+          breakdown: {
+            heap_mb: heapTotalMB,
+            external_mb: externalMB,
+            other_mb: rssMB - heapTotalMB - externalMB, // Stack, code, etc.
+          }
+        },
+        workers: {
+          count: workers.length,
+          active: workers.filter(w => w.isRunning).length,
+        },
+        warnings: {
+          rss_high: isWarning,
+          rss_threshold_mb: warningThresholdMB,
+          message: isWarning ? `RSS memory (${rssMB}MB) exceeds warning threshold (${warningThresholdMB}MB)` : null,
+        },
+        timestamp: new Date().toISOString(),
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching memory health:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Block Results Worker Health Endpoints
 app.get('/api/v1/health/block-results-workers', async (req, res) => {
   try {
@@ -406,7 +472,10 @@ const startServer = async () => {
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔌 Port: ${PORT}`);
     console.log(`📊 Node Version: ${process.version}`);
-    console.log(`💾 Memory Usage: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
+    const memUsage = process.memoryUsage();
+    const heapSizeMB = process.env.NODE_HEAP_SIZE_MB || '32768';
+    console.log(`💾 Memory Limits: Heap=${heapSizeMB}MB (via NODE_OPTIONS)`);
+    console.log(`💾 Current Memory: Heap=${Math.round(memUsage.heapUsed / 1024 / 1024)}MB, RSS=${Math.round(memUsage.rss / 1024 / 1024)}MB, External=${Math.round(memUsage.external / 1024 / 1024)}MB`);
     console.log('='.repeat(80));
     
     // Initialize worker pool

@@ -1,4 +1,4 @@
-const { Client } = require('pg');
+const { Pool } = require('pg');
 const Redis = require('ioredis');
 const { fetchTransactionByHash } = require('./rpc');
 const { extractTransactionDetails, hashTx } = require('./transformer');
@@ -11,34 +11,39 @@ const REDIS_TX_TTL_SEC = parseInt(process.env.REDIS_TX_TTL_SEC || '0', 10); // 0
 const REDIS_RECENT_TTL_SEC = parseInt(process.env.REDIS_RECENT_TTL_SEC || '0', 10); // 0 = no TTL
 const REDIS_INDEX_TXS = (process.env.REDIS_INDEX_TXS || 'false') === 'true';
 
-// PostgreSQL client
-const pgClient = new Client({
+// PostgreSQL connection pool (shared across worker thread operations)
+// Using pool instead of single client to reduce memory overhead and enable connection reuse
+const pgPool = new Pool({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT,
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
+  max: parseInt(process.env.DB_POOL_SIZE || '3', 10), // Max 2-3 connections per worker thread
+  min: 1, // Maintain at least 1 connection
+  idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
+  connectionTimeoutMillis: 10000, // 10 second connection timeout
+  statement_timeout: 120000, // 120 second query timeout
+});
+
+// Handle pool errors
+pgPool.on('error', (err) => {
+  console.error('Unexpected error on idle PostgreSQL client', err);
 });
 
 // Redis client
 const redis = new Redis(process.env.REDIS_URL);
 
-let pgConnectingPromise = null;
 let redisConnectingPromise = null;
 
 async function connectClients() {
-  // Postgres: guard concurrent connects
-  if (!pgClient._connected) {
-    if (!pgConnectingPromise) {
-      pgConnectingPromise = (async () => {
-        if (!pgClient._connected) {
-          await pgClient.connect();
-          pgClient._connected = true;
-        }
-        pgConnectingPromise = null;
-      })();
-    }
-    await pgConnectingPromise;
+  // Postgres: Pool manages connections automatically, no need to connect manually
+  // Just ensure pool is ready by testing a simple query
+  try {
+    await pgPool.query('SELECT 1');
+  } catch (error) {
+    console.error('PostgreSQL pool connection error:', error);
+    throw error;
   }
 
   // Redis: guard concurrent connects
@@ -76,7 +81,8 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
   }
 
   try {
-    const client = pgClient;
+    // Use pool instead of single client - pool manages connections automatically
+    const client = pgPool;
 
     // Extract block information from the new format
     const blockId = blockData.block_id?.hash || blockData.block?.header?.hash;
@@ -138,6 +144,10 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
       );
       // Use the returned id (inserted or existing)
       persistedBlockId = result.rows[0]?.id || uniqueBlockId;
+      
+      // Clear blockJson after use to help garbage collection (large string can consume memory)
+      // Note: blockJson is a const, but clearing the reference helps GC
+      // The string will be garbage collected when no longer referenced
     } catch (error) {
       // Handle unique constraint violations for primary key (different from chain+height)
       if (error.code === '23505') {
@@ -477,7 +487,7 @@ async function saveTransaction(tx) {
       }
     }
 
-    await pgClient.query(
+    await pgPool.query(
       `INSERT INTO transactions (id, hash, block_id, block_height, sender, recipient, amount, fee, memo, type, status, timestamp, tx_data, chain, amount_denom, fee_denom, addresses)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        ON CONFLICT (id) DO UPDATE SET
@@ -645,7 +655,7 @@ async function bulkSaveClaims(claims) {
                    num_claimed_compute_units=EXCLUDED.num_claimed_compute_units,
                    num_estimated_compute_units=EXCLUDED.num_estimated_compute_units,
                    num_relays=EXCLUDED.num_relays`;
-    await pgClient.query(sql, params);
+    await pgPool.query(sql, params);
   }
 }
 
@@ -745,7 +755,7 @@ async function bulkSaveProofSubmissions(submissions) {
       num_estimated_compute_units=EXCLUDED.num_estimated_compute_units,
       num_relays=EXCLUDED.num_relays`;
 
-    await pgClient.query(sql, params);
+    await pgPool.query(sql, params);
   }
 }
 
@@ -936,7 +946,7 @@ async function upsertSupplier(supplier) {
     // Handle incremental staking/unstaking
     if (supplier.stake_change) {
       const stakeChange = parseFloat(supplier.stake_change) || 0;
-      await pgClient.query(
+      await pgPool.query(
         `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (address, chain) DO UPDATE SET
@@ -963,7 +973,7 @@ async function upsertSupplier(supplier) {
       );
     } else {
       // Original behavior for non-staking operations
-      await pgClient.query(
+      await pgPool.query(
         `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (address, chain) DO UPDATE SET
@@ -1012,7 +1022,7 @@ async function upsertApplication(app) {
     // Handle incremental staking/unstaking
     if (app.stake_change) {
       const stakeChange = parseFloat(app.stake_change) || 0;
-      await pgClient.query(
+      await pgPool.query(
         `INSERT INTO applications (address, chain, public_key, staked_amount, status, chains, last_seen)
          VALUES ($1,$2,$3,$4,$5,$6,$7)
          ON CONFLICT (address, chain) DO UPDATE SET
@@ -1037,7 +1047,7 @@ async function upsertApplication(app) {
       );
     } else {
       // Original behavior for non-staking operations
-      await pgClient.query(
+      await pgPool.query(
         `INSERT INTO applications (address, chain, public_key, staked_amount, status, chains, last_seen)
          VALUES ($1,$2,$3,$4,$5,$6,$7)
          ON CONFLICT (address, chain) DO UPDATE SET
@@ -1081,7 +1091,7 @@ async function insertStakingEvent(event) {
   await connectClients();
 
   try {
-    await pgClient.query(
+    await pgPool.query(
       `INSERT INTO staking (address, chain, type, amount, event, timestamp)
        VALUES ($1,$2,$3,$4,$5,$6)`,
       [
@@ -1167,7 +1177,7 @@ async function upsertNode(node) {
     // Handle incremental staking/unstaking
     if (node.stake_change) {
       const stakeChange = parseFloat(node.stake_change) || 0;
-      await pgClient.query(
+      await pgPool.query(
         `INSERT INTO nodes (address, chain, public_key, staked_amount, status, geo, last_seen, service_url)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (address, chain) DO UPDATE SET
@@ -1194,7 +1204,7 @@ async function upsertNode(node) {
       );
     } else {
       // Original behavior for non-staking operations
-      await pgClient.query(
+      await pgPool.query(
         `INSERT INTO nodes (address, chain, public_key, staked_amount, status, geo, last_seen, service_url)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (address, chain) DO UPDATE SET
@@ -1243,7 +1253,7 @@ async function upsertGateway(gateway) {
     // Handle incremental staking/unstaking
     if (gateway.stake_change) {
       const stakeChange = parseFloat(gateway.stake_change) || 0;
-      await pgClient.query(
+      await pgPool.query(
         `INSERT INTO gateways (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (address, chain) DO UPDATE SET
@@ -1270,7 +1280,7 @@ async function upsertGateway(gateway) {
       );
     } else {
       // Original behavior for non-staking operations
-      await pgClient.query(
+      await pgPool.query(
         `INSERT INTO gateways (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (address, chain) DO UPDATE SET
@@ -1311,7 +1321,8 @@ async function upsertGateway(gateway) {
 
 module.exports = {
   connectClients,
-  pgClient,
+  pgClient: pgPool, // Export pool as pgClient for backward compatibility
+  pgPool, // Also export as pgPool for clarity
   saveBlock,
   saveTransaction,
   getLastProcessedHeight,
@@ -1336,5 +1347,9 @@ module.exports = {
   getSnapshotProcessedHeight,
   findGaps,
   getNextGapToFill,
-  blockExists
+  blockExists,
+  // Cleanup function for graceful shutdown
+  async closePool() {
+    await pgPool.end();
+  }
 }; 

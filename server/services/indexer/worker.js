@@ -210,9 +210,13 @@ async function processBlock(blockData) {
       if (claimsBuffer.length) {
         const { bulkSaveClaims } = require('./db');
         await bulkSaveClaims(claimsBuffer);
+        // Clear buffer after save to free memory
+        claimsBuffer.length = 0;
       }
     } catch (e) {
       console.error(`[Worker ${workerData.id}] Error bulk saving claims:`, e.message);
+      // Clear buffer even on error to prevent memory leak
+      claimsBuffer.length = 0;
     }
 
     // Flush buffered proof submissions in bulk for this block
@@ -221,9 +225,13 @@ async function processBlock(blockData) {
       if (proofSubmissionsBuffer.length) {
         await bulkSaveProofSubmissions(proofSubmissionsBuffer);
         console.log(`[Worker ${workerData.id}] Saved ${proofSubmissionsBuffer.length} proof submissions for reward tracking`);
+        // Clear buffer after save to free memory
+        proofSubmissionsBuffer.length = 0;
       }
     } catch (e) {
       console.error(`[Worker ${workerData.id}] Error bulk saving proof submissions:`, e.message);
+      // Clear buffer even on error to prevent memory leak
+      proofSubmissionsBuffer.length = 0;
     }
     
     // Process block-level events (from finalize_block_events, BeginBlock/EndBlock hooks)

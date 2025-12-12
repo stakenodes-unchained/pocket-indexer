@@ -13,7 +13,8 @@ class TransactionWorkerPool {
     this.blockResultsWorkerStats = new Map(); // Store stats from block results workers
     this.rpcEndpoints = getRpcEndpoints();
     this.concurrency = parseInt(process.env.WORKER_CONCURRENCY || '2', 2);
-    this.batchSize = parseInt(process.env.HISTORICAL_BATCH_SIZE || '50', 10);
+    // Reduced default batch size from 50 to 20 to reduce memory usage
+    this.batchSize = parseInt(process.env.HISTORICAL_BATCH_SIZE || '20', 10);
     this.healthCheckInterval = null;
   }
 
@@ -353,7 +354,7 @@ class TransactionWorkerPool {
   }
 
   /**
-   * Start periodic health checks for Redis
+   * Start periodic health checks for Redis and memory monitoring
    */
   startHealthChecks() {
     // Clear any existing interval
@@ -378,6 +379,23 @@ class TransactionWorkerPool {
         } catch (error) {
           console.error('Failed to check Redis data size:', error);
         }
+      }
+      
+      // Log memory usage every 5 minutes
+      const memUsage = process.memoryUsage();
+      const heapSizeMB = parseInt(process.env.NODE_HEAP_SIZE_MB || '32768', 10);
+      const rssMB = Math.round(memUsage.rss / 1024 / 1024);
+      const heapUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+      const externalMB = Math.round(memUsage.external / 1024 / 1024);
+      const heapUsedPercent = heapSizeMB > 0 ? Math.round((heapUsedMB / heapSizeMB) * 100) : 0;
+      
+      const warningThresholdGB = parseInt(process.env.MEMORY_WARNING_THRESHOLD_GB || '12', 10);
+      const warningThresholdMB = warningThresholdGB * 1024;
+      
+      console.log(`[Memory] RSS=${rssMB}MB, Heap=${heapUsedMB}MB/${heapSizeMB}MB (${heapUsedPercent}%), External=${externalMB}MB`);
+      
+      if (rssMB > warningThresholdMB) {
+        console.warn(`[Memory Warning] RSS memory (${rssMB}MB) exceeds threshold (${warningThresholdMB}MB)`);
       }
     }, 5 * 60 * 1000); // 5 minutes
   }
