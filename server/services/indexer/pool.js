@@ -12,9 +12,8 @@ class TransactionWorkerPool {
     this.blockResultsWorkers = new Map();
     this.blockResultsWorkerStats = new Map(); // Store stats from block results workers
     this.rpcEndpoints = getRpcEndpoints();
-    this.concurrency = parseInt(process.env.WORKER_CONCURRENCY || '2', 2);
-    // Reduced default batch size from 50 to 20 to reduce memory usage
-    this.batchSize = parseInt(process.env.HISTORICAL_BATCH_SIZE || '20', 10);
+    this.concurrency = parseInt(process.env.WORKER_CONCURRENCY || '4', 2);
+    this.batchSize = parseInt(process.env.HISTORICAL_BATCH_SIZE || '50', 10);
     this.healthCheckInterval = null;
   }
 

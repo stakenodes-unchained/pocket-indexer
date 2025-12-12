@@ -19,8 +19,8 @@ const pgPool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
-  max: parseInt(process.env.DB_POOL_SIZE || '10', 10), // Max 2-3 connections per worker thread
-  min: 1, // Maintain at least 1 connection
+  max: parseInt(process.env.DB_POOL_SIZE || '20', 10), // Max 20 connections per worker thread
+  min: 2, // Maintain at least 2 connections
   idleTimeoutMillis: 60000, // Close idle clients after 60 seconds
   connectionTimeoutMillis: 60000, // Increased to 60 seconds to handle connection delays
   statement_timeout: 120000, // 120 second query timeout
