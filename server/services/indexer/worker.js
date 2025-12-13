@@ -123,6 +123,16 @@ async function processBlock(blockData) {
         // Suppliers
         try {
           for (const supplier of suppliers) {
+            // Validate supplier has required address field (either 'address' or 'operator_address')
+            const address = supplier.address || supplier.operator_address;
+            if (!address || (typeof address === 'string' && address.trim() === '')) {
+              console.warn(`[Worker ${workerData.id}] Skipping supplier without valid address:`, {
+                hasAddress: !!supplier.address,
+                hasOperatorAddress: !!supplier.operator_address,
+                chain: supplier.chain
+              });
+              continue;
+            }
             await upsertSupplier(supplier);
           }
         } catch (supplierError) {

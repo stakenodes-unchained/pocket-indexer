@@ -950,10 +950,36 @@ async function getTransaction(hash) {
 async function upsertSupplier(supplier) {
   await connectClients();
 
+  // Validate required fields - address is mandatory
+  // Handle both 'address' and 'operator_address' field names for compatibility
+  const address = supplier.address || supplier.operator_address;
+  if (!address || address.trim() === '') {
+    console.warn('Skipping supplier upsert: missing address', {
+      supplier: JSON.stringify(supplier),
+      hasAddress: !!supplier.address,
+      hasOperatorAddress: !!supplier.operator_address
+    });
+    return;
+  }
+
+  // Normalize supplier object to use 'address' field
+  const normalizedSupplier = {
+    ...supplier,
+    address: address,
+    chain: supplier.chain || 'unknown',
+    public_key: supplier.public_key || null,
+    staked_amount: supplier.staked_amount || '0',
+    stake_change: supplier.stake_change,
+    status: supplier.status || 'unknown',
+    service_url: supplier.service_url || null,
+    last_seen: supplier.last_seen || new Date().toISOString(),
+    geo: supplier.geo || null
+  };
+
   try {
     // Handle incremental staking/unstaking
-    if (supplier.stake_change) {
-      const stakeChange = parseFloat(supplier.stake_change) || 0;
+    if (normalizedSupplier.stake_change) {
+      const stakeChange = parseFloat(normalizedSupplier.stake_change) || 0;
       await pgPool.query(
         `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -968,14 +994,14 @@ async function upsertSupplier(supplier) {
            last_seen=EXCLUDED.last_seen,
            geo=COALESCE(EXCLUDED.geo, suppliers.geo)`,
         [
-          supplier.address,
-          supplier.chain,
-          supplier.public_key,
-          parseFloat(supplier.staked_amount) || 0,
-          supplier.status,
-          supplier.service_url,
-          supplier.last_seen,
-          supplier.geo,
+          normalizedSupplier.address,
+          normalizedSupplier.chain,
+          normalizedSupplier.public_key,
+          parseFloat(normalizedSupplier.staked_amount) || 0,
+          normalizedSupplier.status,
+          normalizedSupplier.service_url,
+          normalizedSupplier.last_seen,
+          normalizedSupplier.geo,
           stakeChange, // This is the incremental change
         ]
       );
@@ -992,14 +1018,14 @@ async function upsertSupplier(supplier) {
            last_seen=EXCLUDED.last_seen,
            geo=EXCLUDED.geo`,
         [
-          supplier.address,
-          supplier.chain,
-          supplier.public_key,
-          parseFloat(supplier.staked_amount) || 0,
-          supplier.status,
-          supplier.service_url,
-          supplier.last_seen,
-          supplier.geo,
+          normalizedSupplier.address,
+          normalizedSupplier.chain,
+          normalizedSupplier.public_key,
+          parseFloat(normalizedSupplier.staked_amount) || 0,
+          normalizedSupplier.status,
+          normalizedSupplier.service_url,
+          normalizedSupplier.last_seen,
+          normalizedSupplier.geo,
         ]
       );
     }
