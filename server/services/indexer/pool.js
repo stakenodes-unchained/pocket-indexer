@@ -9,11 +9,12 @@ class TransactionWorkerPool {
     this.workers = new Map();
     this.historicalWorkers = new Map();
     this.monitorWorkers = new Map();
-    this.blockResultsWorkers = new Map();
+    this.blockResultsWorkers = new Map(); // Map<string, Worker[]> - array of workers per RPC
     this.blockResultsWorkerStats = new Map(); // Store stats from block results workers
     this.rpcEndpoints = getRpcEndpoints();
     this.concurrency = parseInt(process.env.WORKER_CONCURRENCY || '4', 2);
     this.batchSize = parseInt(process.env.HISTORICAL_BATCH_SIZE || '50', 10);
+    this.blockResultsWorkerCount = parseInt(process.env.BLOCK_RESULTS_WORKER_COUNT || '1', 10); // Default: 1 for backward compatibility
     this.healthCheckInterval = null;
   }
 
@@ -110,45 +111,116 @@ class TransactionWorkerPool {
         this.monitorWorkers.set(rpc.name, monitorWorker);
         console.log(`Started monitor worker for RPC endpoint ${rpc.name} (${rpc.url})`);
 
-        // Create block_results worker (only if blockResultsUrl is configured)
+        // Create block_results workers (only if blockResultsUrl is configured)
         if (rpc.blockResultsUrl) {
-          const blockResultsWorker = new Worker(path.join(__dirname, 'blockResultsWorker.js'), {
-            workerData: {
-              rpcName: rpc.name,
-              rpcUrl: rpc.url,
-              blockResultsRpcUrl: rpc.blockResultsUrl,
-              id: `${rpc.name}-block-results`
-            }
-          });
+          const workers = [];
+          
+          for (let i = 0; i < this.blockResultsWorkerCount; i++) {
+            const blockResultsWorker = new Worker(path.join(__dirname, 'blockResultsWorker.js'), {
+              workerData: {
+                rpcName: rpc.name,
+                rpcUrl: rpc.url,
+                blockResultsRpcUrl: rpc.blockResultsUrl,
+                id: `${rpc.name}-block-results-${i}`
+              }
+            });
 
-          blockResultsWorker.on('message', (message) => {
-            if (message.type === 'log') {
-              console.log(`[BlockResults Worker ${rpc.name}]`, message.data);
-            } else if (message.type === 'error') {
-              console.error(`[BlockResults Worker ${rpc.name}]`, message.data);
-            } else if (message.type === 'stats') {
-              // Store stats from worker
-              this.blockResultsWorkerStats.set(rpc.name, {
-                ...message.data,
-                lastUpdate: Date.now()
-              });
-            }
-          });
+            blockResultsWorker.on('message', (message) => {
+              if (message.type === 'log') {
+                console.log(`[BlockResults Worker ${rpc.name}-${i}]`, message.data);
+              } else if (message.type === 'error') {
+                console.error(`[BlockResults Worker ${rpc.name}-${i}]`, message.data);
+              } else if (message.type === 'stats') {
+                // Store individual worker stats and aggregate
+                const currentStats = this.blockResultsWorkerStats.get(rpc.name) || {
+                  workers: [],
+                  processedCount: 0,
+                  failedCount: 0,
+                  lastUpdate: Date.now()
+                };
+                
+                // Ensure workers array exists and has enough slots
+                if (!currentStats.workers) {
+                  currentStats.workers = [];
+                }
+                while (currentStats.workers.length <= i) {
+                  currentStats.workers.push(null);
+                }
+                
+                // Store individual worker stats
+                currentStats.workers[i] = {
+                  ...message.data,
+                  lastUpdate: Date.now()
+                };
+                
+                // Aggregate totals across all workers
+                currentStats.processedCount = currentStats.workers
+                  .filter(w => w !== null)
+                  .reduce((sum, w) => sum + (w.processedCount || 0), 0);
+                currentStats.failedCount = currentStats.workers
+                  .filter(w => w !== null)
+                  .reduce((sum, w) => sum + (w.failedCount || 0), 0);
+                
+                // Calculate aggregated success rate
+                const total = currentStats.processedCount + currentStats.failedCount;
+                currentStats.successRate = total > 0
+                  ? (currentStats.processedCount / total) * 100
+                  : null;
+                
+                // Calculate weighted average processing time
+                const workersWithTime = currentStats.workers
+                  .filter(w => w !== null && w.avgProcessingTimeMs !== undefined && w.processedCount > 0);
+                if (workersWithTime.length > 0) {
+                  const totalProcessed = workersWithTime.reduce((sum, w) => sum + (w.processedCount || 0), 0);
+                  currentStats.avgProcessingTimeMs = totalProcessed > 0
+                    ? workersWithTime.reduce((sum, w) => {
+                        const weight = (w.processedCount || 0) / totalProcessed;
+                        return sum + (w.avgProcessingTimeMs || 0) * weight;
+                      }, 0)
+                    : null;
+                } else {
+                  currentStats.avgProcessingTimeMs = null;
+                }
+                
+                // Get max block heights across all workers
+                currentStats.currentBlockHeight = currentStats.workers
+                  .filter(w => w !== null && w.currentBlockHeight !== undefined)
+                  .map(w => w.currentBlockHeight)
+                  .reduce((max, h) => h !== null && (max === null || h > max) ? h : max, null);
+                
+                currentStats.lastProcessedBlockHeight = currentStats.workers
+                  .filter(w => w !== null && w.lastProcessedBlockHeight !== undefined)
+                  .map(w => w.lastProcessedBlockHeight)
+                  .reduce((max, h) => h !== null && (max === null || h > max) ? h : max, null);
+                
+                // Determine status: 'running' if any worker is running
+                const runningWorkers = currentStats.workers
+                  .filter(w => w !== null && w.status === 'running');
+                currentStats.status = runningWorkers.length > 0 ? 'running' : 'stopped';
+                
+                currentStats.lastUpdate = Date.now();
+                
+                this.blockResultsWorkerStats.set(rpc.name, currentStats);
+              }
+            });
 
-          blockResultsWorker.on('error', (err) => {
-            console.error(`BlockResults worker for ${rpc.name} encountered an error:`, err);
-            this.restartBlockResultsWorker(rpc.name, rpc.blockResultsUrl);
-          });
+            blockResultsWorker.on('error', (err) => {
+              console.error(`BlockResults worker ${rpc.name}-${i} encountered an error:`, err);
+              this.restartBlockResultsWorker(rpc.name, rpc.blockResultsUrl, i);
+            });
 
-          blockResultsWorker.on('exit', (code) => {
-            if (code !== 0) {
-              console.error(`BlockResults worker for ${rpc.name} exited with code ${code}`);
-              this.restartBlockResultsWorker(rpc.name, rpc.blockResultsUrl);
-            }
-          });
+            blockResultsWorker.on('exit', (code) => {
+              if (code !== 0) {
+                console.error(`BlockResults worker ${rpc.name}-${i} exited with code ${code}`);
+                this.restartBlockResultsWorker(rpc.name, rpc.blockResultsUrl, i);
+              }
+            });
 
-          this.blockResultsWorkers.set(rpc.name, blockResultsWorker);
-          console.log(`Started block_results worker for RPC endpoint ${rpc.name} (${rpc.blockResultsUrl})`);
+            workers.push(blockResultsWorker);
+          }
+
+          this.blockResultsWorkers.set(rpc.name, workers);
+          console.log(`Started ${this.blockResultsWorkerCount} block_results workers for RPC endpoint ${rpc.name} (${rpc.blockResultsUrl})`);
         }
       } catch (error) {
         console.error(`Failed to start workers for RPC endpoint ${rpc.name}:`, error);
@@ -217,61 +289,264 @@ class TransactionWorkerPool {
 
   /**
    * Restart a block_results worker that has crashed or exited
+   * @param {string} rpcName - RPC endpoint name
+   * @param {string} blockResultsRpcUrl - Block results RPC URL
+   * @param {number} [workerIndex] - Optional worker index to restart. If not provided, restarts all workers.
    */
-  async restartBlockResultsWorker(rpcName, blockResultsRpcUrl) {
-    console.log(`Restarting block_results worker for RPC endpoint ${rpcName}...`);
+  async restartBlockResultsWorker(rpcName, blockResultsRpcUrl, workerIndex = null) {
+    const workers = this.blockResultsWorkers.get(rpcName);
     
-    // Remove the old worker reference
-    if (this.blockResultsWorkers.has(rpcName)) {
-      this.blockResultsWorkers.delete(rpcName);
-    }
-    
-    // Wait before restarting to avoid rapid restart cycles
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    try {
-      const rpc = this.rpcEndpoints.find(e => e.name === rpcName);
-      const newWorker = new Worker(path.join(__dirname, 'blockResultsWorker.js'), {
-        workerData: {
-          rpcName,
-          rpcUrl: rpc?.url,
-          blockResultsRpcUrl,
-          id: `${rpcName}-block-results`
+    if (workerIndex !== null && workerIndex !== undefined) {
+      // Restart specific worker
+      console.log(`Restarting block_results worker ${rpcName}-${workerIndex}...`);
+      
+      if (Array.isArray(workers) && workers[workerIndex]) {
+        // Terminate old worker if it exists
+        try {
+          await workers[workerIndex].terminate();
+        } catch (error) {
+          // Worker may already be terminated
         }
-      });
+      }
+      
+      // Wait before restarting to avoid rapid restart cycles
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      try {
+        const rpc = this.rpcEndpoints.find(e => e.name === rpcName);
+        const newWorker = new Worker(path.join(__dirname, 'blockResultsWorker.js'), {
+          workerData: {
+            rpcName,
+            rpcUrl: rpc?.url,
+            blockResultsRpcUrl,
+            id: `${rpcName}-block-results-${workerIndex}`
+          }
+        });
 
-          newWorker.on('message', (message) => {
-            if (message.type === 'log') {
-              console.log(`[BlockResults Worker ${rpcName}]`, message.data);
-            } else if (message.type === 'error') {
-              console.error(`[BlockResults Worker ${rpcName}]`, message.data);
-            } else if (message.type === 'stats') {
-              // Store stats from worker
-              this.blockResultsWorkerStats.set(rpcName, {
-                ...message.data,
-                lastUpdate: Date.now()
-              });
+        newWorker.on('message', (message) => {
+          if (message.type === 'log') {
+            console.log(`[BlockResults Worker ${rpcName}-${workerIndex}]`, message.data);
+          } else if (message.type === 'error') {
+            console.error(`[BlockResults Worker ${rpcName}-${workerIndex}]`, message.data);
+          } else if (message.type === 'stats') {
+            // Store individual worker stats and aggregate (same logic as in initialize)
+            const currentStats = this.blockResultsWorkerStats.get(rpcName) || {
+              workers: [],
+              processedCount: 0,
+              failedCount: 0,
+              lastUpdate: Date.now()
+            };
+            
+            if (!currentStats.workers) {
+              currentStats.workers = [];
+            }
+            while (currentStats.workers.length <= workerIndex) {
+              currentStats.workers.push(null);
+            }
+            
+            currentStats.workers[workerIndex] = {
+              ...message.data,
+              lastUpdate: Date.now()
+            };
+            
+            // Aggregate totals
+            currentStats.processedCount = currentStats.workers
+              .filter(w => w !== null)
+              .reduce((sum, w) => sum + (w.processedCount || 0), 0);
+            currentStats.failedCount = currentStats.workers
+              .filter(w => w !== null)
+              .reduce((sum, w) => sum + (w.failedCount || 0), 0);
+            
+            const total = currentStats.processedCount + currentStats.failedCount;
+            currentStats.successRate = total > 0
+              ? (currentStats.processedCount / total) * 100
+              : null;
+            
+            const workersWithTime = currentStats.workers
+              .filter(w => w !== null && w.avgProcessingTimeMs !== undefined && w.processedCount > 0);
+            if (workersWithTime.length > 0) {
+              const totalProcessed = workersWithTime.reduce((sum, w) => sum + (w.processedCount || 0), 0);
+              currentStats.avgProcessingTimeMs = totalProcessed > 0
+                ? workersWithTime.reduce((sum, w) => {
+                    const weight = (w.processedCount || 0) / totalProcessed;
+                    return sum + (w.avgProcessingTimeMs || 0) * weight;
+                  }, 0)
+                : null;
+            } else {
+              currentStats.avgProcessingTimeMs = null;
+            }
+            
+            currentStats.currentBlockHeight = currentStats.workers
+              .filter(w => w !== null && w.currentBlockHeight !== undefined)
+              .map(w => w.currentBlockHeight)
+              .reduce((max, h) => h !== null && (max === null || h > max) ? h : max, null);
+            
+            currentStats.lastProcessedBlockHeight = currentStats.workers
+              .filter(w => w !== null && w.lastProcessedBlockHeight !== undefined)
+              .map(w => w.lastProcessedBlockHeight)
+              .reduce((max, h) => h !== null && (max === null || h > max) ? h : max, null);
+            
+            const runningWorkers = currentStats.workers
+              .filter(w => w !== null && w.status === 'running');
+            currentStats.status = runningWorkers.length > 0 ? 'running' : 'stopped';
+            
+            currentStats.lastUpdate = Date.now();
+            
+            this.blockResultsWorkerStats.set(rpcName, currentStats);
+          }
+        });
+
+        newWorker.on('error', (err) => {
+          console.error(`BlockResults worker ${rpcName}-${workerIndex} encountered an error:`, err);
+          this.restartBlockResultsWorker(rpcName, blockResultsRpcUrl, workerIndex);
+        });
+
+        newWorker.on('exit', (code) => {
+          if (code !== 0) {
+            console.error(`BlockResults worker ${rpcName}-${workerIndex} exited with code ${code}`);
+            this.restartBlockResultsWorker(rpcName, blockResultsRpcUrl, workerIndex);
+          }
+        });
+
+        // Ensure workers array exists and has correct size
+        if (!Array.isArray(workers)) {
+          this.blockResultsWorkers.set(rpcName, []);
+        }
+        const workersArray = this.blockResultsWorkers.get(rpcName);
+        while (workersArray.length <= workerIndex) {
+          workersArray.push(null);
+        }
+        workersArray[workerIndex] = newWorker;
+        
+        console.log(`Restarted block_results worker ${rpcName}-${workerIndex}`);
+      } catch (error) {
+        console.error(`Failed to restart block_results worker ${rpcName}-${workerIndex}:`, error);
+        setTimeout(() => this.restartBlockResultsWorker(rpcName, blockResultsRpcUrl, workerIndex), 10000);
+      }
+    } else {
+      // Restart all workers (backward compatibility)
+      console.log(`Restarting all block_results workers for RPC endpoint ${rpcName}...`);
+      
+      // Terminate all existing workers
+      if (Array.isArray(workers)) {
+        await Promise.all(workers.map((worker, index) => {
+          if (worker) {
+            return worker.terminate().catch(() => {});
+          }
+        }));
+      }
+      
+      // Wait before restarting
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      // Recreate all workers
+      const rpc = this.rpcEndpoints.find(e => e.name === rpcName);
+      const newWorkers = [];
+      
+      for (let i = 0; i < this.blockResultsWorkerCount; i++) {
+        try {
+          const newWorker = new Worker(path.join(__dirname, 'blockResultsWorker.js'), {
+            workerData: {
+              rpcName,
+              rpcUrl: rpc?.url,
+              blockResultsRpcUrl,
+              id: `${rpcName}-block-results-${i}`
             }
           });
 
-      newWorker.on('error', (err) => {
-        console.error(`BlockResults worker for ${rpcName} encountered an error:`, err);
-        this.restartBlockResultsWorker(rpcName, blockResultsRpcUrl);
-      });
+          newWorker.on('message', (message) => {
+            if (message.type === 'log') {
+              console.log(`[BlockResults Worker ${rpcName}-${i}]`, message.data);
+            } else if (message.type === 'error') {
+              console.error(`[BlockResults Worker ${rpcName}-${i}]`, message.data);
+            } else if (message.type === 'stats') {
+              // Use same aggregation logic as initialize
+              const currentStats = this.blockResultsWorkerStats.get(rpcName) || {
+                workers: [],
+                processedCount: 0,
+                failedCount: 0,
+                lastUpdate: Date.now()
+              };
+              
+              if (!currentStats.workers) {
+                currentStats.workers = [];
+              }
+              while (currentStats.workers.length <= i) {
+                currentStats.workers.push(null);
+              }
+              
+              currentStats.workers[i] = {
+                ...message.data,
+                lastUpdate: Date.now()
+              };
+              
+              currentStats.processedCount = currentStats.workers
+                .filter(w => w !== null)
+                .reduce((sum, w) => sum + (w.processedCount || 0), 0);
+              currentStats.failedCount = currentStats.workers
+                .filter(w => w !== null)
+                .reduce((sum, w) => sum + (w.failedCount || 0), 0);
+              
+              const total = currentStats.processedCount + currentStats.failedCount;
+              currentStats.successRate = total > 0
+                ? (currentStats.processedCount / total) * 100
+                : null;
+              
+              const workersWithTime = currentStats.workers
+                .filter(w => w !== null && w.avgProcessingTimeMs !== undefined && w.processedCount > 0);
+              if (workersWithTime.length > 0) {
+                const totalProcessed = workersWithTime.reduce((sum, w) => sum + (w.processedCount || 0), 0);
+                currentStats.avgProcessingTimeMs = totalProcessed > 0
+                  ? workersWithTime.reduce((sum, w) => {
+                      const weight = (w.processedCount || 0) / totalProcessed;
+                      return sum + (w.avgProcessingTimeMs || 0) * weight;
+                    }, 0)
+                  : null;
+              } else {
+                currentStats.avgProcessingTimeMs = null;
+              }
+              
+              currentStats.currentBlockHeight = currentStats.workers
+                .filter(w => w !== null && w.currentBlockHeight !== undefined)
+                .map(w => w.currentBlockHeight)
+                .reduce((max, h) => h !== null && (max === null || h > max) ? h : max, null);
+              
+              currentStats.lastProcessedBlockHeight = currentStats.workers
+                .filter(w => w !== null && w.lastProcessedBlockHeight !== undefined)
+                .map(w => w.lastProcessedBlockHeight)
+                .reduce((max, h) => h !== null && (max === null || h > max) ? h : max, null);
+              
+              const runningWorkers = currentStats.workers
+                .filter(w => w !== null && w.status === 'running');
+              currentStats.status = runningWorkers.length > 0 ? 'running' : 'stopped';
+              
+              currentStats.lastUpdate = Date.now();
+              
+              this.blockResultsWorkerStats.set(rpcName, currentStats);
+            }
+          });
 
-      newWorker.on('exit', (code) => {
-        if (code !== 0) {
-          console.error(`BlockResults worker for ${rpcName} exited with code ${code}`);
-          this.restartBlockResultsWorker(rpcName, blockResultsRpcUrl);
+          newWorker.on('error', (err) => {
+            console.error(`BlockResults worker ${rpcName}-${i} encountered an error:`, err);
+            this.restartBlockResultsWorker(rpcName, blockResultsRpcUrl, i);
+          });
+
+          newWorker.on('exit', (code) => {
+            if (code !== 0) {
+              console.error(`BlockResults worker ${rpcName}-${i} exited with code ${code}`);
+              this.restartBlockResultsWorker(rpcName, blockResultsRpcUrl, i);
+            }
+          });
+
+          newWorkers.push(newWorker);
+        } catch (error) {
+          console.error(`Failed to create block_results worker ${rpcName}-${i}:`, error);
+          newWorkers.push(null);
         }
-      });
-
-      this.blockResultsWorkers.set(rpcName, newWorker);
-      console.log(`Restarted block_results worker for RPC endpoint ${rpcName}`);
-    } catch (error) {
-      console.error(`Failed to restart block_results worker for RPC endpoint ${rpcName}:`, error);
-      // Try again after a longer delay
-      setTimeout(() => this.restartBlockResultsWorker(rpcName, blockResultsRpcUrl), 10000);
+      }
+      
+      this.blockResultsWorkers.set(rpcName, newWorkers);
+      console.log(`Restarted ${newWorkers.filter(w => w !== null).length} block_results workers for RPC endpoint ${rpcName}`);
     }
   }
 
@@ -426,13 +701,27 @@ class TransactionWorkerPool {
     }
     
     // Add block_results workers
-    for (const [name, worker] of this.blockResultsWorkers.entries()) {
-      list.push({
-        name: `${name}-block-results`,
-        type: 'block-results',
-        threadId: worker.threadId,
-        isRunning: worker.threadId != null,
-      });
+    for (const [name, workers] of this.blockResultsWorkers.entries()) {
+      if (Array.isArray(workers)) {
+        workers.forEach((worker, index) => {
+          if (worker) {
+            list.push({
+              name: `${name}-block-results-${index}`,
+              type: 'block-results',
+              threadId: worker.threadId,
+              isRunning: worker.threadId != null,
+            });
+          }
+        });
+      } else {
+        // Backward compatibility: handle single worker (shouldn't happen with new code)
+        list.push({
+          name: `${name}-block-results`,
+          type: 'block-results',
+          threadId: workers.threadId,
+          isRunning: workers.threadId != null,
+        });
+      }
     }
     
     // Add legacy workers for backward compatibility
@@ -480,12 +769,22 @@ class TransactionWorkerPool {
       const delayedItems = await getDelayedItemsCount(rpcName);
       const processingItems = await getProcessingItemsCount(rpcName);
       
-      // Get worker stats (from worker messages)
+      // Get aggregated worker stats (from worker messages)
       const workerStats = this.blockResultsWorkerStats.get(rpcName) || {};
       
-      // Check if worker is running
-      const worker = this.blockResultsWorkers.get(rpcName);
-      const isRunning = worker && worker.threadId != null;
+      // Check if any workers are running
+      const workers = this.blockResultsWorkers.get(rpcName);
+      let isRunning = false;
+      let workerCount = 0;
+      
+      if (Array.isArray(workers)) {
+        workerCount = workers.filter(w => w !== null).length;
+        isRunning = workers.some(w => w !== null && w.threadId != null);
+      } else if (workers) {
+        // Backward compatibility: handle single worker (shouldn't happen with new code)
+        workerCount = 1;
+        isRunning = workers.threadId != null;
+      }
       
       // Determine worker status
       let workerStatus = 'stopped';
@@ -512,6 +811,7 @@ class TransactionWorkerPool {
         avg_processing_time_ms: workerStats.avgProcessingTimeMs !== undefined ? workerStats.avgProcessingTimeMs : null,
         current_block_height: workerStats.currentBlockHeight !== undefined ? workerStats.currentBlockHeight : null,
         last_processed_block_height: workerStats.lastProcessedBlockHeight !== undefined ? workerStats.lastProcessedBlockHeight : null,
+        worker_count: workerCount,
         last_update: workerStats.lastUpdate || null
       };
     } catch (error) {
@@ -528,6 +828,7 @@ class TransactionWorkerPool {
         avg_processing_time_ms: null,
         current_block_height: null,
         last_processed_block_height: null,
+        worker_count: 0,
         error: error.message
       };
     }
@@ -578,9 +879,19 @@ class TransactionWorkerPool {
     }
     
     // Shutdown block_results workers
-    for (const [name, worker] of this.blockResultsWorkers.entries()) {
-      console.log(`Terminating block_results worker for ${name}...`);
-      promises.push(worker.terminate());
+    for (const [name, workers] of this.blockResultsWorkers.entries()) {
+      if (Array.isArray(workers)) {
+        workers.forEach((worker, index) => {
+          if (worker) {
+            console.log(`Terminating block_results worker ${name}-${index}...`);
+            promises.push(worker.terminate());
+          }
+        });
+      } else if (workers) {
+        // Backward compatibility: handle single worker (shouldn't happen with new code)
+        console.log(`Terminating block_results worker for ${name}...`);
+        promises.push(workers.terminate());
+      }
     }
     
     // Shutdown legacy workers

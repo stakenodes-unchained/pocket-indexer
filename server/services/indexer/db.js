@@ -13,18 +13,34 @@ const REDIS_INDEX_TXS = (process.env.REDIS_INDEX_TXS || 'false') === 'true';
 
 // PostgreSQL connection pool (shared across worker thread operations)
 // Using pool instead of single client to reduce memory overhead and enable connection reuse
+// Calculate adaptive pool size based on number of workers to prevent connection exhaustion
+const blockResultsWorkerCount = parseInt(process.env.BLOCK_RESULTS_WORKER_COUNT || '2', 10);
+const basePoolSize = parseInt(process.env.DB_POOL_SIZE || '10', 10);
+// When multiple block results workers are used, reduce pool size per worker to prevent exhaustion
+// Formula: basePoolSize / (1 + blockResultsWorkerCount / 2) with minimum of 3
+// This ensures total connections across all workers stays reasonable
+const adaptivePoolSize = blockResultsWorkerCount > 1
+  ? Math.max(3, Math.floor(basePoolSize / (1 + blockResultsWorkerCount / 2)))
+  : basePoolSize;
+const minConnections = blockResultsWorkerCount > 1 ? 1 : 2; // Reduce min connections when multiple workers
+
 const pgPool = new Pool({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT,
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
-  max: parseInt(process.env.DB_POOL_SIZE || '15', 10), // Max 20 connections per worker thread
-  min: 2, // Maintain at least 2 connections
+  max: adaptivePoolSize, // Adaptive pool size based on worker count
+  min: minConnections, // Reduced min connections when multiple workers
   idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
   connectionTimeoutMillis: 60000, // Increased to 60 seconds to handle connection delays
   statement_timeout: 120000, // 120 second query timeout
 });
+
+// Log pool configuration for debugging (only in worker threads, not main process)
+if (typeof process.env.WORKER_ID !== 'undefined' || process.env.NODE_ENV === 'development') {
+  console.log(`[DB Pool] Configured with max=${adaptivePoolSize}, min=${minConnections} (blockResultsWorkerCount=${blockResultsWorkerCount})`);
+}
 
 // Handle pool errors
 pgPool.on('error', (err) => {
