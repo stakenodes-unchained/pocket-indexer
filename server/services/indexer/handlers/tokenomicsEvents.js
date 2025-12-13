@@ -93,6 +93,8 @@ async function handleClaimSettled(event) {
     ]);
     
     // Create claim settlement record
+    // Unique constraint is on (session_id, supplier_operator_address, block_height)
+    // This allows the same session to be settled at different block heights
     const settlementResult = await client.query(`
       INSERT INTO claim_settlements (
         session_id,
@@ -120,7 +122,6 @@ async function handleClaimSettled(event) {
         num_estimated_compute_units = EXCLUDED.num_estimated_compute_units,
         claimed_upokt = EXCLUDED.claimed_upokt,
         claim_proof_status_int = EXCLUDED.claim_proof_status_int,
-        block_height = EXCLUDED.block_height,
         transaction_hash = EXCLUDED.transaction_hash,
         chain = EXCLUDED.chain,
         created_timestamp = EXCLUDED.created_timestamp
@@ -249,6 +250,7 @@ async function handleClaimExpired(event) {
     ]);
     
     // Create claim settlement record
+    // Unique constraint is on (session_id, supplier_operator_address, block_height)
     await client.query(`
       INSERT INTO claim_settlements (
         session_id,
@@ -268,7 +270,7 @@ async function handleClaimExpired(event) {
         chain,
         created_timestamp
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-      ON CONFLICT (session_id, supplier_operator_address) 
+      ON CONFLICT (session_id, supplier_operator_address, block_height) 
       DO UPDATE SET
         settlement_type = EXCLUDED.settlement_type,
         expiration_reason = EXCLUDED.expiration_reason,
@@ -277,7 +279,6 @@ async function handleClaimExpired(event) {
         num_estimated_compute_units = EXCLUDED.num_estimated_compute_units,
         claimed_upokt = EXCLUDED.claimed_upokt,
         claim_proof_status_int = EXCLUDED.claim_proof_status_int,
-        block_height = EXCLUDED.block_height,
         transaction_hash = EXCLUDED.transaction_hash,
         chain = EXCLUDED.chain,
         created_timestamp = EXCLUDED.created_timestamp
@@ -481,6 +482,7 @@ async function handleClaimDiscarded(event) {
     ]);
     
     // Create claim settlement record
+    // Unique constraint is on (session_id, supplier_operator_address, block_height)
     await client.query(`
       INSERT INTO claim_settlements (
         session_id,
@@ -496,12 +498,11 @@ async function handleClaimDiscarded(event) {
         chain,
         created_timestamp
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-      ON CONFLICT (session_id, supplier_operator_address) 
+      ON CONFLICT (session_id, supplier_operator_address, block_height) 
       DO UPDATE SET
         settlement_type = EXCLUDED.settlement_type,
         error_message = EXCLUDED.error_message,
         claim_proof_status_int = EXCLUDED.claim_proof_status_int,
-        block_height = EXCLUDED.block_height,
         transaction_hash = EXCLUDED.transaction_hash,
         chain = EXCLUDED.chain,
         created_timestamp = EXCLUDED.created_timestamp
