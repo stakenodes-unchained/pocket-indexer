@@ -28,8 +28,10 @@ ENV NODE_OPTIONS="--max-old-space-size=32768"
 # Change ownership of the working directory to the 'node' user
 RUN chown -R node:node .
 
-# Switch to the 'node' user for security
-USER node
+# Note: Running as root to access Docker socket
+# This allows the container to access /var/run/docker.sock without permission issues
+# For production, consider using group_add with proper GID mapping instead
+# USER node  # Commented out to run as root for Docker socket access
 
 # Expose the port your app runs on
 EXPOSE 3006

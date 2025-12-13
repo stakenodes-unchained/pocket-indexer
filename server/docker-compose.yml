@@ -62,6 +62,12 @@ services:
       dockerfile: Dockerfile.api
     ports:
       - "3006:3006"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Note: Container runs as root to access Docker socket
+    # For better security, use group_add with proper GID mapping:
+    group_add:
+      - ${DOCKER_GID:-999}
     env_file:
       - .env
     environment:

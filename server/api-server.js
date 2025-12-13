@@ -4,9 +4,13 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const cluster = require('cluster');
 const os = require('os');
+const http = require('http');
+const crypto = require('crypto');
+const WebSocket = require('ws');
 const transactionService = require('./services/transactionService');
 const performanceService = require('./services/performanceService');
 const RewardAnalyticsRefreshService = require('./services/rewardAnalyticsRefreshService');
+const dockerService = require('./services/dockerService');
 const redis = require('./config/redis');
 
 // Load environment variables
@@ -3452,6 +3456,125 @@ app.post('/api/v1/services/top-by-performance', async (req, res) => {
   }
 });
 
+// ============================================================================
+// LOG VIEWER API - REST Endpoints
+// ============================================================================
+
+// List all containers
+app.get('/api/v1/logs/containers', async (req, res) => {
+  try {
+    if (!dockerService.isAvailable()) {
+      return res.status(503).json({ 
+        error: 'Docker service is not available',
+        message: 'Make sure Docker is running and the socket is accessible'
+      });
+    }
+
+    const all = req.query.all === 'true' || req.query.all === '1';
+    const containers = await dockerService.listContainers(all);
+    
+    res.json({
+      data: containers,
+      total: containers.length
+    });
+  } catch (error) {
+    console.error('Error listing containers:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get container metadata
+app.get('/api/v1/logs/containers/:containerId', async (req, res) => {
+  try {
+    if (!dockerService.isAvailable()) {
+      return res.status(503).json({ 
+        error: 'Docker service is not available',
+        message: 'Make sure Docker is running and the socket is accessible'
+      });
+    }
+
+    const { containerId } = req.params;
+    const info = await dockerService.getContainerInfo(containerId);
+    
+    res.json({ data: info });
+  } catch (error) {
+    console.error('Error getting container info:', error);
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// Get historical logs
+app.get('/api/v1/logs/containers/:containerId/history', async (req, res) => {
+  try {
+    if (!dockerService.isAvailable()) {
+      return res.status(503).json({ 
+        error: 'Docker service is not available',
+        message: 'Make sure Docker is running and the socket is accessible'
+      });
+    }
+
+    const { containerId } = req.params;
+    const { 
+      tail = 100, 
+      since, 
+      until,
+      logLevel,
+      filter,
+      search,
+      page = 1,
+      limit = 100
+    } = req.query;
+
+    const options = {
+      tail: parseInt(tail, 10),
+      since: since || undefined,
+      until: until || undefined
+    };
+
+    let logs = await dockerService.getLogs(containerId, options);
+
+    // Apply filters
+    const filters = {};
+    if (logLevel) filters.logLevel = logLevel;
+    if (filter) filters.filter = filter;
+    if (search) filters.search = search;
+    if (since) filters.since = since;
+    if (until) filters.until = until;
+
+    if (Object.keys(filters).length > 0) {
+      logs = dockerService.filterLogs(logs, filters);
+    }
+
+    // Pagination
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+    const total = logs.length;
+    const paginatedLogs = logs.slice(offset, offset + limitNum);
+
+    res.json({
+      data: paginatedLogs,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Error getting container logs:', error);
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
 // Start the server and initialize the worker pool
 const startServer = async () => {
   try {
@@ -3481,9 +3604,183 @@ const startServer = async () => {
       console.log('⏭️  Skipping reward analytics refresh service (running on worker 1 only)');
     }
     
+    // Create HTTP server (needed for WebSocket upgrade)
+    const server = http.createServer(app);
+    
+    // Create WebSocket server
+    const wss = new WebSocket.Server({ 
+      server,
+      path: '/api/v1/logs/stream'
+    });
+
+    // Store active log streams
+    const activeStreams = new Map();
+
+    // WebSocket connection handler
+    wss.on('connection', (ws, req) => {
+      const connectionId = crypto.randomUUID();
+      console.log(`📡 WebSocket connection established: ${connectionId}`);
+
+      ws.on('message', async (message) => {
+        try {
+          const data = JSON.parse(message.toString());
+          
+          if (data.action === 'start') {
+            const { containerId, options = {} } = data;
+            
+            if (!containerId) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                message: 'containerId is required'
+              }));
+              return;
+            }
+
+            if (!dockerService.isAvailable()) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                message: 'Docker service is not available'
+              }));
+              return;
+            }
+
+            const streamId = crypto.randomUUID();
+            
+            try {
+              // Apply filters for real-time streaming
+              const filters = {};
+              if (options.logLevel) filters.logLevel = options.logLevel;
+              if (options.filter) filters.filter = options.filter;
+              if (options.search) filters.search = options.search;
+              if (options.since) filters.since = options.since;
+              if (options.until) filters.until = options.until;
+
+              const streamOptions = {
+                tail: options.tail || 0,
+                follow: options.follow !== false,
+                since: options.since,
+                until: options.until,
+                timestamps: true
+              };
+
+              const stream = await dockerService.streamLogs(
+                containerId,
+                streamOptions,
+                (logEntry) => {
+                  // Apply filters to each log entry
+                  if (Object.keys(filters).length > 0) {
+                    const filtered = dockerService.filterLogs([logEntry], filters);
+                    if (filtered.length === 0) return; // Skip if filtered out
+                  }
+
+                  // Send log entry to client
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'log',
+                      streamId,
+                      containerId,
+                      timestamp: logEntry.timestamp,
+                      level: logEntry.level,
+                      stream: logEntry.stream,
+                      message: logEntry.message
+                    }));
+                  }
+                },
+                (error) => {
+                  console.error(`Error in log stream ${streamId}:`, error);
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'error',
+                      streamId,
+                      message: error.message
+                    }));
+                  }
+                }
+              );
+
+              activeStreams.set(streamId, {
+                stream,
+                containerId,
+                connectionId
+              });
+
+              // Send confirmation
+              ws.send(JSON.stringify({
+                type: 'stream_started',
+                streamId,
+                containerId
+              }));
+
+            } catch (error) {
+              console.error(`Error starting log stream for ${containerId}:`, error);
+              ws.send(JSON.stringify({
+                type: 'error',
+                message: error.message
+              }));
+            }
+
+          } else if (data.action === 'stop') {
+            const { streamId } = data;
+            
+            if (streamId && activeStreams.has(streamId)) {
+              const streamInfo = activeStreams.get(streamId);
+              streamInfo.stream.stop();
+              activeStreams.delete(streamId);
+              
+              ws.send(JSON.stringify({
+                type: 'stream_stopped',
+                streamId
+              }));
+            } else {
+              ws.send(JSON.stringify({
+                type: 'error',
+                message: 'Stream not found'
+              }));
+            }
+          } else {
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: 'Invalid action. Use "start" or "stop"'
+            }));
+          }
+        } catch (error) {
+          console.error('Error processing WebSocket message:', error);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: 'Invalid message format'
+            }));
+          }
+        }
+      });
+
+      ws.on('close', () => {
+        console.log(`📡 WebSocket connection closed: ${connectionId}`);
+        // Clean up all streams for this connection
+        for (const [streamId, streamInfo] of activeStreams.entries()) {
+          if (streamInfo.connectionId === connectionId) {
+            streamInfo.stream.stop();
+            activeStreams.delete(streamId);
+          }
+        }
+      });
+
+      ws.on('error', (error) => {
+        console.error(`WebSocket error for connection ${connectionId}:`, error);
+      });
+
+      // Send welcome message
+      ws.send(JSON.stringify({
+        type: 'connected',
+        connectionId,
+        message: 'WebSocket log viewer connected'
+      }));
+    });
+
     // Start the HTTP server
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
       console.log(`🌐 Worker ${cluster.worker.id} API server running on http://localhost:${PORT}`);
+      console.log(`🔌 WebSocket server available at ws://localhost:${PORT}/api/v1/logs/stream`);
     });
     
     console.log('='.repeat(80));
