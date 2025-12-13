@@ -122,7 +122,8 @@ async function handleClaimSettled(event) {
         claim_proof_status_int = EXCLUDED.claim_proof_status_int,
         block_height = EXCLUDED.block_height,
         transaction_hash = EXCLUDED.transaction_hash,
-        chain = EXCLUDED.chain
+        chain = EXCLUDED.chain,
+        created_timestamp = EXCLUDED.created_timestamp
       RETURNING id
     `, [
       sessionId,
@@ -278,7 +279,8 @@ async function handleClaimExpired(event) {
         claim_proof_status_int = EXCLUDED.claim_proof_status_int,
         block_height = EXCLUDED.block_height,
         transaction_hash = EXCLUDED.transaction_hash,
-        chain = EXCLUDED.chain
+        chain = EXCLUDED.chain,
+        created_timestamp = EXCLUDED.created_timestamp
     `, [
       sessionId,
       supplier_operator_address,
@@ -501,7 +503,8 @@ async function handleClaimDiscarded(event) {
         claim_proof_status_int = EXCLUDED.claim_proof_status_int,
         block_height = EXCLUDED.block_height,
         transaction_hash = EXCLUDED.transaction_hash,
-        chain = EXCLUDED.chain
+        chain = EXCLUDED.chain,
+        created_timestamp = EXCLUDED.created_timestamp
     `, [
       sessionId,
       supplier_operator_address,
