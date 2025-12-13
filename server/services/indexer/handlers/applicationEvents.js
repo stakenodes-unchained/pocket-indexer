@@ -3,7 +3,7 @@
  * Handles all application-related events (staking, unbonding, transfers, etc.)
  */
 
-const { connectClients, pgClient } = require('../db');
+const { connectClients, pgPool } = require('../db');
 
 /**
  * Handle EventApplicationStaked
@@ -12,7 +12,7 @@ const { connectClients, pgClient } = require('../db');
 async function handleApplicationStaked(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const { application, session_end_height, metadata } = event;
     
@@ -80,7 +80,7 @@ async function handleApplicationStaked(event) {
 async function handleRedelegation(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const { application, session_end_height, metadata } = event;
     
@@ -145,7 +145,7 @@ async function handleRedelegation(event) {
 async function handleTransferBegin(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       source_address,
@@ -201,7 +201,7 @@ async function handleTransferBegin(event) {
 async function handleTransferEnd(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       source_address,
@@ -277,7 +277,7 @@ async function handleTransferEnd(event) {
 async function handleTransferError(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       source_address,
@@ -333,7 +333,7 @@ async function handleTransferError(event) {
 async function handleApplicationUnbondingBegin(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       application,
@@ -407,7 +407,7 @@ async function handleApplicationUnbondingBegin(event) {
 async function handleApplicationUnbondingEnd(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       application,
@@ -479,7 +479,7 @@ async function handleApplicationUnbondingEnd(event) {
 async function handleApplicationUnbondingCanceled(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       application,

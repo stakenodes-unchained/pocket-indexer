@@ -3,7 +3,7 @@
  * Handles all tokenomics-related events (claim settlements, slashes, burns, etc.)
  */
 
-const { connectClients, pgClient } = require('../db');
+const { connectClients, pgPool } = require('../db');
 
 /**
  * Helper to parse uPOKT amount string to numeric
@@ -29,7 +29,7 @@ function createSessionId(supplierAddress, applicationAddress, serviceId, session
 async function handleClaimSettled(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       session_id,
@@ -112,7 +112,7 @@ async function handleClaimSettled(event) {
         chain,
         created_timestamp
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-      ON CONFLICT (session_id, supplier_operator_address) 
+      ON CONFLICT (session_id, supplier_operator_address, block_height) 
       DO UPDATE SET
         settlement_type = EXCLUDED.settlement_type,
         num_relays = EXCLUDED.num_relays,
@@ -186,7 +186,7 @@ async function handleClaimSettled(event) {
 async function handleClaimExpired(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       supplier_operator_address,
@@ -314,7 +314,7 @@ async function handleClaimExpired(event) {
 async function handleSupplierSlashed(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       supplier_operator_address,
@@ -379,7 +379,7 @@ async function handleSupplierSlashed(event) {
 async function handleApplicationOverserviced(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       application_addr,
@@ -438,7 +438,7 @@ async function handleApplicationOverserviced(event) {
 async function handleClaimDiscarded(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       supplier_operator_address,
@@ -534,7 +534,7 @@ async function handleClaimDiscarded(event) {
 async function handleApplicationReimbursementRequest(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       application_addr,

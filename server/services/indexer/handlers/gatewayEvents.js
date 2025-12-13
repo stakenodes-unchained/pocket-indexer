@@ -3,7 +3,7 @@
  * Handles all gateway-related events (staking, unbonding)
  */
 
-const { connectClients, pgClient } = require('../db');
+const { connectClients, pgPool } = require('../db');
 
 /**
  * Handle EventGatewayStaked
@@ -12,7 +12,7 @@ const { connectClients, pgClient } = require('../db');
 async function handleGatewayStaked(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const { gateway, session_end_height, metadata } = event;
     
@@ -80,7 +80,7 @@ async function handleGatewayStaked(event) {
 async function handleGatewayUnbondingBegin(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       gateway,
@@ -150,7 +150,7 @@ async function handleGatewayUnbondingBegin(event) {
 async function handleGatewayUnbondingEnd(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       gateway,
@@ -218,7 +218,7 @@ async function handleGatewayUnbondingEnd(event) {
 async function handleGatewayUnbondingCanceled(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       gateway,

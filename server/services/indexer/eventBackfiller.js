@@ -3,7 +3,7 @@
  * Backfills events from genesis to current block height
  */
 
-const { connectClients, pgClient } = require('./db');
+const { connectClients, pgPool } = require('./db');
 const { fetchBlockByHeight } = require('./rpc');
 const { processBlockEvents } = require('./eventProcessor');
 
@@ -13,7 +13,7 @@ const { processBlockEvents } = require('./eventProcessor');
 async function getLastProcessedEventHeight(chain) {
   await connectClients();
   try {
-    const result = await pgClient.query(`
+    const result = await pgPool.query(`
       SELECT MAX(current_height) as last_height
       FROM event_processing_status
       WHERE status = 'completed'
@@ -32,7 +32,7 @@ async function getLastProcessedEventHeight(chain) {
 async function updateBackfillStatus(chain, startHeight, endHeight, currentHeight, status, eventsProcessed = 0, errorMessage = null) {
   await connectClients();
   try {
-    await pgClient.query(`
+    await pgPool.query(`
       INSERT INTO event_processing_status (
         start_height,
         end_height,
@@ -188,7 +188,7 @@ async function resumeBackfill(chain, rpcUrl, targetHeight, batchSize = 100) {
 async function getBackfillProgress(chain) {
   await connectClients();
   try {
-    const result = await pgClient.query(`
+    const result = await pgPool.query(`
       SELECT 
         start_height,
         end_height,

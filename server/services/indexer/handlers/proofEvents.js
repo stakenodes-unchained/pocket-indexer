@@ -3,7 +3,7 @@
  * Handles all proof-related events (claim created/updated, proof submitted/updated, proof validation)
  */
 
-const { connectClients, pgClient } = require('../db');
+const { connectClients, pgPool } = require('../db');
 
 /**
  * Helper to create session ID
@@ -29,7 +29,7 @@ function parseUpokt(upoktString) {
 async function handleClaimCreated(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       supplier_operator_address,
@@ -131,7 +131,7 @@ async function handleClaimCreated(event) {
 async function handleClaimUpdated(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       supplier_operator_address,
@@ -230,7 +230,7 @@ async function handleClaimUpdated(event) {
 async function handleProofSubmitted(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       supplier_operator_address,
@@ -303,7 +303,7 @@ async function handleProofSubmitted(event) {
 async function handleProofUpdated(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       supplier_operator_address,
@@ -376,7 +376,7 @@ async function handleProofUpdated(event) {
 async function handleProofValidityChecked(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       supplier_operator_address,

@@ -3,7 +3,7 @@
  * Handles service-related events (relay mining difficulty updates)
  */
 
-const { connectClients, pgClient } = require('../db');
+const { connectClients, pgPool } = require('../db');
 
 /**
  * Handle EventRelayMiningDifficultyUpdated
@@ -12,7 +12,7 @@ const { connectClients, pgClient } = require('../db');
 async function handleRelayMiningDifficultyUpdated(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       service_id,

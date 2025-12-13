@@ -4,7 +4,7 @@
  * These events track account balances, minting, and transfers for applications, suppliers, gateways, and validators
  */
 
-const { connectClients, pgClient } = require('../db');
+const { connectClients, pgPool } = require('../db');
 
 /**
  * Helper to parse uPOKT amount string to numeric
@@ -32,7 +32,7 @@ function extractAmount(amountString) {
 async function handleCoinSpent(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       spender,
@@ -76,7 +76,7 @@ async function handleCoinSpent(event) {
 async function handleCoinReceived(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       receiver,
@@ -120,7 +120,7 @@ async function handleCoinReceived(event) {
 async function handleTransfer(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       sender,
@@ -165,7 +165,7 @@ async function handleTransfer(event) {
 async function handleMessage(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       sender,
@@ -208,7 +208,7 @@ async function handleMessage(event) {
 async function handleMint(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       amount,
@@ -256,7 +256,7 @@ async function handleMint(event) {
 async function handleCommission(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       validator,
@@ -300,7 +300,7 @@ async function handleCommission(event) {
 async function handleRewards(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       validator,

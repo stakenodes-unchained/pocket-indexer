@@ -3,7 +3,7 @@
  * Handles Morse network migration events
  */
 
-const { connectClients, pgClient } = require('../db');
+const { connectClients, pgPool } = require('../db');
 
 /**
  * Helper to parse uPOKT amount string to numeric
@@ -22,7 +22,7 @@ function parseUpokt(upoktString) {
 async function handleImportMorseClaimableAccounts(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       created_at_height,
@@ -68,7 +68,7 @@ async function handleImportMorseClaimableAccounts(event) {
 async function handleMorseAccountClaimed(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       session_end_height,
@@ -117,7 +117,7 @@ async function handleMorseAccountClaimed(event) {
 async function handleMorseApplicationClaimed(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       session_end_height,
@@ -188,7 +188,7 @@ async function handleMorseApplicationClaimed(event) {
 async function handleMorseSupplierClaimed(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       session_end_height,
@@ -265,7 +265,7 @@ async function handleMorseSupplierClaimed(event) {
 async function handleMorseAccountRecovered(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       session_end_height,

@@ -19,9 +19,9 @@ const pgPool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
-  max: parseInt(process.env.DB_POOL_SIZE || '20', 10), // Max 20 connections per worker thread
+  max: parseInt(process.env.DB_POOL_SIZE || '15', 10), // Max 20 connections per worker thread
   min: 2, // Maintain at least 2 connections
-  idleTimeoutMillis: 60000, // Close idle clients after 60 seconds
+  idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
   connectionTimeoutMillis: 60000, // Increased to 60 seconds to handle connection delays
   statement_timeout: 120000, // 120 second query timeout
 });
@@ -536,7 +536,7 @@ async function saveTransaction(tx) {
  */
 async function saveRelay(relay) {
   await connectClients();
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO relays (supplier_address, application_address, session_id, chain, proof, timestamp)
      VALUES ($1,$2,$3,$4,$5,$6)
      ON CONFLICT (supplier_address, application_address, session_id, chain, timestamp) DO UPDATE SET
@@ -558,7 +558,7 @@ async function saveRelay(relay) {
  */
 async function saveGovernance(gov) {
   await connectClients();
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO governance (proposer, proposal_id, proposal_type, status, timestamp)
      VALUES ($1,$2,$3,$4,$5)
      ON CONFLICT (proposal_id, proposer, timestamp) DO UPDATE SET
@@ -578,7 +578,7 @@ async function saveGovernance(gov) {
  */
 async function saveClaim(claim) {
   await connectClients();
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO claims (supplier_operator_address, application_address, service_id, session_id, session_start_block_height, session_end_block_height, root_hash, proof, status, timestamp)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
      ON CONFLICT (supplier_operator_address, session_id, service_id, application_address) DO UPDATE SET
@@ -656,7 +656,7 @@ async function bulkSaveClaims(claims) {
  */
 async function saveProofSubmission(submission) {
   await connectClients();
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO proof_submissions (
       transaction_hash, block_height, timestamp, chain, supplier_operator_address, 
       application_address, service_id, session_id, session_end_block_height,
@@ -758,7 +758,7 @@ async function bulkSaveProofSubmissions(submissions) {
  */
 async function getLastProcessedHeight(chain) {
   await connectClients();
-  const res = await pgClient.query(
+  const res = await pgPool.query(
     'SELECT MAX(height) as max FROM blocks WHERE chain = $1',
     [chain]
   );
@@ -770,13 +770,13 @@ async function getLastProcessedHeight(chain) {
  */
 async function getHistoricalCheckpoint(chain) {
   await connectClients();
-  const res = await pgClient.query('SELECT last_height FROM historical_sync WHERE chain = $1', [chain]);
+  const res = await pgPool.query('SELECT last_height FROM historical_sync WHERE chain = $1', [chain]);
   return res.rows[0]?.last_height ? parseInt(res.rows[0].last_height, 10) : 0;
 }
 
 async function setHistoricalCheckpoint(chain, height) {
   await connectClients();
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO historical_sync (chain, last_height, updated_at)
      VALUES ($1,$2,NOW())
      ON CONFLICT (chain) DO UPDATE SET last_height = EXCLUDED.last_height, updated_at = NOW()`,
@@ -789,7 +789,7 @@ async function setHistoricalCheckpoint(chain, height) {
  */
 async function upsertWorkerHeartbeat(workerId, meta) {
   await connectClients();
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO worker_heartbeats (worker_id, last_seen, meta)
      VALUES ($1, NOW(), $2)
      ON CONFLICT (worker_id) DO UPDATE SET last_seen = NOW(), meta = $2`,
@@ -802,7 +802,7 @@ async function upsertWorkerHeartbeat(workerId, meta) {
  */
 async function getSnapshotProcessedHeight(chain) {
   await connectClients();
-  const res = await pgClient.query(
+  const res = await pgPool.query(
     `SELECT processed_height FROM metrics_snapshots
      WHERE chain = $1
      ORDER BY ts DESC
@@ -828,7 +828,7 @@ async function findGaps(chain, startHeight, endHeight, limit = 100) {
     return [];
   }
 
-  const res = await pgClient.query(
+  const res = await pgPool.query(
     `WITH RECURSIVE height_sequence AS (
        SELECT $1::integer as height
        UNION ALL
@@ -855,11 +855,11 @@ async function getNextGapToFill(chain) {
   await connectClients();
 
   // Get historical checkpoint
-  const histRes = await pgClient.query('SELECT last_height FROM historical_sync WHERE chain = $1', [chain]);
+  const histRes = await pgPool.query('SELECT last_height FROM historical_sync WHERE chain = $1', [chain]);
   const historical_checkpoint = histRes.rows[0]?.last_height ? parseInt(histRes.rows[0].last_height, 10) : 0;
 
   // Get monitoring height (highest processed block)
-  const monitorRes = await pgClient.query('SELECT MAX(height) as max_height FROM blocks WHERE chain = $1', [chain]);
+  const monitorRes = await pgPool.query('SELECT MAX(height) as max_height FROM blocks WHERE chain = $1', [chain]);
   const monitoring_height = monitorRes.rows[0]?.max_height ? parseInt(monitorRes.rows[0].max_height, 10) : 0;
 
   // If no blocks exist yet, return null (no gaps to fill)
@@ -882,7 +882,7 @@ async function getNextGapToFill(chain) {
  */
 async function blockExists(chain, height) {
   await connectClients();
-  const res = await pgClient.query('SELECT 1 FROM blocks WHERE chain = $1 AND height = $2 LIMIT 1', [chain, height]);
+  const res = await pgPool.query('SELECT 1 FROM blocks WHERE chain = $1 AND height = $2 LIMIT 1', [chain, height]);
   return res.rows.length > 0;
 }
 
@@ -908,7 +908,7 @@ async function getBlock(height, chain) {
     }
   }
   // Fallback to DB
-  const res = await pgClient.query('SELECT * FROM blocks WHERE height = $1 AND chain = $2', [height, chain]);
+  const res = await pgPool.query('SELECT * FROM blocks WHERE height = $1 AND chain = $2', [height, chain]);
   return res.rows[0] || null;
 }
 
@@ -924,7 +924,7 @@ async function getTransaction(hash) {
     if (tx.hash === hash) return tx;
   }
   // Fallback to DB
-  const res = await pgClient.query('SELECT * FROM transactions WHERE hash = $1', [hash]);
+  const res = await pgPool.query('SELECT * FROM transactions WHERE hash = $1', [hash]);
   return res.rows[0] || null;
 }
 
@@ -1118,7 +1118,7 @@ async function insertStakingEvent(event) {
  */
 async function upsertService(service) {
   await connectClients();
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO services (supplier_address, chain, service_url, status, last_checked)
      VALUES ($1,$2,$3,$4,$5)
      ON CONFLICT (supplier_address, chain, service_url) DO UPDATE SET
@@ -1139,7 +1139,7 @@ async function upsertService(service) {
  */
 async function upsertNetworkService(service) {
   await connectClients();
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO network_services (id, name, description, compute_units_per_relay, owner_address, last_seen)
      VALUES ($1,$2,$3,$4,$5,$6)
      ON CONFLICT (id) DO UPDATE SET

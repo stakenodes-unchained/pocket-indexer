@@ -3,7 +3,7 @@
  * Handles all supplier-related events (staking, unbonding, service config activation)
  */
 
-const { connectClients, pgClient } = require('../db');
+const { connectClients, pgPool } = require('../db');
 
 /**
  * Handle EventSupplierStaked
@@ -12,7 +12,7 @@ const { connectClients, pgClient } = require('../db');
 async function handleSupplierStaked(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const { operator_address, session_end_height, metadata } = event;
     
@@ -71,7 +71,7 @@ async function handleSupplierStaked(event) {
 async function handleSupplierUnbondingBegin(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       supplier,
@@ -144,7 +144,7 @@ async function handleSupplierUnbondingBegin(event) {
 async function handleSupplierUnbondingEnd(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       supplier,
@@ -215,7 +215,7 @@ async function handleSupplierUnbondingEnd(event) {
 async function handleSupplierUnbondingCanceled(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       supplier,
@@ -282,7 +282,7 @@ async function handleSupplierUnbondingCanceled(event) {
 async function handleSupplierServiceConfigActivated(event) {
   try {
     await connectClients();
-    const client = pgClient;
+    const client = pgPool;
     
     const {
       operator_address,
