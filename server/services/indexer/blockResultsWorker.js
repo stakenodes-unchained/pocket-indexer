@@ -83,6 +83,28 @@ async function processBlockResultsItem(item) {
     // Fetch block_results
     const blockResultsData = await fetchBlockResultsByHeight(height, blockResultsRpcUrl);
     
+    // Check for "height not available" error - this means the block is pruned/not available
+    // Don't retry, just mark as processed and skip
+    if (blockResultsData?.error) {
+      const errorMessage = blockResultsData.error.message || blockResultsData.error.data || '';
+      const errorData = blockResultsData.error.data || '';
+      
+      // Check if this is a "height not available" error (block is pruned or below lowest height)
+      if (errorMessage.includes('not available') || 
+          errorData.includes('not available') ||
+          errorMessage.includes('lowest height') ||
+          errorData.includes('lowest height')) {
+        log(`[BlockResultsWorker ${id}] Block ${height} is not available (pruned or below lowest height), skipping: ${errorData || errorMessage}`);
+        // Mark as processed so we don't retry
+        await markProcessed(rpcName, height);
+        stats.processedCount++;
+        return { success: true, height, skipped: true, reason: 'height_not_available' };
+      }
+      
+      // For other errors, throw to trigger retry logic
+      throw new Error(blockResultsData.error.message || blockResultsData.error.data || 'Unknown RPC error');
+    }
+    
     if (!blockResultsData || !blockResultsData.result) {
       throw new Error('Invalid block_results response');
     }
