@@ -114,7 +114,10 @@ async function routeEvent(parsedEvent) {
              eventType === 'message' ||
              eventType === 'mint' ||
              eventType === 'commission' ||
-             eventType === 'rewards') {
+             eventType === 'rewards' ||
+             eventType === 'burn' ||
+             eventType === 'coinbase' ||
+             eventType === 'tx') {
       return await handleAccountEvent(parsedEvent);
     }
     
@@ -302,6 +305,12 @@ async function handleAccountEvent(event) {
       return await accountHandlers.handleCommission(event);
     case 'rewards':
       return await accountHandlers.handleRewards(event);
+    case 'burn':
+      return await accountHandlers.handleBurn(event);
+    case 'coinbase':
+      return await accountHandlers.handleCoinbase(event);
+    case 'tx':
+      return await accountHandlers.handleTx(event);
     default:
       return { success: false, error: `Unknown account event: ${event_type}` };
   }

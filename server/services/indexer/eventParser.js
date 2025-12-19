@@ -186,6 +186,12 @@ function parseTypedEvent(event, metadata) {
     return parseCommissionEvent(attributes, metadata);
   } else if (eventType === 'rewards') {
     return parseRewardsEvent(attributes, metadata);
+  } else if (eventType === 'burn') {
+    return parseBurnEvent(attributes, metadata);
+  } else if (eventType === 'coinbase') {
+    return parseCoinbaseEvent(attributes, metadata);
+  } else if (eventType === 'tx') {
+    return parseTxEvent(attributes, metadata);
   }
   
   // Unknown event type - return generic structure
@@ -629,15 +635,49 @@ function parseProofUpdatedEvent(attributes, metadata) {
 function parseProofValidityCheckedEvent(attributes, metadata) {
   const claim = extractNestedObject(attributes, 'claim') || {};
   
+  // Try multiple attribute name variations
+  const serviceId = extractString(attributes, 'service_id') || 
+                    extractString(attributes, 'serviceId') ||
+                    claim.service_id || 
+                    claim.session_header?.service_id;
+  
+  const applicationAddress = extractString(attributes, 'application_address') || 
+                            extractString(attributes, 'applicationAddress') ||
+                            claim.application_address || 
+                            claim.session_header?.application_address;
+  
+  const sessionEndBlockHeight = extractNumeric(attributes, 'session_end_block_height') || 
+                                extractNumeric(attributes, 'sessionEndBlockHeight') ||
+                                claim.session_end_block_height || 
+                                claim.session_header?.session_end_block_height;
+  
+  const supplierOperatorAddress = extractString(attributes, 'supplier_operator_address') || 
+                                  extractString(attributes, 'supplierOperatorAddress') ||
+                                  claim.supplier_operator_address || 
+                                  claim.session_header?.supplier_operator_address;
+  
+  // Log if critical fields are missing for debugging
+  if (!supplierOperatorAddress || !applicationAddress || !serviceId || !sessionEndBlockHeight) {
+    console.warn('[EventParser] EventProofValidityChecked: Missing fields', {
+      has_supplier_operator_address: !!supplierOperatorAddress,
+      has_application_address: !!applicationAddress,
+      has_service_id: !!serviceId,
+      has_session_end_block_height: !!sessionEndBlockHeight,
+      block_height: metadata?.block_height,
+      attribute_keys: Object.keys(attributes || {}),
+      has_claim_object: !!claim && Object.keys(claim).length > 0
+    });
+  }
+  
   return {
     event_type: 'EventProofValidityChecked',
-    block_height: extractNumeric(attributes, 'block_height'),
+    block_height: extractNumeric(attributes, 'block_height') || metadata?.block_height,
     failure_reason: extractString(attributes, 'failure_reason') || null,
-    service_id: extractString(attributes, 'service_id') || claim.service_id || claim.session_header?.service_id,
-    application_address: extractString(attributes, 'application_address') || claim.application_address || claim.session_header?.application_address,
-    session_end_block_height: extractNumeric(attributes, 'session_end_block_height') || claim.session_end_block_height || claim.session_header?.session_end_block_height,
+    service_id: serviceId,
+    application_address: applicationAddress,
+    session_end_block_height: sessionEndBlockHeight,
     claim_proof_status_int: extractNumeric(attributes, 'claim_proof_status_int'),
-    supplier_operator_address: extractString(attributes, 'supplier_operator_address') || claim.supplier_operator_address || claim.session_header?.supplier_operator_address,
+    supplier_operator_address: supplierOperatorAddress,
     metadata
   };
 }
@@ -786,6 +826,37 @@ function parseRewardsEvent(attributes, metadata) {
     event_type: 'rewards',
     validator: extractString(attributes, 'validator'),
     amount: extractString(attributes, 'amount'),
+    mode: extractString(attributes, 'mode'),
+    metadata
+  };
+}
+
+function parseBurnEvent(attributes, metadata) {
+  return {
+    event_type: 'burn',
+    burner: extractString(attributes, 'burner'),
+    amount: extractString(attributes, 'amount'),
+    mode: extractString(attributes, 'mode'),
+    metadata
+  };
+}
+
+function parseCoinbaseEvent(attributes, metadata) {
+  return {
+    event_type: 'coinbase',
+    minter: extractString(attributes, 'minter'),
+    amount: extractString(attributes, 'amount'),
+    mode: extractString(attributes, 'mode'),
+    metadata
+  };
+}
+
+function parseTxEvent(attributes, metadata) {
+  return {
+    event_type: 'tx',
+    height: extractString(attributes, 'height'),
+    hash: extractString(attributes, 'hash'),
+    fee: extractString(attributes, 'fee'),
     mode: extractString(attributes, 'mode'),
     metadata
   };

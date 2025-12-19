@@ -424,9 +424,22 @@ async function handleProofValidityChecked(event) {
         application_address,
         service_id,
         session_end_block_height,
-        block_height: metadata.block_height
+        block_height: metadata.block_height,
+        event_attributes: event.attributes || 'N/A'
       });
       return { success: false, error: 'Missing supplier_operator_address', event_type: 'EventProofValidityChecked' };
+    }
+    
+    // Also check if we have minimum required fields for session_id creation
+    if (!application_address || !service_id || !session_end_block_height) {
+      console.warn('EventProofValidityChecked: Missing required fields for session_id, skipping proof_events insert', {
+        supplier_operator_address,
+        application_address,
+        service_id,
+        session_end_block_height,
+        block_height: metadata.block_height
+      });
+      return { success: false, error: 'Missing required fields for session_id', event_type: 'EventProofValidityChecked' };
     }
     
     const sessionId = createSessionId(
