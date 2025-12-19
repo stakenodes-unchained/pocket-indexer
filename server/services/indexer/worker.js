@@ -31,7 +31,7 @@ const {
 const { processBlockEvents, processTransactionEvents } = require('./eventProcessor');
 const { enqueueBlockResults } = require('./blockResultsQueue');
 
-const { rpcName, rpcUrl, batchSize, processType, blockResultsRpcUrl } = workerData;
+const { rpcName, rpcUrl, batchSize, processType, blockResultsRpcUrl, concurrency } = workerData;
 
 function log(message) {
   parentPort.postMessage({ type: 'log', data: message });
@@ -311,10 +311,19 @@ async function syncHistoricalBlocks() {
       // This handles cases where blocks exist but transactions might have been missed
       // due to restarts, failures, or partial processing
       const nextHeight = currentHeight + 1;
-      log(`Processing historical block ${nextHeight}...`);
-      await processBlock(await fetchBlockByHeight(nextHeight, rpcUrl));
-      currentHeight = nextHeight;
-      await setHistoricalCheckpoint(rpcName, currentHeight);
+      const targetHeight = Math.min(
+        nextHeight + (Number.isFinite(concurrency) && concurrency > 0 ? concurrency - 1 : 0),
+        monitoringHeight
+      );
+
+      log(`Processing historical blocks ${nextHeight} to ${targetHeight}...`);
+
+      for (let height = nextHeight; height <= targetHeight; height++) {
+        await processBlock(await fetchBlockByHeight(height, rpcUrl));
+        currentHeight = height;
+        await setHistoricalCheckpoint(rpcName, currentHeight);
+      }
+
       consecutiveErrors = 0; // Reset error counter on success
 
       // Small delay to prevent overwhelming the RPC

@@ -80,6 +80,8 @@ services:
       - HISTORICAL_BATCH_SIZE=${HISTORICAL_BATCH_SIZE:-50}
       - CLUSTER_WORKERS=${CLUSTER_WORKERS:-4}
       - HISTORY_CACHE_TTL=${HISTORY_CACHE_TTL:-3600}  # Cache TTL for historical data (1 hour default)
+      - TX_EXPIRE_TIME=${TX_EXPIRE_TIME:-2592000}  # Transaction data expiration in seconds (30 days)
+      - PROCESSING_DELAY=${PROCESSING_DELAY:-50}   # Delay between transaction batches to prevent Redis overload
     depends_on:
       redis:
         condition: service_healthy
@@ -120,6 +122,8 @@ services:
       - MEMORY_WARNING_THRESHOLD_GB=${MEMORY_WARNING_THRESHOLD_GB:-12}  # RSS warning threshold in GB
       - NODE_HEAP_SIZE_MB=${NODE_HEAP_SIZE_MB:-32768}  # Node.js heap size limit (32GB default)
       - HISTORY_CACHE_TTL=${HISTORY_CACHE_TTL:-3600}  # Cache TTL for historical data (1 hour default)
+      - TX_EXPIRE_TIME=${TX_EXPIRE_TIME:-2592000}  # Transaction data expiration in seconds (30 days)
+      - PROCESSING_DELAY=${PROCESSING_DELAY:-50}   # Delay between transaction batches to prevent Redis overload
     depends_on:
       redis:
         condition: service_healthy

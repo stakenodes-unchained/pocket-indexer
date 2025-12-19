@@ -17,7 +17,7 @@ const redis = require('./config/redis');
 dotenv.config();
 
 const PORT = process.env.PORT || 3006;
-const NUM_WORKERS = process.env.CLUSTER_WORKERS || os.cpus().length;
+const NUM_WORKERS = Math.min(1, Math.min(parseInt(process.env.CLUSTER_WORKERS || os.cpus().length, 10), 8));
 
 // Initialize reward analytics refresh service (only in first worker to avoid duplicate refreshes)
 let rewardAnalyticsRefreshService = null;

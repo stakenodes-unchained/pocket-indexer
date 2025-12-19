@@ -12,9 +12,9 @@ class TransactionWorkerPool {
     this.blockResultsWorkers = new Map(); // Map<string, Worker[]> - array of workers per RPC
     this.blockResultsWorkerStats = new Map(); // Store stats from block results workers
     this.rpcEndpoints = getRpcEndpoints();
-    this.concurrency = parseInt(process.env.WORKER_CONCURRENCY || '4', 2);
+    this.concurrency = parseInt(process.env.WORKER_CONCURRENCY || '4', 10);
     this.batchSize = parseInt(process.env.HISTORICAL_BATCH_SIZE || '50', 10);
-    this.blockResultsWorkerCount = parseInt(process.env.BLOCK_RESULTS_WORKER_COUNT || '1', 10); // Default: 1 for backward compatibility
+    this.blockResultsWorkerCount = parseInt(process.env.BLOCK_RESULTS_WORKER_COUNT || '2', 10); // Default: 1 for backward compatibility
     this.healthCheckInterval = null;
   }
 
@@ -44,6 +44,7 @@ class TransactionWorkerPool {
             rpcUrl: rpc.url,
             blockResultsRpcUrl: rpc.blockResultsUrl,
             batchSize: this.batchSize,
+            concurrency: this.concurrency,
             id: `${rpc.name}-historical`,
             processType: 'historical'
           }
