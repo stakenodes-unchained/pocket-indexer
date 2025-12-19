@@ -101,7 +101,7 @@ async function handleRedelegation(event) {
       WHERE 
         address = $3
     `, [
-      JSON.stringify(delegateeGateways),
+      delegateeGateways, // Pass array directly - pg library handles TEXT[] conversion
       metadata.block_timestamp,
       address
     ]);

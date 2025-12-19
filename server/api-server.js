@@ -289,8 +289,7 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
                SUM(cs.num_relays) AS relays,
                SUM(cs.num_claimed_compute_units) AS compute_units
         FROM claim_settlements cs
-        WHERE cs.settlement_type = 'settled'
-          AND cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+        WHERE cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
           AND ($1::text IS NULL OR cs.chain = $1)
         GROUP BY 1
       )
@@ -369,8 +368,7 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
                SUM(cs.num_relays) AS relays,
                SUM(cs.num_claimed_compute_units) AS compute_units
         FROM claim_settlements cs
-        WHERE cs.settlement_type = 'settled'
-          AND cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+        WHERE cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
           AND ($1::text IS NULL OR cs.chain = $1)
         GROUP BY 1
       )
@@ -589,8 +587,7 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
         COALESCE(SUM(cs.num_claimed_compute_units), 0) AS compute_units
       FROM claim_settlements cs
       LEFT JOIN transactions t ON cs.transaction_hash = t.hash
-      WHERE cs.settlement_type = 'settled'
-        AND cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= 
+      WHERE cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= 
             ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date - make_interval(days => $2::int))
         AND ($1::text IS NULL OR t.chain = $1);
     `;

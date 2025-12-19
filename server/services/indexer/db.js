@@ -310,7 +310,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
           await saveTransaction({
             ...tx,
             type: txType,
-            block_id: uniqueBlockId,
+            block_id: persistedBlockId,
             block_height: tx.block_height || height || null,
             timestamp: blockData.block?.header?.time || blockData.timestamp,
             chain: chain
@@ -319,7 +319,7 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
           processedTxs.push({
             ...tx,
             type: txType,
-            block_id: uniqueBlockId,
+            block_id: persistedBlockId,
             timestamp: blockData.block?.header?.time || blockData.timestamp,
             chain: chain
           });
