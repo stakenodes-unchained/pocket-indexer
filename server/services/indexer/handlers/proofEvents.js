@@ -378,7 +378,7 @@ async function handleProofValidityChecked(event) {
     await connectClients();
     const client = pgPool;
     
-    const {
+    let {
       supplier_operator_address,
       application_address,
       service_id,
@@ -387,6 +387,47 @@ async function handleProofValidityChecked(event) {
       failure_reason,
       metadata
     } = event;
+    
+    // If supplier_operator_address is missing, try to look it up from existing claims or proof_submissions
+    if (!supplier_operator_address && application_address && service_id && session_end_block_height) {
+      const lookupResult = await client.query(`
+        SELECT supplier_operator_address 
+        FROM claims 
+        WHERE application_address = $1 
+          AND service_id = $2 
+          AND session_end_block_height = $3 
+        LIMIT 1
+      `, [application_address, service_id, session_end_block_height]);
+      
+      if (lookupResult.rows.length > 0 && lookupResult.rows[0].supplier_operator_address) {
+        supplier_operator_address = lookupResult.rows[0].supplier_operator_address;
+      } else {
+        // Try proof_submissions table as fallback
+        const proofLookup = await client.query(`
+          SELECT supplier_operator_address 
+          FROM proof_submissions 
+          WHERE application_address = $1 
+            AND service_id = $2 
+            AND session_end_block_height = $3 
+          LIMIT 1
+        `, [application_address, service_id, session_end_block_height]);
+        
+        if (proofLookup.rows.length > 0 && proofLookup.rows[0].supplier_operator_address) {
+          supplier_operator_address = proofLookup.rows[0].supplier_operator_address;
+        }
+      }
+    }
+    
+    // Skip insert if supplier_operator_address is still missing (required field)
+    if (!supplier_operator_address) {
+      console.warn('EventProofValidityChecked: Missing supplier_operator_address, skipping proof_events insert', {
+        application_address,
+        service_id,
+        session_end_block_height,
+        block_height: metadata.block_height
+      });
+      return { success: false, error: 'Missing supplier_operator_address', event_type: 'EventProofValidityChecked' };
+    }
     
     const sessionId = createSessionId(
       supplier_operator_address,

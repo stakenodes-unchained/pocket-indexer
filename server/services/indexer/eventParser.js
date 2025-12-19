@@ -324,6 +324,16 @@ function parseClaimDiscardedEvent(attributes, metadata) {
 }
 
 function parseApplicationReimbursementRequestEvent(attributes, metadata) {
+  // Amount might be a JSON string or an object, try to parse it
+  let amount = attributes['amount'];
+  if (typeof amount === 'string') {
+    try {
+      amount = JSON.parse(amount);
+    } catch (e) {
+      // If parsing fails, keep as string
+    }
+  }
+  
   return {
     event_type: 'EventApplicationReimbursementRequest',
     application_addr: extractString(attributes, 'application_addr'),
@@ -331,7 +341,7 @@ function parseApplicationReimbursementRequestEvent(attributes, metadata) {
     supplier_owner_addr: extractString(attributes, 'supplier_owner_addr'),
     service_id: extractString(attributes, 'service_id'),
     session_id: extractString(attributes, 'session_id'),
-    amount: extractString(attributes, 'amount'),
+    amount: amount, // Keep as object if parsed, or string if not
     metadata
   };
 }
@@ -627,7 +637,7 @@ function parseProofValidityCheckedEvent(attributes, metadata) {
     application_address: extractString(attributes, 'application_address') || claim.application_address || claim.session_header?.application_address,
     session_end_block_height: extractNumeric(attributes, 'session_end_block_height') || claim.session_end_block_height || claim.session_header?.session_end_block_height,
     claim_proof_status_int: extractNumeric(attributes, 'claim_proof_status_int'),
-    supplier_operator_address: extractString(attributes, 'supplier_operator_address') || claim.supplier_operator_address,
+    supplier_operator_address: extractString(attributes, 'supplier_operator_address') || claim.supplier_operator_address || claim.session_header?.supplier_operator_address,
     metadata
   };
 }

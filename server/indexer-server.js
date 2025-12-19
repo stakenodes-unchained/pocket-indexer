@@ -299,9 +299,16 @@ app.get('/api/v1/health/block-results-workers', async (req, res) => {
   try {
     const allStats = await indexerPool.getAllBlockResultsWorkerStats();
     
+    const totalIndividualWorkers = allStats.reduce((sum, s) => sum + (s.individual_workers?.length || 0), 0);
+    const activeIndividualWorkers = allStats.reduce((sum, s) => {
+      return sum + (s.individual_workers?.filter(w => w.status === 'running').length || 0);
+    }, 0);
+    
     const summary = {
-      total_workers: allStats.length,
-      active_workers: allStats.filter(s => s.status === 'running').length,
+      total_rpc_endpoints: allStats.length,
+      active_rpc_endpoints: allStats.filter(s => s.status === 'running').length,
+      total_individual_workers: totalIndividualWorkers,
+      active_individual_workers: activeIndividualWorkers,
       total_queue_size: allStats.reduce((sum, s) => sum + (s.queue_size || 0), 0),
       total_delayed_items: allStats.reduce((sum, s) => sum + (s.delayed_items || 0), 0),
       total_processing_items: allStats.reduce((sum, s) => sum + (s.processing_items || 0), 0)

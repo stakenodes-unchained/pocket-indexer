@@ -556,7 +556,7 @@ async function handleApplicationReimbursementRequest(event) {
       supplier_owner_addr,
       service_id,
       session_id,
-      amount,
+      amount: typeof amount === 'object' ? JSON.stringify(amount) : amount,
       block_height: metadata.block_height
     });
     

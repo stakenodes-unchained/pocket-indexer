@@ -727,12 +727,41 @@ Get current health status of block results workers.
         "avg_processing_time_ms": 250,
         "current_block_height": 12345678,
         "last_processed_block_height": 12345675,
-        "last_update": 1705312800000
+        "worker_count": 2,
+        "last_update": 1705312800000,
+        "individual_workers": [
+          {
+            "worker_index": 0,
+            "worker_id": "mainnet-block-results-0",
+            "status": "running",
+            "processed_count": 5000,
+            "failed_count": 25,
+            "success_rate": 99.5,
+            "avg_processing_time_ms": 245,
+            "current_block_height": 12345678,
+            "last_processed_block_height": 12345675,
+            "last_update": 1705312800000
+          },
+          {
+            "worker_index": 1,
+            "worker_id": "mainnet-block-results-1",
+            "status": "running",
+            "processed_count": 5000,
+            "failed_count": 25,
+            "success_rate": 99.5,
+            "avg_processing_time_ms": 255,
+            "current_block_height": 12345677,
+            "last_processed_block_height": 12345674,
+            "last_update": 1705312795000
+          }
+        ]
       }
     ],
     "summary": {
-      "total_workers": 1,
-      "active_workers": 1,
+      "total_rpc_endpoints": 1,
+      "active_rpc_endpoints": 1,
+      "total_individual_workers": 2,
+      "active_individual_workers": 2,
       "total_queue_size": 150,
       "total_delayed_items": 5,
       "total_processing_items": 2
@@ -748,19 +777,33 @@ Get current health status of block results workers.
   - `queue_size`: Number of items in the main queue
   - `delayed_items`: Number of items in the delayed retry queue
   - `processing_items`: Number of items currently being processed
-  - `processed_count`: Total number of successfully processed items (cumulative)
-  - `failed_count`: Total number of failed items after max retries (cumulative)
-  - `success_rate`: Success rate percentage (0-100)
-  - `avg_processing_time_ms`: Average processing time per item in milliseconds
-  - `current_block_height`: Block height currently being processed (or highest queued block). `null` if no blocks are queued or being processed
-  - `last_processed_block_height`: Last successfully processed block height. `null` if no blocks have been processed yet
-  - `last_update`: Timestamp of last stats update from worker (milliseconds)
-- `summary`: Aggregated summary across all workers
-  - `total_workers`: Total number of block results workers
-  - `active_workers`: Number of workers with status `running`
-  - `total_queue_size`: Sum of all queue sizes
-  - `total_delayed_items`: Sum of all delayed items
-  - `total_processing_items`: Sum of all processing items
+  - `processed_count`: Total number of successfully processed items (cumulative, aggregated across all workers for this RPC)
+  - `failed_count`: Total number of failed items after max retries (cumulative, aggregated across all workers for this RPC)
+  - `success_rate`: Success rate percentage (0-100, aggregated across all workers for this RPC)
+  - `avg_processing_time_ms`: Weighted average processing time per item in milliseconds (aggregated across all workers for this RPC)
+  - `current_block_height`: Highest block height currently being processed or queued across all workers. `null` if no blocks are queued or being processed
+  - `last_processed_block_height`: Highest last successfully processed block height across all workers. `null` if no blocks have been processed yet
+  - `worker_count`: Number of individual workers for this RPC endpoint
+  - `last_update`: Timestamp of last stats update from any worker (milliseconds)
+  - `individual_workers`: Array of individual worker stats (one per worker instance)
+    - `worker_index`: Index of the worker (0-based)
+    - `worker_id`: Full worker identifier (e.g., `"mainnet-block-results-0"`)
+    - `status`: Worker status (`running`, `stopped`, `error`, `unknown`)
+    - `processed_count`: Total number of successfully processed items by this worker (cumulative)
+    - `failed_count`: Total number of failed items by this worker after max retries (cumulative)
+    - `success_rate`: Success rate percentage for this worker (0-100)
+    - `avg_processing_time_ms`: Average processing time per item for this worker in milliseconds
+    - `current_block_height`: Block height currently being processed by this worker (or highest queued block). `null` if no blocks are queued or being processed
+    - `last_processed_block_height`: Last successfully processed block height by this worker. `null` if no blocks have been processed yet
+    - `last_update`: Timestamp of last stats update from this worker (milliseconds)
+- `summary`: Aggregated summary across all RPC endpoints
+  - `total_rpc_endpoints`: Total number of RPC endpoints with block results workers
+  - `active_rpc_endpoints`: Number of RPC endpoints with status `running`
+  - `total_individual_workers`: Total number of individual worker instances across all RPC endpoints
+  - `active_individual_workers`: Number of individual workers with status `running`
+  - `total_queue_size`: Sum of all queue sizes across all RPC endpoints
+  - `total_delayed_items`: Sum of all delayed items across all RPC endpoints
+  - `total_processing_items`: Sum of all processing items across all RPC endpoints
 
 **Status Codes:**
 - `200`: Success
@@ -778,10 +821,15 @@ const fetchBlockResultsWorkersHealth = async () => {
 const health = await fetchBlockResultsWorkersHealth();
 health.data.workers.forEach(worker => {
   console.log(`${worker.rpc_name}: ${worker.queue_size} items in queue, ${worker.success_rate}% success rate`);
+  console.log(`  ${worker.worker_count} workers active`);
   if (worker.current_block_height !== null && worker.last_processed_block_height !== null) {
     const lag = worker.current_block_height - worker.last_processed_block_height;
     console.log(`  Block progress: ${worker.last_processed_block_height}/${worker.current_block_height} (lag: ${lag})`);
   }
+  // Display individual worker stats
+  worker.individual_workers.forEach(individualWorker => {
+    console.log(`    Worker ${individualWorker.worker_index}: ${individualWorker.processed_count} processed, ${individualWorker.success_rate}% success rate`);
+  });
 });
 ```
 
@@ -795,8 +843,14 @@ health.data.workers.forEach(worker => {
 - Show block height lag (difference between current and last processed) to identify processing delays
 - Color-code worker status (running: green, stopped: gray, error: red, stale: yellow)
 - Show last update time with relative time (e.g., "2 minutes ago")
+- **Display individual worker stats** - Expandable section or separate table showing per-worker metrics
+  - Show individual worker performance breakdown
+  - Identify which workers are performing well vs. struggling
+  - Display per-worker block height progress
+  - Show per-worker success rates and processing times
 - Add auto-refresh every 10-30 seconds
 - Show alerts for high queue sizes, low success rates, or stale block heights
+- Display summary metrics: total RPC endpoints, active RPC endpoints, total individual workers, active individual workers
 
 ---
 

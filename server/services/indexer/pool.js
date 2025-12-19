@@ -800,6 +800,25 @@ class TransactionWorkerPool {
         }
       }
       
+      // Format individual worker stats
+      const individualWorkers = (workerStats.workers || [])
+        .map((w, index) => {
+          if (!w) return null;
+          return {
+            worker_index: index,
+            worker_id: `${rpcName}-block-results-${index}`,
+            status: w.status || 'unknown',
+            processed_count: w.processedCount || 0,
+            failed_count: w.failedCount || 0,
+            success_rate: w.successRate !== undefined ? w.successRate : null,
+            avg_processing_time_ms: w.avgProcessingTimeMs !== undefined ? w.avgProcessingTimeMs : null,
+            current_block_height: w.currentBlockHeight !== undefined ? w.currentBlockHeight : null,
+            last_processed_block_height: w.lastProcessedBlockHeight !== undefined ? w.lastProcessedBlockHeight : null,
+            last_update: w.lastUpdate || null
+          };
+        })
+        .filter(w => w !== null);
+
       return {
         rpc_name: rpcName,
         status: workerStatus,
@@ -813,7 +832,8 @@ class TransactionWorkerPool {
         current_block_height: workerStats.currentBlockHeight !== undefined ? workerStats.currentBlockHeight : null,
         last_processed_block_height: workerStats.lastProcessedBlockHeight !== undefined ? workerStats.lastProcessedBlockHeight : null,
         worker_count: workerCount,
-        last_update: workerStats.lastUpdate || null
+        last_update: workerStats.lastUpdate || null,
+        individual_workers: individualWorkers
       };
     } catch (error) {
       console.error(`[Pool] Error getting block results worker stats for ${rpcName}:`, error);
@@ -830,6 +850,8 @@ class TransactionWorkerPool {
         current_block_height: null,
         last_processed_block_height: null,
         worker_count: 0,
+        last_update: null,
+        individual_workers: [],
         error: error.message
       };
     }
