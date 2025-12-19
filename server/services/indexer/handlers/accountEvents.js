@@ -8,17 +8,6 @@ const { connectClients, pgPool } = require('../db');
 const { updateBalanceAndStake, parseUpokt } = require('../balanceUpdater');
 
 /**
- * Helper to parse uPOKT amount string to numeric
- */
-function parseUpokt(upoktString) {
-  if (!upoktString) return 0;
-  const str = String(upoktString);
-  // Handle format like "5214.000658256326821571upokt" or just "5214upokt"
-  const match = str.match(/^(\d+(?:\.\d+)?)/);
-  return match ? Math.floor(parseFloat(match[1])) : 0;
-}
-
-/**
  * Helper to extract amount from various formats
  */
 function extractAmount(amountString) {
