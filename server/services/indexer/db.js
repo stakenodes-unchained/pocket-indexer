@@ -169,10 +169,38 @@ async function saveBlock(blockData, chain, rpcUrl = process.env.RPC_URL) {
           if (existingRes.rows.length > 0) {
             persistedBlockId = existingRes.rows[0].id;
           }
+        } else if (error.constraint === 'blocks_height_key') {
+          // Old unique constraint on height alone (should be removed in favor of chain+height)
+          // This can happen if migration hasn't run yet - handle gracefully
+          const existingRes = await client.query(
+            'SELECT id FROM blocks WHERE chain = $1 AND height = $2',
+            [chain, height]
+          );
+          if (existingRes.rows.length > 0) {
+            persistedBlockId = existingRes.rows[0].id;
+          } else {
+            // Height exists for different chain - query by height and chain
+            const heightRes = await client.query(
+              'SELECT id FROM blocks WHERE height = $1 ORDER BY chain = $2 DESC LIMIT 1',
+              [height, chain]
+            );
+            if (heightRes.rows.length > 0) {
+              persistedBlockId = heightRes.rows[0].id;
+            }
+          }
+        } else if (error.constraint === 'blocks_chain_height_key') {
+          // Composite constraint on (chain, height) - ON CONFLICT should have handled this
+          // But if we get here, just get the existing block
+          const existingRes = await client.query(
+            'SELECT id FROM blocks WHERE chain = $1 AND height = $2',
+            [chain, height]
+          );
+          if (existingRes.rows.length > 0) {
+            persistedBlockId = existingRes.rows[0].id;
+          }
         } else {
-          // For chain+height conflicts, ON CONFLICT should have handled it
-          // If we get here, it's unexpected - log and continue
-          console.warn(`Unexpected constraint violation: ${error.constraint}, continuing with transaction processing...`);
+          // For other constraint conflicts, log and continue
+          console.warn(`Constraint violation: ${error.constraint}, continuing with transaction processing...`);
           const existingRes = await client.query(
             'SELECT id FROM blocks WHERE chain = $1 AND height = $2',
             [chain, height]
