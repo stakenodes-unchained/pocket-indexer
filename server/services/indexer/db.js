@@ -495,6 +495,7 @@ async function saveTransaction(tx) {
       }
     }
 
+    // Primary insert that expects a valid block_id referencing blocks(id)
     await pgPool.query(
       `INSERT INTO transactions (id, hash, block_id, block_height, sender, recipient, amount, fee, memo, type, status, timestamp, tx_data, chain, amount_denom, fee_denom, addresses)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
@@ -530,6 +531,60 @@ async function saveTransaction(tx) {
       ]
     );
   } catch (error) {
+    // If the only problem is a missing block row (foreign key violation),
+    // fall back to saving the transaction with a NULL block_id so we don't lose data.
+    if (error.code === '23503' && error.constraint === 'transactions_block_id_fkey') {
+      console.warn(
+        `Foreign key violation for transaction ${tx.hash} (block_id=${tx.block_id}). ` +
+        'Block row is missing; saving transaction with NULL block_id instead.'
+      );
+      try {
+        await pgPool.query(
+          `INSERT INTO transactions (id, hash, block_id, block_height, sender, recipient, amount, fee, memo, type, status, timestamp, tx_data, chain, amount_denom, fee_denom, addresses)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+           ON CONFLICT (id) DO UPDATE SET
+             type=EXCLUDED.type,
+             status=EXCLUDED.status,
+             tx_data=EXCLUDED.tx_data,
+             chain=EXCLUDED.chain,
+             amount=EXCLUDED.amount,
+             fee=EXCLUDED.fee,
+             amount_denom=EXCLUDED.amount_denom,
+             fee_denom=EXCLUDED.fee_denom,
+             addresses=EXCLUDED.addresses,
+             block_height=COALESCE(EXCLUDED.block_height, transactions.block_height)`,
+          [
+            tx.hash,
+            tx.hash,
+            null, // drop the foreign-key reference if the block row is missing
+            blockHeight || null,
+            tx.sender,
+            tx.recipient,
+            parseFloat(tx.amount) || 0,
+            parseFloat(tx.fee) || 0,
+            tx.memo,
+            tx.type,
+            tx.status,
+            tx.timestamp,
+            tx.tx_data || null,
+            tx.chain || null,
+            tx.amount_denom || null,
+            tx.fee_denom || null,
+            addresses
+          ]
+        );
+        return;
+      } catch (fallbackError) {
+        console.error('Fallback saveTransaction (NULL block_id) also failed:', {
+          error: fallbackError.message,
+          stack: fallbackError.stack,
+          transaction_hash: tx.hash
+        });
+        // Re-throw the original error so upstream logs stay consistent
+        throw error;
+      }
+    }
+
     console.error('Error in saveTransaction:', {
       error: error.message,
       stack: error.stack,
