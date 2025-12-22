@@ -49,7 +49,7 @@ Currently, no authentication is required for these endpoints.
 
 **Endpoint:** `GET /api/v1/network-growth/performance`
 
-**Description:** Returns a per-day time series over the selected window for relays and compute units only. This is a fast endpoint that queries from `claim_settlements` table.
+**Description:** Returns a per-day time series over the selected window for relays, compute units, and detailed compute unit metrics from proof-submissions and settled claims. This is a fast endpoint that queries from `claim_settlements` and `proof_submissions` tables.
 
 **Query Parameters:**
 - `window` (optional, integer days): Number of days to include ending today. Default `7`. Max `365`.
@@ -64,7 +64,11 @@ Currently, no authentication is required for these endpoints.
       {
         "day": "2025-11-01",
         "relays": 1234567890,
-        "compute_units": 126000000000
+        "compute_units": 126000000000,
+        "proof_submissions_computed_units": 120000000000,
+        "proof_submissions_estimated_units": 125000000000,
+        "settled_claims_computed_units": 6000000000,
+        "settled_claims_estimated_units": 6100000000
       }
       // ... one object per day in ascending order
     ]
@@ -73,10 +77,12 @@ Currently, no authentication is required for these endpoints.
 ```
 
 **Notes:**
-- This endpoint is optimized for performance and only returns relays and compute units.
-- Relays and compute units come from settled claims in the `claim_settlements` table.
+- This endpoint is optimized for performance and returns relays, compute units, and detailed compute unit metrics.
+- `relays` and `compute_units` come from all claim settlements in the `claim_settlements` table.
+- `proof_submissions_computed_units` and `proof_submissions_estimated_units` come from the `proof_submissions` table.
+- `settled_claims_computed_units` and `settled_claims_estimated_units` come from settled claims (where `settlement_type = 'settled'`) in the `claim_settlements` table.
 - Uses EST/EDT timezone for day boundaries.
-- Recommended for clients that only need performance metrics.
+- Recommended for clients that need performance metrics with detailed compute unit breakdowns.
 
 ### 3. Network Growth Entities (Daily Time Series)
 

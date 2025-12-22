@@ -352,8 +352,9 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
     const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
 
     // Aggregate relays and compute units from claim_settlements
+    // Also aggregate computed and estimated units from proof_submissions and settled claims
     // Using EST/EDT timezone for day boundaries and num_claimed_compute_units
-    // Filter directly on claim_settlements.chain column
+    // Filter directly on chain column for both tables
     const perfSql = `
       WITH bounds AS (
         SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date) AS end_day,
@@ -363,20 +364,36 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
         FROM bounds b
       ),
-      agg AS (
+      claim_settlements_agg AS (
         SELECT DATE_TRUNC('day', cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day,
                SUM(cs.num_relays) AS relays,
-               SUM(cs.num_claimed_compute_units) AS compute_units
+               SUM(cs.num_claimed_compute_units) AS compute_units,
+               SUM(CASE WHEN cs.settlement_type = 'settled' THEN cs.num_claimed_compute_units ELSE 0 END) AS settled_claims_computed_units,
+               SUM(CASE WHEN cs.settlement_type = 'settled' THEN cs.num_estimated_compute_units ELSE 0 END) AS settled_claims_estimated_units
         FROM claim_settlements cs
         WHERE cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
           AND ($1::text IS NULL OR cs.chain = $1)
         GROUP BY 1
+      ),
+      proof_submissions_agg AS (
+        SELECT DATE_TRUNC('day', ps.timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day,
+               SUM(ps.num_claimed_compute_units) AS proof_submissions_computed_units,
+               SUM(ps.num_estimated_compute_units) AS proof_submissions_estimated_units
+        FROM proof_submissions ps
+        WHERE ps.timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+          AND ($1::text IS NULL OR ps.chain = $1)
+        GROUP BY 1
       )
       SELECT d.day,
-             COALESCE(a.relays, 0) AS relays,
-             COALESCE(a.compute_units, 0) AS compute_units
+             COALESCE(c.relays, 0) AS relays,
+             COALESCE(c.compute_units, 0) AS compute_units,
+             COALESCE(p.proof_submissions_computed_units, 0) AS proof_submissions_computed_units,
+             COALESCE(p.proof_submissions_estimated_units, 0) AS proof_submissions_estimated_units,
+             COALESCE(c.settled_claims_computed_units, 0) AS settled_claims_computed_units,
+             COALESCE(c.settled_claims_estimated_units, 0) AS settled_claims_estimated_units
       FROM days d
-      LEFT JOIN agg a USING(day)
+      LEFT JOIN claim_settlements_agg c USING(day)
+      LEFT JOIN proof_submissions_agg p USING(day)
       ORDER BY d.day ASC;
     `;
 
@@ -384,7 +401,11 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
     const timeline = (perfRes.rows || []).map(row => ({
       day: row.day,
       relays: Number(row.relays || 0),
-      compute_units: Number(row.compute_units || 0)
+      compute_units: Number(row.compute_units || 0),
+      proof_submissions_computed_units: Number(row.proof_submissions_computed_units || 0),
+      proof_submissions_estimated_units: Number(row.proof_submissions_estimated_units || 0),
+      settled_claims_computed_units: Number(row.settled_claims_computed_units || 0),
+      settled_claims_estimated_units: Number(row.settled_claims_estimated_units || 0)
     }));
 
     res.json({ data: { window_days: windowDays, timeline } });
