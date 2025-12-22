@@ -38,11 +38,12 @@ async function updateAccountBalance(address, chain, amountDelta, blockHeight, ti
     // Use incremental update with ON CONFLICT
     // For new records, insert the delta as initial balance (clamped to 0)
     // For existing records, add the delta to current balance (clamped to 0)
+    // Explicitly cast to BIGINT to avoid integer overflow
     await client.query(`
       INSERT INTO account_balances (address, chain, balance, updated_block_height, updated_timestamp)
-      VALUES ($1, $2, GREATEST(0, $3), $4, $5)
+      VALUES ($1, $2, GREATEST(0, $3::BIGINT), $4, $5)
       ON CONFLICT (address, chain) DO UPDATE SET
-        balance = GREATEST(0, account_balances.balance + $3),
+        balance = GREATEST(0, account_balances.balance + $3::BIGINT),
         updated_block_height = EXCLUDED.updated_block_height,
         updated_timestamp = EXCLUDED.updated_timestamp
     `, [
