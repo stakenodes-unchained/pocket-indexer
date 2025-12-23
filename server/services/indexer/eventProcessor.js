@@ -1,8 +1,3 @@
-/**
- * Event Processor
- * Main entry point for processing events from blocks
- */
-
 const { extractEventsFromBlock, extractEventsFromTransaction } = require('./eventExtractor');
 const { parseTypedEvent } = require('./eventParser');
 const { routeEvents } = require('./eventRouter');

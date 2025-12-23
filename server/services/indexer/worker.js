@@ -45,11 +45,6 @@ async function processBlock(blockData) {
   try {
     const blockHeight = blockData.block?.header?.height || 'unknown';
     console.log(`[Worker ${workerData.id}] Processing block ${blockHeight}`);
-
-    // Save block to database
-    // Note: saveBlock now always processes transactions even if block exists
-    // This ensures we catch any transactions that might have been missed due to
-    // restarts, failures, or partial processing
     let block = await saveBlock(blockData, rpcName, rpcUrl);
 
     // If block save failed completely, skip processing
@@ -58,10 +53,8 @@ async function processBlock(blockData) {
       return;
     }
 
-    // Buffer claims for bulk upsert per block
     const claimsBuffer = [];
     const proofSubmissionsBuffer = [];
-    console.log("block.transactions", block.transactions.length)
     for (const tx of block.transactions) {
       try {
         let suppliers = [];
@@ -73,24 +66,18 @@ async function processBlock(blockData) {
         let gateways = [];
         const governance = [];
 
-        // Claims fast-path: only parse claims/relays and proof submissions
         relays = parseRelays(tx, blockData, rpcName);
         const claims = parseClaims(tx, blockData, rpcName);
         if (Array.isArray(claims) && claims.length) {
           claimsBuffer.push(...claims);
         }
 
-        // Parse proof submissions for reward tracking
         const proofSubmissions = parseProofSubmissions(tx, blockData, rpcName);
-        console.log("proofSubmissions", proofSubmissions.length)
         if (Array.isArray(proofSubmissions) && proofSubmissions.length) {
           proofSubmissionsBuffer.push(...proofSubmissions);
         }
         
-        // Process transaction events (from tx_response.events)
-        // These events complement the message parsing and provide actual outcomes
         try {
-          // Create tx data structure for event processing
           const txData = {
             tx_response: tx.tx_response || {},
             hash: tx.hash,
@@ -99,7 +86,6 @@ async function processBlock(blockData) {
           const eventResults = await processTransactionEvents(txData, blockData, rpcName);
           if (eventResults.length > 0) {
             const successCount = eventResults.filter(r => r.success).length;
-            // Log only if there are events (to reduce noise)
             if (eventResults.length > 0 && successCount < eventResults.length) {
               console.warn(`[Worker ${workerData.id}] Transaction ${tx.hash?.substring(0, 16)}... had ${eventResults.length - successCount} failed events`);
             }

@@ -6,3 +6,5 @@ dist
 .env
 .next
 server/datastore/*
+ticketing
+ticketing.zip

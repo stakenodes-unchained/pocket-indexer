@@ -2,9 +2,9 @@
 
 /**
  * Performance Service
- * 
- * Handles business logic for validator and service performance queries,
- * search functionality, and service analytics.
+ *
+ * Central place for validator and service performance analytics.
+ * All long-running performance queries for dashboards should live here.
  */
 
 /**

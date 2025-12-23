@@ -290,7 +290,7 @@ Get transaction count for a chain (existing endpoint, documented for completenes
 
 ---
 
-## Frontend Integration Guide
+## Frontend Integration Guide (Optional)
 
 ### Expected Frontend Behavior
 
@@ -448,7 +448,17 @@ async function fetchStats(filters, usePost = false) {
 
 ---
 
-## Database Optimization
+## Notes for Future Maintainers
+
+- Implementation for these endpoints lives primarily in:
+  - `server/api-server.js` (`/api/v1/transactions*` routes)
+  - `server/services/transactionService.js` (query construction, filters, pagination, stats).
+- Performance characteristics depend heavily on PostgreSQL indexes over `transactions` and related tables (including JSONB and array columns for addresses).
+- When altering filters or response shapes:
+  - Keep the `meta` structure stable where possible (especially `total`, `page`, `limit`, `totalPages`, and `has_more` when present).
+  - Be mindful of query plans for large datasets (10M+ rows); preserve index usage patterns in `transactionService`.
+
+## Database Optimization (Reference)
 
 The following indexes have been added to optimize query performance:
 

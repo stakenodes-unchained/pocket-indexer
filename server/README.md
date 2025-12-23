@@ -1,48 +1,31 @@
-# Block Explorer Server
+# Indexer & API Server
 
-High-performance blockchain explorer server that indexes and serves transaction data from multiple RPC endpoints. The server uses Redis for fast data access and worker threads for parallel processing.
+This directory contains the Node.js indexer workers and API server for Pocket Indexer. The indexer ingests blocks and events from Pocket RPC endpoints into PostgreSQL, and the API server exposes REST endpoints consumed by dashboards and clients.
 
-## Features
-
-- Multi-chain support: Fetch transaction data from multiple blockchain RPC endpoints
-- High-performance Redis storage: Fast reads and writes using Redis data structures
-- Parallel processing: Worker threads for efficient data fetching and processing
-- Scalable architecture: Independent workers for each RPC endpoint
-- Efficient API endpoints: Chain-specific transaction querying
-
-## Architecture Overview
-
-This server uses a multi-layered architecture:
-
-1. **Data Storage**: Redis for high-performance, in-memory data storage
-2. **Worker Pool**: Multi-threaded workers to fetch and process blockchain data
-3. **Service Layer**: Business logic for transaction retrieval and processing
-4. **API Layer**: RESTful endpoints for querying transaction data
-
-### Redis Data Schema
-
-- `tx:{chainName}:{txHash}` - Hash storing transaction details
-- `chain:{chainName}:latest_height` - String storing latest processed block height
-- `chain:{chainName}:max_height` - String storing most recent chain height
-- `chain:{chainName}:txs` - Sorted set of transaction hashes by height
-- `chain:{chainName}:blocks` - Set of blocks that have been processed
-
-## Installation
+## How to Run
 
 ### Prerequisites
 
 - Node.js 18+
-- Redis 6+ (or use Docker)
+- PostgreSQL
+- (Optional) Redis for caching and worker coordination
 
 ### Environment Variables
 
-Create a `.env` file in the root directory with the following variables:
+Create a `.env` file in the repo root (or inject env via your runtime) with at least:
 
-```
-# RPC Endpoints - comma-separated list of RPC_NAME=RPC_ENDPOINT pairs
+```bash
+# RPC endpoints - comma-separated list of RPC_NAME=RPC_ENDPOINT pairs
 RPC_ENDPOINTS=shannon=https://shannon-testnet-grove-api.beta.poktroll.com,mainnet=https://rpc.pokt.network
 
-# Redis configuration
+# Postgres
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=pokt_indexer
+DB_USER=postgres
+DB_PASS=your-password
+
+# Redis (optional but recommended)
 REDIS_URL=redis://127.0.0.1:6379
 REDIS_PASSWORD=
 REDIS_DB=0
@@ -52,34 +35,33 @@ WORKER_CONCURRENCY=2
 HISTORICAL_BATCH_SIZE=50
 ```
 
-### Docker Setup (Recommended)
-
-The easiest way to run the server is with Docker:
+### Docker (Recommended)
 
 ```bash
-# Start Redis and the API server
+cd server
 docker-compose up -d
 
 # View logs
 docker-compose logs -f
 ```
 
-### Manual Setup
+### Local (Manual)
 
 ```bash
-# Install dependencies
+cd server
 npm install
 
 # Start Redis (install separately or use Docker)
 docker run -d -p 6379:6379 redis:7-alpine
 
-# Start the server
-npm start
+# Start indexer workers and API server
+./start_indexer_server.sh
+./start_api_server.sh
 ```
 
-## API Endpoints (Comprehensive)
+## API Overview
 
-Base URL: `http://localhost:3006`
+Base URL (default): `http://localhost:3006`
 
 ### Transactions
 
@@ -380,28 +362,14 @@ Base URL: `http://localhost:3006`
 
 All list endpoints support pagination via `page` and `limit` where applicable and return `meta` objects for UI pagination.
 
-## Performance Considerations
+For full per-endpoint details, see:
 
-- Redis provides in-memory storage for fast access to transaction data
-- Worker threads allow parallel processing of blockchain data
-- Sorted sets in Redis enable efficient pagination and range queries
-- Data is organized by chain name for rapid chain-specific queries
+- `TRANSACTIONS_API.md`, `BLOCKS_API.md`, `SERVICES_API.md`, `CLAIMS_API.md`, `PROOF_SUBMISSIONS_API.md`
+- `NETWORK_GROWTH_API.md`, `VALIDATOR_PERFORMANCE_API.md`, `VALIDATOR_SERVICE_SEARCH_API.md`
+- `ADMIN_API.md`, `LOG_VIEWER_API.md`, `PROOF_PARSER_HEALTH_API.md`
 
-## Maintenance and Scaling
+## For New Maintainers
 
-### Monitoring
-
-Monitor Redis memory usage as the transaction database grows. Consider implementing:
-
-- TTL (Time-To-Live) for older transactions if historical data isn't critical
-- Redis persistence configuration for data durability
-- Redis cluster for horizontal scaling
-
-### Adding New Chains
-
-To add a new chain, simply add it to the `RPC_ENDPOINTS` environment variable with the format:
-```
-RPC_ENDPOINTS=chain1=url1,chain2=url2,...
-```
-
-The system will automatically create workers for each new chain. 
+- Read `indexer-server.js` and `services/indexer/worker.js` to understand historical vs monitor workers, gap filling, and event processing.
+- Read `api-server.js` together with the `*_API.md` files to see how Express routes map to service modules in `services/`.
+- Use `migrations/` together with `POCKET_NETWORK_INDEXER_REQUIREMENTS.md` to understand and extend the schema safely.

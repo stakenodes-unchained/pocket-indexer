@@ -281,6 +281,15 @@ Use `/api/v1/services/top-by-performance` to:
 
 ---
 
+## Notes for Future Maintainers
+
+- Implementation for these endpoints lives in:
+  - `server/api-server.js` (`/api/v1/services/top-by-*` routes)
+  - `server/services/performanceService.js` (service performance aggregations).
+- These endpoints are optimized for large `proof_submissions` datasets; when changing filters or adding fields:
+  - Review migration `017-services-performance-indexes.sql` and keep query predicates aligned with available indexes.
+  - Be cautious about adding unindexed conditions to the WHERE clause, which can degrade performance.
+
 ## Notes
 
 - All datetime fields are in ISO 8601 format (UTC)

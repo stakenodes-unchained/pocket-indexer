@@ -173,18 +173,16 @@ app.use((req, res, next) => {
   next();
 });
 
-// API endpoints
-// Network growth (apps, services, gateways, suppliers, relays, compute units)
+// Combined daily time series for entities and performance metrics.
+// Prefer `/network-growth/performance` + `/network-growth/entities` for new clients.
 app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
 
-    // Window in days (default 7)
     const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
 
-    // Build daily series for the selected window, counting new entities first seen per day
     const entitiesSql = `
       WITH bounds AS (
         SELECT (NOW()::date) AS end_day,
@@ -272,9 +270,6 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
     const entitiesRes = await client.query(entitiesSql, [chain || null, windowDays]);
     const entitySeries = entitiesRes.rows || [];
 
-    // Aggregate relays and compute units from claim_settlements
-    // Using EST/EDT timezone for day boundaries and num_claimed_compute_units
-    // Filter directly on claim_settlements.chain column
     const perfSql = `
       WITH bounds AS (
         SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date) AS end_day,
@@ -304,7 +299,6 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
     const perfRes = await client.query(perfSql, [chain || null, windowDays]);
     const perfSeries = perfRes.rows || [];
 
-    // Merge series on day
     const byDay = new Map();
     for (const row of entitySeries) {
       byDay.set(row.day, {
@@ -341,20 +335,15 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
   }
 });
 
-// Fast endpoint for network growth performance metrics (compute units and relays only)
+// Daily performance metrics (relays and compute units) with proof/claims breakdown.
 app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
 
-    // Window in days (default 7)
     const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
 
-    // Aggregate relays and compute units from claim_settlements
-    // Also aggregate computed and estimated units from proof_submissions and settled claims
-    // Using EST/EDT timezone for day boundaries and num_claimed_compute_units
-    // Filter directly on chain column for both tables
     const perfSql = `
       WITH bounds AS (
         SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date) AS end_day,
@@ -415,17 +404,15 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
   }
 });
 
-// Endpoint for network growth entity statistics (applications, suppliers, gateways, services)
+// Daily first-seen entity counts (applications, suppliers, gateways, services).
 app.get('/api/v1/network-growth/entities', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
 
-    // Window in days (default 7)
     const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
 
-    // Build daily series for the selected window, counting new entities first seen per day
     const entitiesSql = `
       WITH bounds AS (
         SELECT (NOW()::date) AS end_day,
@@ -526,7 +513,7 @@ app.get('/api/v1/network-growth/entities', cacheMiddleware(1800), async (req, re
   }
 });
 
-// Network growth summary (aggregate over window)
+// Window summary for entity and performance metrics (no per-day breakdown).
 app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
@@ -600,8 +587,6 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
     const entitiesRes = await client.query(entitiesSql, [chain || null, windowDays]);
     const entities = entitiesRes.rows[0] || {};
 
-    // Using claim_settlements table with EST/EDT timezone for day boundaries and num_claimed_compute_units
-    // Joining with transactions table to get chain for filtering
     const perfSql = `
       SELECT
         COALESCE(SUM(cs.num_relays), 0) AS relays,

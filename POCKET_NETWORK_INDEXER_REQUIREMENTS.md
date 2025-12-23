@@ -1,5 +1,7 @@
 # Pocket Network Indexer Requirements & Architecture Guide
 
+> **Status:** Design/requirements document. This file captures a superset of the functionality the indexer should support; not all sections are implemented exactly as written. Treat this as guidance and future roadmap rather than a strict description of the current codebase.
+
 ## **Document Purpose**
 This document provides comprehensive requirements and architectural guidance for building an indexer for Pocket Network. It covers all aspects of data collection, relationship tracking, transaction parsing, and change monitoring required to maintain an accurate and up-to-date index of the network state.
 
@@ -2819,37 +2821,37 @@ class AlertTriggers:
 ## **Implementation Checklist**
 
 ### **Phase 1: Core Infrastructure**
-- [ ] Set up project structure and dependencies
-- [ ] Implement basic API client with retry logic
-- [ ] Create data models for all entities
-- [ ] Implement basic state manager
-- [ ] Set up database schema
+- [x] Set up project structure and dependencies
+- [x] Implement basic API client with retry logic
+- [x] Create data models for all entities
+- [x] Implement basic state manager
+- [x] Set up database schema
 
 ### **Phase 2: Data Collection**
-- [ ] Implement block monitoring
-- [ ] Create transaction parser for all message types
-- [ ] Implement state data collection
-- [ ] Add pagination handling
-- [ ] Implement batch processing
+- [x] Implement block monitoring
+- [x] Create transaction parser for all message types
+- [x] Implement state data collection
+- [x] Add pagination handling
+- [x] Implement batch processing
 
 ### **Phase 3: Relationship Management**
-- [ ] Implement relationship tracking
-- [ ] Create relationship update logic
+- [x] Implement relationship tracking
+- [x] Create relationship update logic
 - [ ] Add consistency checking
-- [ ] Implement relationship queries
+- [x] Implement relationship queries
 
 ### **Phase 4: Performance & Reliability**
-- [ ] Add caching layer
-- [ ] Implement connection pooling
+- [x] Add caching layer
+- [x] Implement connection pooling
 - [ ] Add rate limiting
-- [ ] Implement error recovery
-- [ ] Add performance monitoring
+- [x] Implement error recovery
+- [x] Add performance monitoring
 
 ### **Phase 5: Monitoring & Operations**
-- [ ] Implement health checks
+- [x] Implement health checks
 - [ ] Add alerting system
-- [ ] Create operational dashboards
-- [ ] Add logging and metrics
+- [x] Create operational dashboards
+- [x] Add logging and metrics
 - [ ] Implement backup and recovery
 
 ### **Phase 6: Testing & Validation**

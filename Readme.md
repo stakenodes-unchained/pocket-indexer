@@ -1,195 +1,75 @@
-## ⚙️ Revised AI-Driven Pocket Indexer (No Subsquid)
+## Pocket Indexer Overview
 
-### 📌 High-Level Architecture
+Pocket Indexer ingests Pocket Network data into PostgreSQL and exposes REST APIs for explorer and analytics use cases.
 
-```
-┌─────────────────┐     ┌────────────────────┐     ┌─────────────────┐
-│ Pocket Network  │────▶│  Custom Indexer    │────▶│  PostgreSQL DB  │
-│     Nodes       │     │  (AI-augmented)    │     │                 │
-└─────────────────┘     └────────────────────┘     └─────────────────┘
-                                 │                        │
-                                 ▼                        ▼
-                         ┌─────────────────┐     ┌─────────────────┐
-                         │   GraphQL API   │◀───▶│  Data Validator │
-                         │   (Hasura /     │     │  (AI Assisted)  │
-                         │  PostGraphile)  │     └─────────────────┘
-                         └─────────────────┘
-                                 │
-                                 ▼
-                         ┌─────────────────┐
-                         │   Explorer UI   │
-                         └─────────────────┘
+- **Indexer and APIs** live under `server/`.
+- **Core services** are in `server/services/` (indexer, metrics, transactions, validators, performance).
+- **Database migrations** are in `server/migrations/`.
+- **API documentation** lives in `*.md` files in the repo root and under `server/` (for example `NETWORK_GROWTH_API.md`, `TRANSACTIONS_API.md`, `SERVICES_API.md`).
+
+For a detailed description of the API surface and deployment flow, see `server/README.md`.
+
+### High-Level Architecture
+
+```text
+Pocket Nodes ──► Indexer (server/indexer-server.js) ──► PostgreSQL
+                            │
+                            └──► API Server (server/api-server.js) ──► REST clients / dashboard
 ```
 
----
+### Running the System
 
-## 🧠 Components Breakdown (Without Subsquid)
+- See `server/README.md` for:
+  - Environment variables (`DB_*`, `RPC_ENDPOINTS`, Redis, worker config).
+  - Running with Docker (`server/docker-compose.yml`) or `npm start`.
+  - Explorer / dashboard endpoints.
 
-### 1. 🏗️ **Custom Data Processor (Your Indexer)**
+### Operational Notes
 
-A lightweight Node.js or Python script/service that:
+- Historical and real-time indexing are handled by workers under `server/services/indexer/`.
+- Network growth, validator performance, and other analytics are computed from PostgreSQL tables (for example `claim_settlements`, `proof_submissions`, `validators`, `transactions`).
+- Production processing details and health checks are documented in `server/PRODUCTION_PROCESSING_README.md` and the `*_API.md` files.
 
-* Connects to Pocket RPC nodes
-* Fetches blocks and transactions continuously
-* Transforms them into DB-ready format
-* Writes to PostgreSQL
+### Documentation Index
 
-#### Features:
+Use this section as the entrypoint into all project documentation.
 
-* Retry and failover logic
-* Batch fetching
-* AI agent assistance (optional) to generate transformation logic
+- **Overview & Architecture**
+  - `Readme.md`: High-level overview and documentation index.
+  - `server/README.md`: How to run the indexer and API (env vars, ports, Docker/manual, health endpoints).
+  - `POCKET_NETWORK_INDEXER_REQUIREMENTS.md`: Detailed requirements and architecture guide for the indexer (design-level, not a 1:1 reflection of current implementation).
 
----
+- **Core APIs**
+  - `server/TRANSACTIONS_API.md`: Transaction listing, filters, stats, and related endpoints.
+  - `server/SERVICES_API.md`: Service-related APIs.
+  - `server/BLOCKS_API.md`: Block listing and statistics.
+  - `server/CLAIMS_API.md`: Claims and settlements APIs.
+  - `server/PROOF_SUBMISSIONS_API.md`: Proof submission APIs.
+  - `NETWORK_GROWTH_API.md`: Network Growth summary, performance, and entity endpoints.
+  - `VALIDATOR_PERFORMANCE_API.md`: Validator performance and analytics APIs.
+  - `VALIDATOR_SERVICE_SEARCH_API.md`: Validator/service search APIs.
+  - `server/ADMIN_API.md`: Admin/maintenance endpoints.
+  - `server/LOG_VIEWER_API.md`: Log viewer API.
 
-### 2. ⚙️ Pocket Indexer Implementation
+- **Operations & Production**
+  - `server/PRODUCTION_PROCESSING_README.md`: Production ingestion, backfilling, and monitoring flows.
+  - `server/PROOF_PARSER_SERVICE.md`: Proof parser service behavior and configuration.
+  - `server/PROOF_PARSER_HEALTH_API.md`: Proof parser health endpoints.
+  - `POCKET_NETWORK_EVENT_PROCESSING.md`: Event processing pipeline, tables, and workers.
+  - `API_UPDATES_STAT_CARDS.md`: Notes on API changes that feed dashboard stat cards.
 
-#### 📍 Example Architecture (Node.js)
+- **Message Types & Reference**
+  - `POCKET_NETWORK_MESSAGE_TYPES.md`: Message types relevant to Pocket Network.
+  - `MessageTypes.md` / `MessageTypes.index.json`: Additional message type reference and indexing information.
 
-```bash
-services/
-  - indexer/
-      - indexer.js
-      - transformer.js   # AI-generated logic
-      - rpc.js
-      - db.js
-```
+- **Dashboards & Tasks**
+  - `DASHBOARD_TASKS.md`: Dashboard-related implementation tasks and notes.
 
-```ts
-// indexer.js
-import { fetchBlock } from './rpc';
-import { transformBlock } from './transformer';
-import { saveBlock } from './db';
+- **Design & Future Ideas**
+  - `POCKET_NETWORK_INDEXER_REQUIREMENTS.md`: Comprehensive design/requirements document (long-form design; some sections exceed what is currently implemented and should be treated as guidance and future ideas).
 
-let currentHeight = await getLastProcessedHeight();
+### For New Maintainers
 
-while (true) {
-  const block = await fetchBlock(currentHeight);
-  const transformed = transformBlock(block);
-  await saveBlock(transformed, rpcName);
-  currentHeight++;
-}
-```
-
-You can **use an LLM agent** to generate `transformBlock` logic from an example of Pocket block JSON.
-
----
-
-### 3. 🧠 AI-Assisted Schema Generation
-
-Use GPT to **infer schema** from raw Pocket block and transaction JSON and generate:
-
-* PostgreSQL DDL
-* Hasura-ready GraphQL schema
-
-#### Prompt Example:
-
-> “Given this Pocket transaction JSON, generate the SQL schema and relationships for PostgreSQL. Include foreign keys and indexes for performance.”
-
-This gives you schema like:
-
-```sql
-CREATE TABLE blocks (
-  id TEXT PRIMARY KEY,
-  height INTEGER UNIQUE,
-  hash TEXT,
-  timestamp TIMESTAMP,
-  proposer TEXT
-);
-
-CREATE TABLE transactions (
-  id TEXT PRIMARY KEY,
-  hash TEXT,
-  block_id TEXT REFERENCES blocks(id),
-  sender TEXT,
-  recipient TEXT,
-  amount NUMERIC,
-  fee NUMERIC,
-  memo TEXT,
-  type TEXT,
-  status TEXT,
-  timestamp TIMESTAMP
-);
-```
-
----
-
-### 4. 🔎 GraphQL API Layer
-
-Use **Hasura** (recommended) or **PostGraphile** to expose GraphQL over your database automatically.
-
-* Auto-generate queries
-* Use relationships (`foreign keys`) to enable deep queries
-* Add custom logic via Hasura **Actions** or **Remote Schemas** if needed
-* Add Row-Level Permissions if needed for future public APIs
-
----
-
-### 5. 🧠 AI-Powered Data Validation Layer
-
-Use AI to **compare** indexed data with:
-
-* Pocket RPC responses (live)
-* Other known indexers (e.g., PoktScan)
-* Checksums of blocks, txs
-
-#### How AI Helps:
-
-* Validate inconsistencies
-* Auto-heal data gaps (e.g., missing txs)
-* Summarize issues and alert ops team
-
----
-
-### 6. 🖥️ Explorer Frontend (React + Apollo)
-
-Keep your existing frontend stack:
-
-* Next.js + Apollo Client
-* Tailwind + Recharts for UI
-* Use GraphQL queries auto-generated by Hasura
-
-Optional: Add an AI-powered **GraphQL query assistant** inside devtools or dashboard for custom insights.
-
----
-
-## 🧰 Tooling Suggestions
-
-| Task                    | Suggested Stack                        |
-| ----------------------- | -------------------------------------- |
-| Data Fetching & Sync    | Node.js or Python + Axios + PostgreSQL |
-| DB Schema & GraphQL API | PostgreSQL + Hasura (or PostGraphile)  |
-| Transformation Code     | GPT (transform Pocket block → DB row)  |
-| Query Validation        | GPT agents to compare indexed vs live  |
-| Frontend                | React + Apollo + GraphQL               |
-| Deployment              | Docker Compose / Fly.io / Render.com   |
-
----
-
-## ✅ Implementation Roadmap
-
-### Phase 1: Foundation
-
-* [x] Set up PostgreSQL schema using GPT
-* [x] Set up Hasura with schema exposure
-* [x] Create a basic Pocket RPC fetcher script
-
-### Phase 2: Data Indexing Engine
-
-* [x] Build a loop to index block-by-block
-* [x] Use LLM to help generate transformation code
-* [x] Insert into DB with basic error handling
-
-### Phase 3: Validation + Frontend
-
-* [ ] Build validation comparison agent (GPT vs RPC)
-* [ ] Connect frontend to GraphQL
-* [ ] Add visual block / tx explorer
-
-### Phase 4: Optimization
-
-* [x] Add retry, deduplication, and batch indexing
-* [ ] Use cron + health checks
-* [ ] Add AI-powered dashboard alerts
-
----
+- Start with `Readme.md` and `server/README.md` to set up a local environment and understand the main processes.
+- Use the **Core APIs** section above to jump into specific endpoints as needed.
+- Refer to **Operations & Production** docs before changing ingestion, backfilling, or proof parsing in production.

@@ -1,6 +1,6 @@
 # API Updates Documentation
 
-This document describes the recent updates to the Pocket Network Indexer API endpoints. These updates add new aggregate statistics, pagination support, and additional metadata to various endpoints for enhanced frontend integration.
+> **Status:** Implementation notes for specific API/stat-card changes. Use this as a changelog-style reference; the canonical behavior for each endpoint is described in the corresponding `*_API.md` files.
 
 ## Table of Contents
 

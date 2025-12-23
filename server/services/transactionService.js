@@ -3,9 +3,6 @@ const REDIS_CACHE_TX_DETAIL = (process.env.REDIS_CACHE_TX_DETAIL || 'false') ===
 const { getRpcEndpoints } = require('../config/rpc');
 const { Pool } = require('pg');
 
-/**
- * Transaction service that provides methods to interact with stored transaction data
- */
 class TransactionService {
   constructor() {
     this.rpcEndpoints = getRpcEndpoints();
@@ -31,25 +28,14 @@ class TransactionService {
     });
   }
 
-  /**
-   * Get database client from pool (pool handles connections automatically)
-   */
   async connectDB() {
-    // Pool manages connections automatically, just ensure pool is ready
     return this.pgPool;
   }
 
-  /**
-   * Get pgPool for direct query access
-   */
   get pgClient() {
     return this.pgPool;
   }
 
-  /**
-   * Get all available chain names
-   * @returns {Array<string>} Array of chain names
-   */
   getAvailableChains() {
     return this.rpcEndpoints.map(rpc => rpc.name);
   }
