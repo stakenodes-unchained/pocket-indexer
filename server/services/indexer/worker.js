@@ -272,10 +272,25 @@ async function processBlock(blockData) {
       const height = typeof blockHeightForResults === 'string' ? parseInt(blockHeightForResults, 10) : blockHeightForResults;
       if (!isNaN(height)) {
         // Enqueue for async processing - don't block on this
-        enqueueBlockResults(rpcName, height).catch(error => {
-          // Log but don't fail - queue failures shouldn't block block processing
-          console.warn(`[Worker ${workerData.id}] Failed to enqueue block_results for block ${height}: ${error.message}`);
-        });
+        enqueueBlockResults(rpcName, height)
+          .then(success => {
+            if (success) {
+              // Only log every 100th block to reduce noise
+              if (height % 100 === 0) {
+                console.log(`[Worker ${workerData.id}] Enqueued block_results for block ${height}`);
+              }
+            }
+          })
+          .catch(error => {
+            // Log but don't fail - queue failures shouldn't block block processing
+            console.warn(`[Worker ${workerData.id}] Failed to enqueue block_results for block ${height}: ${error.message}`);
+          });
+      }
+    } else if (blockHeightForResults && !blockResultsRpcUrl) {
+      // Log when blockResultsRpcUrl is not configured (only once per worker to avoid spam)
+      if (!workerData._loggedMissingBlockResultsUrl) {
+        console.warn(`[Worker ${workerData.id}] blockResultsRpcUrl not configured - blocks will not be enqueued for block_results processing`);
+        workerData._loggedMissingBlockResultsUrl = true;
       }
     }
     

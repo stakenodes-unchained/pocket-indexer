@@ -42,7 +42,7 @@ class TransactionWorkerPool {
           workerData: {
             rpcName: rpc.name,
             rpcUrl: rpc.url,
-            blockResultsRpcUrl: rpc.rpcUrl,
+            blockResultsRpcUrl: rpc.blockResultsUrl || null, // Use blockResultsUrl if configured
             batchSize: this.batchSize,
             concurrency: this.concurrency,
             id: `${rpc.name}-historical`,
@@ -80,7 +80,7 @@ class TransactionWorkerPool {
           workerData: {
             rpcName: rpc.name,
             rpcUrl: rpc.url,
-            blockResultsRpcUrl: rpc.rpcUrl,
+            blockResultsRpcUrl: rpc.blockResultsUrl || null, // Use blockResultsUrl if configured
             batchSize: this.batchSize,
             id: `${rpc.name}-monitor`,
             processType: 'monitor'
@@ -571,7 +571,7 @@ class TransactionWorkerPool {
         workerData: {
           rpcName,
           rpcUrl,
-          blockResultsRpcUrl: rpc?.blockResultsUrl,
+          blockResultsRpcUrl: rpc?.blockResultsUrl || null, // Use blockResultsUrl if configured
           batchSize: this.batchSize,
           id: `${rpcName}-monitor`,
           processType: 'monitor'
