@@ -695,7 +695,14 @@ class ProductionDataProcessor {
           const successCount = eventResults.filter(r => r.success).length;
           // Log only if there are failures (to reduce noise)
           if (successCount < eventResults.length) {
-            console.warn(`Transaction ${tx.hash?.substring(0, 16)}... had ${eventResults.length - successCount} failed events`);
+            // Extract hash from multiple possible locations
+            const txHash = tx.hash || txData?.tx_response?.txhash || txData?.tx_response?.hash || 'unknown';
+            const hashDisplay = txHash !== 'unknown' ? `${txHash.substring(0, 16)}...` : 'unknown';
+            const failedEvents = eventResults.filter(r => !r.success);
+            const failedDetails = failedEvents.map(r => 
+              `${r.event_type || 'unknown'}: ${r.error || 'Unknown error'}`
+            ).join('; ');
+            console.warn(`Transaction ${hashDisplay} had ${eventResults.length - successCount} failed events: ${failedDetails}`);
           }
         }
       } catch (e) {

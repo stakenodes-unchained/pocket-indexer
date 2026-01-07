@@ -78,16 +78,23 @@ async function processBlock(blockData) {
         }
         
         try {
+          // Extract hash from multiple possible locations
+          const txHash = tx.hash || tx.tx_response?.txhash || tx.tx_response?.hash || 'unknown';
           const txData = {
             tx_response: tx.tx_response || {},
-            hash: tx.hash,
+            hash: txHash,
             tx: tx.tx || {}
           };
           const eventResults = await processTransactionEvents(txData, blockData, rpcName);
           if (eventResults.length > 0) {
             const successCount = eventResults.filter(r => r.success).length;
             if (eventResults.length > 0 && successCount < eventResults.length) {
-              console.warn(`[Worker ${workerData.id}] Transaction ${tx.hash?.substring(0, 16)}... had ${eventResults.length - successCount} failed events`);
+              const hashDisplay = txHash !== 'unknown' ? `${txHash.substring(0, 16)}...` : 'unknown';
+              const failedEvents = eventResults.filter(r => !r.success);
+              const failedDetails = failedEvents.map(r => 
+                `${r.event_type || 'unknown'}: ${r.error || 'Unknown error'}`
+              ).join('; ');
+              console.warn(`[Worker ${workerData.id}] Transaction ${hashDisplay} had ${eventResults.length - successCount} failed events: ${failedDetails}`);
             }
           }
         } catch (e) {
