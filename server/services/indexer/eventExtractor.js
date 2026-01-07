@@ -13,19 +13,39 @@
 function extractEventsFromBlock(blockData, blockResultsData = null, chain = null) {
   const events = [];
   
-  if (!blockData) {
+  if (!blockData && !blockResultsData) {
     return events;
   }
 
-  const blockHeight = parseInt(blockData.block?.header?.height || blockData.sdk_block?.header?.height || '0', 10);
-  const blockTimestamp = blockData.block?.header?.time || blockData.sdk_block?.header?.time || new Date().toISOString();
+  // Get block height and timestamp - prioritize blockResultsData if available
+  let blockHeight = 0;
+  let blockTimestamp = new Date().toISOString();
+  
+  if (blockResultsData?.result?.height) {
+    blockHeight = parseInt(blockResultsData.result.height, 10);
+  } else if (blockData) {
+    blockHeight = parseInt(blockData.block?.header?.height || blockData.sdk_block?.header?.height || '0', 10);
+  }
+  
+  if (blockData) {
+    blockTimestamp = blockData.block?.header?.time || blockData.sdk_block?.header?.time || blockTimestamp;
+  }
   
   // Extract transaction events
-  // Events are in block.txs_results[].events or in individual transaction responses
-  const txsResults = blockData.txs_results || [];
+  // Priority: block_results.txs_results (most complete) > blockData.txs_results
+  let txsResults = [];
+  
+  if (blockResultsData?.result?.txs_results && Array.isArray(blockResultsData.result.txs_results)) {
+    // Use transaction results from block_results API (most complete source)
+    txsResults = blockResultsData.result.txs_results;
+  } else if (blockData?.txs_results && Array.isArray(blockData.txs_results)) {
+    // Fallback to blockData transaction results
+    txsResults = blockData.txs_results;
+  }
   
   for (let txIndex = 0; txIndex < txsResults.length; txIndex++) {
     const txResult = txsResults[txIndex];
+    // Transaction hash might not be in block_results, try to get it from blockData if available
     const txHash = txResult.tx_hash || txResult.hash || null;
     const txEvents = txResult.events || [];
     
@@ -48,31 +68,53 @@ function extractEventsFromBlock(blockData, blockResultsData = null, chain = null
   }
   
   // Extract block-level events (from BeginBlock/EndBlock hooks)
-  // These can come from multiple sources:
-  // 1. blockData.finalize_block_events (if present in block data)
-  // 2. blockResultsData.result.finalize_block_events (from block_results API - primary source)
-  // 3. blockData.result_begin_block?.events / blockData.result_end_block?.events (legacy)
+  // Priority: block_results API (finalize_block_events) > blockData fallbacks
+  // Note: block_results API uses finalize_block_events which contains both BeginBlock and EndBlock events
+  let beginBlockEvents = [];
+  let endBlockEvents = [];
+  let finalizeBlockEvents = [];
   
-  const finalizeBlockEventsFromBlock = blockData.finalize_block_events || [];
-  const finalizeBlockEventsFromResults = blockResultsData?.result?.finalize_block_events || [];
-  const beginBlockEvents = blockData.result_begin_block?.events || [];
-  const endBlockEvents = blockData.result_end_block?.events || [];
+  // Primary source: block_results API
+  if (blockResultsData?.result) {
+    // block_results API uses finalize_block_events (contains both BeginBlock and EndBlock events)
+    if (Array.isArray(blockResultsData.result.finalize_block_events)) {
+      finalizeBlockEvents = blockResultsData.result.finalize_block_events;
+    }
+    // Some chains might have separate begin_block_events and end_block_events
+    if (Array.isArray(blockResultsData.result.begin_block_events)) {
+      beginBlockEvents = blockResultsData.result.begin_block_events;
+    }
+    if (Array.isArray(blockResultsData.result.end_block_events)) {
+      endBlockEvents = blockResultsData.result.end_block_events;
+    }
+  }
   
-  // Combine all block-level events, prioritizing block_results API data
-  // Use block_results finalize_block_events if available, otherwise fallback to blockData
-  const finalizeBlockEvents = finalizeBlockEventsFromResults.length > 0 
-    ? finalizeBlockEventsFromResults 
-    : finalizeBlockEventsFromBlock;
+  // Fallback sources from blockData (legacy formats)
+  if (finalizeBlockEvents.length === 0 && blockData) {
+    finalizeBlockEvents = blockData.finalize_block_events || [];
+  }
+  if (beginBlockEvents.length === 0 && blockData) {
+    beginBlockEvents = blockData.result_begin_block?.events || blockData.begin_block_events || [];
+  }
+  if (endBlockEvents.length === 0 && blockData) {
+    endBlockEvents = blockData.result_end_block?.events || blockData.end_block_events || [];
+  }
   
   const allBlockEvents = [...finalizeBlockEvents, ...beginBlockEvents, ...endBlockEvents];
   
   // Log block-level events for debugging
   if (allBlockEvents.length > 0) {
-    console.log(`[EventExtractor] Block ${blockHeight}: Found ${allBlockEvents.length} block-level events`);
+    console.log(`[EventExtractor] Block ${blockHeight}: Found ${allBlockEvents.length} block-level events (${beginBlockEvents.length} begin, ${endBlockEvents.length} end, ${finalizeBlockEvents.length} finalize)`);
     const eventTypes = allBlockEvents.map(e => e.type || e.event_type || 'unknown').filter(Boolean);
     if (eventTypes.length > 0) {
       console.log(`[EventExtractor] Block-level event types:`, [...new Set(eventTypes)].join(', '));
     }
+  }
+  
+  // Log transaction events summary
+  if (txsResults.length > 0) {
+    const totalTxEvents = txsResults.reduce((sum, tx) => sum + (tx.events?.length || 0), 0);
+    console.log(`[EventExtractor] Block ${blockHeight}: Found ${txsResults.length} transactions with ${totalTxEvents} total transaction events`);
   }
   
   for (let eventIndex = 0; eventIndex < allBlockEvents.length; eventIndex++) {

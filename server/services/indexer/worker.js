@@ -55,6 +55,13 @@ async function processBlock(blockData) {
 
     const claimsBuffer = [];
     const proofSubmissionsBuffer = [];
+    
+    // Configuration for batched transaction logging
+    const TX_LOG_BATCH_SIZE = parseInt(process.env.BLOCK_RESULTS_TX_LOG_BATCH_SIZE || '50', 10);
+    let txProcessedCount = 0;
+    let txErrorCount = 0;
+    let txStartTime = Date.now();
+    
     for (const tx of block.transactions) {
       try {
         let suppliers = [];
@@ -204,9 +211,30 @@ async function processBlock(blockData) {
           console.error(`[Worker ${workerData.id}] Error saving gateways for transaction:`, gatewayError.message);
         }
       } catch (txError) {
-        console.error(`[Worker ${workerData.id}] Error processing transaction:`, txError);
+        txErrorCount++;
+        // Only log individual transaction errors if there are very few transactions
+        // Otherwise, batch them
+        if (block.transactions.length <= 10) {
+          console.error(`[Worker ${workerData.id}] Error processing transaction:`, txError);
+        }
         // Continue with next transaction - don't let one bad transaction stop the whole block
       }
+      
+      txProcessedCount++;
+      
+      // Log progress in batches to reduce log noise
+      if (txProcessedCount % TX_LOG_BATCH_SIZE === 0) {
+        const elapsed = Date.now() - txStartTime;
+        const rate = (txProcessedCount / elapsed * 1000).toFixed(1);
+        console.log(`[Worker ${workerData.id}] Block ${blockHeight}: Processed ${txProcessedCount}/${block.transactions.length} transactions (${rate} tx/s, ${txErrorCount} errors)`);
+      }
+    }
+    
+    // Log final transaction processing summary if there were many transactions
+    if (block.transactions.length > TX_LOG_BATCH_SIZE) {
+      const totalTime = Date.now() - txStartTime;
+      const avgRate = (txProcessedCount / totalTime * 1000).toFixed(1);
+      console.log(`[Worker ${workerData.id}] Block ${blockHeight}: Completed processing ${txProcessedCount} transactions in ${totalTime}ms (${avgRate} tx/s, ${txErrorCount} errors)`);
     }
     // Flush buffered claims in bulk for this block
     try {
@@ -224,7 +252,6 @@ async function processBlock(blockData) {
 
     // Flush buffered proof submissions in bulk for this block
     try {
-      console.log("proofSubmissionsBuffer", proofSubmissionsBuffer.length)
       if (proofSubmissionsBuffer.length) {
         await bulkSaveProofSubmissions(proofSubmissionsBuffer);
         console.log(`[Worker ${workerData.id}] Saved ${proofSubmissionsBuffer.length} proof submissions for reward tracking`);

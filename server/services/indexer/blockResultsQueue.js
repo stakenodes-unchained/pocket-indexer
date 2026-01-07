@@ -4,6 +4,7 @@
  */
 
 const redis = require('../../config/redis');
+const { pgPool, connectClients } = require('./db');
 
 const MAX_RETRIES = 5;
 const PROCESSING_TIMEOUT_SEC = 300; // 5 minutes timeout for processing
@@ -85,17 +86,167 @@ async function dequeueBlockResults(rpcName) {
 }
 
 /**
- * Mark a block as successfully processed
+ * Mark a block as processed in Redis set (fast lookup)
  * @param {string} rpcName - RPC endpoint name
  * @param {number} height - Block height
  * @returns {Promise<void>}
  */
-async function markProcessed(rpcName, height) {
+async function markBlockProcessedRedis(rpcName, height) {
+  try {
+    const processedKey = `block_results_processed:${rpcName}`;
+    await redis.sadd(processedKey, height.toString());
+    // Set expiration on the set (7 days)
+    await redis.expire(processedKey, 7 * 24 * 60 * 60);
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error marking block ${height} as processed in Redis:`, error.message);
+  }
+}
+
+/**
+ * Mark a block as processed in database (persistent)
+ * @param {string} rpcName - RPC endpoint name
+ * @param {number} height - Block height
+ * @param {string} status - Processing status (processed, failed, skipped)
+ * @param {string} errorMessage - Optional error message
+ * @returns {Promise<void>}
+ */
+async function markBlockProcessedDB(rpcName, height, status = 'processed', errorMessage = null) {
+  try {
+    await connectClients();
+    await pgPool.query(
+      `INSERT INTO block_results_processed (chain, height, processed_at, status, error_message)
+       VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4)
+       ON CONFLICT (chain, height) 
+       DO UPDATE SET processed_at = CURRENT_TIMESTAMP, status = $3, error_message = $4`,
+      [rpcName, height, status, errorMessage]
+    );
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error marking block ${height} as processed in DB:`, error.message);
+  }
+}
+
+/**
+ * Mark a block as successfully processed (both Redis and DB)
+ * @param {string} rpcName - RPC endpoint name
+ * @param {number} height - Block height
+ * @param {string} status - Processing status (default: 'processed')
+ * @param {string} errorMessage - Optional error message
+ * @returns {Promise<void>}
+ */
+async function markProcessed(rpcName, height, status = 'processed', errorMessage = null) {
   try {
     const processingKey = `block_results_processing:${rpcName}:${height}`;
     await redis.del(processingKey);
+    
+    // Mark in both Redis and DB
+    await Promise.all([
+      markBlockProcessedRedis(rpcName, height),
+      markBlockProcessedDB(rpcName, height, status, errorMessage)
+    ]);
   } catch (error) {
     console.error(`[BlockResultsQueue] Error marking block ${height} as processed:`, error.message);
+  }
+}
+
+/**
+ * Check if a block has been processed
+ * @param {string} rpcName - RPC endpoint name
+ * @param {number} height - Block height
+ * @returns {Promise<boolean>}
+ */
+async function isBlockProcessed(rpcName, height) {
+  try {
+    // Check Redis first (fast)
+    const processedKey = `block_results_processed:${rpcName}`;
+    const inRedis = await redis.sismember(processedKey, height.toString());
+    if (inRedis) {
+      return true;
+    }
+    
+    // Fallback to DB if not in Redis
+    await connectClients();
+    const result = await pgPool.query(
+      `SELECT 1 FROM block_results_processed WHERE chain = $1 AND height = $2 LIMIT 1`,
+      [rpcName, height]
+    );
+    return result.rows.length > 0;
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error checking if block ${height} is processed:`, error.message);
+    return false;
+  }
+}
+
+/**
+ * Get processed blocks in a range
+ * @param {string} rpcName - RPC endpoint name
+ * @param {number} startHeight - Start height
+ * @param {number} endHeight - End height
+ * @returns {Promise<Array>} Array of processed heights
+ */
+async function getProcessedBlocks(rpcName, startHeight, endHeight) {
+  try {
+    await connectClients();
+    const result = await pgPool.query(
+      `SELECT height FROM block_results_processed 
+       WHERE chain = $1 AND height >= $2 AND height <= $3 
+       ORDER BY height`,
+      [rpcName, startHeight, endHeight]
+    );
+    return result.rows.map(r => parseInt(r.height, 10));
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error getting processed blocks:`, error.message);
+    return [];
+  }
+}
+
+/**
+ * Get unprocessed blocks (gaps) in a range
+ * @param {string} rpcName - RPC endpoint name
+ * @param {number} startHeight - Start height
+ * @param {number} endHeight - End height
+ * @returns {Promise<Array>} Array of unprocessed heights
+ */
+async function getUnprocessedBlocks(rpcName, startHeight, endHeight) {
+  try {
+    await connectClients();
+    // Get all heights in range that are NOT in processed table
+    const result = await pgPool.query(
+      `WITH height_range AS (
+         SELECT generate_series($2::bigint, $3::bigint) AS height
+       )
+       SELECT hr.height
+       FROM height_range hr
+       LEFT JOIN block_results_processed brp ON brp.chain = $1 AND brp.height = hr.height
+       WHERE brp.height IS NULL
+       ORDER BY hr.height`,
+      [rpcName, startHeight, endHeight]
+    );
+    return result.rows.map(r => parseInt(r.height, 10));
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error getting unprocessed blocks:`, error.message);
+    return [];
+  }
+}
+
+/**
+ * Get count of processed blocks in a range
+ * @param {string} rpcName - RPC endpoint name
+ * @param {number} startHeight - Start height
+ * @param {number} endHeight - End height
+ * @returns {Promise<number>} Count of processed blocks
+ */
+async function getProcessedBlocksCount(rpcName, startHeight, endHeight) {
+  try {
+    await connectClients();
+    const result = await pgPool.query(
+      `SELECT COUNT(*) as count FROM block_results_processed 
+       WHERE chain = $1 AND height >= $2 AND height <= $3`,
+      [rpcName, startHeight, endHeight]
+    );
+    return parseInt(result.rows[0]?.count || 0, 10);
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error getting processed blocks count:`, error.message);
+    return 0;
   }
 }
 
@@ -135,6 +286,27 @@ async function markFailed(rpcName, height, item) {
   } catch (error) {
     console.error(`[BlockResultsQueue] Error marking block ${height} as failed:`, error.message);
     return false;
+  }
+}
+
+/**
+ * Add an item to the delayed queue with a specific delay
+ * @param {string} rpcName - RPC endpoint name
+ * @param {Object} item - Block item
+ * @param {number} delaySeconds - Delay in seconds
+ * @returns {Promise<void>}
+ */
+async function addToDelayedQueue(rpcName, item, delaySeconds) {
+  try {
+    const delayKey = `block_results_delay:${rpcName}`;
+    const score = Date.now() + (delaySeconds * 1000);
+    await redis.zadd(delayKey, score, JSON.stringify({
+      ...item,
+      timestamp: Date.now()
+    }));
+    await redis.expire(delayKey, 7 * 24 * 60 * 60);
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error adding item to delayed queue:`, error.message);
   }
 }
 
@@ -281,6 +453,78 @@ async function recoverStaleProcessingItems(rpcName) {
 }
 
 /**
+ * Get processing lag (how many blocks behind current height)
+ * @param {string} rpcName - RPC endpoint name
+ * @param {number} currentChainHeight - Current chain height
+ * @returns {Promise<number>} Lag in blocks (0 if up to date or ahead)
+ */
+async function getProcessingLag(rpcName, currentChainHeight) {
+  try {
+    await connectClients();
+    const result = await pgPool.query(
+      `SELECT MAX(height) as max_height FROM block_results_processed WHERE chain = $1`,
+      [rpcName]
+    );
+    const maxProcessed = result.rows[0]?.max_height ? parseInt(result.rows[0].max_height, 10) : 0;
+    return Math.max(0, currentChainHeight - maxProcessed);
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error getting processing lag:`, error.message);
+    return 0;
+  }
+}
+
+/**
+ * Get comprehensive queue health metrics
+ * @param {string} rpcName - RPC endpoint name
+ * @param {number} currentChainHeight - Current chain height (optional)
+ * @returns {Promise<Object>} Queue health metrics
+ */
+async function getQueueHealth(rpcName, currentChainHeight = null) {
+  try {
+    const queueSize = await getQueueSize(rpcName);
+    const delayedItems = await getDelayedItemsCount(rpcName);
+    const processingItems = await getProcessingItemsCount(rpcName);
+    
+    let lag = null;
+    let maxProcessedHeight = null;
+    if (currentChainHeight !== null) {
+      lag = await getProcessingLag(rpcName, currentChainHeight);
+    }
+    
+    // Get max processed height
+    try {
+      await connectClients();
+      const result = await pgPool.query(
+        `SELECT MAX(height) as max_height FROM block_results_processed WHERE chain = $1`,
+        [rpcName]
+      );
+      maxProcessedHeight = result.rows[0]?.max_height ? parseInt(result.rows[0].max_height, 10) : null;
+    } catch (error) {
+      // Ignore errors for optional metrics
+    }
+    
+    return {
+      queueSize,
+      delayedItems,
+      processingItems,
+      lag,
+      maxProcessedHeight,
+      currentChainHeight
+    };
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error getting queue health:`, error.message);
+    return {
+      queueSize: 0,
+      delayedItems: 0,
+      processingItems: 0,
+      lag: null,
+      maxProcessedHeight: null,
+      currentChainHeight: null
+    };
+  }
+}
+
+/**
  * Clear queue (for testing/maintenance)
  * @param {string} rpcName - RPC endpoint name
  * @returns {Promise<void>}
@@ -302,11 +546,21 @@ module.exports = {
   markProcessed,
   markFailed,
   getReadyDelayedItems,
+  addToDelayedQueue,
   getQueueSize,
   getDelayedItemsCount,
   getProcessingItemsCount,
   recoverStaleProcessingItems,
   clearQueue,
+  // New tracking functions
+  markBlockProcessedRedis,
+  markBlockProcessedDB,
+  isBlockProcessed,
+  getProcessedBlocks,
+  getUnprocessedBlocks,
+  getProcessedBlocksCount,
+  getProcessingLag,
+  getQueueHealth,
   MAX_RETRIES,
   PROCESSING_TIMEOUT_SEC
 };
