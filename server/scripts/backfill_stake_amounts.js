@@ -32,8 +32,8 @@ function parseArgs() {
   const options = {
     chain: null,
     type: 'both', // 'applications', 'suppliers', or 'both'
-    batchSize: 100,
-    concurrency: 50,
+    batchSize: 20,
+    concurrency: 10,
     dryRun: false
   };
 
@@ -58,51 +58,107 @@ function parseArgs() {
 }
 
 /**
- * Fetch application data from RPC
+ * Fetch application data from RPC with retry logic for 503 errors
  */
-async function fetchApplicationFromRpc(rpcUrl, address) {
+async function fetchApplicationFromRpc(rpcUrl, address, retries = 3) {
   const endpoint = `${rpcUrl}/pokt-network/poktroll/application/application/${address}`;
   
-  try {
-    const response = await fetch(endpoint, { timeout: 30000 });
-    if (response.status === 404) {
-      return null; // Application not found
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const response = await fetch(endpoint, { timeout: 30000 });
+      
+      if (response.status === 404) {
+        return null; // Application not found
+      }
+      
+      // Handle 503 Service Unavailable - wait 30s and retry
+      if (response.status === 503) {
+        if (attempt < retries - 1) {
+          console.log(`  [Retry ${attempt + 1}/${retries - 1}] Got 503 for ${address}, waiting 30s before retry...`);
+          await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+          continue; // Retry
+        } else {
+          throw new Error(`HTTP 503: Service Unavailable (after ${retries} attempts)`);
+        }
+      }
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      return data?.application || null;
+    } catch (error) {
+      // Handle 404 errors (from network errors that mention 404)
+      if (error.message.includes('404')) {
+        return null;
+      }
+      
+      // For 503 errors caught in the catch block (network-level), retry
+      if (error.message.includes('503') && attempt < retries - 1) {
+        console.log(`  [Retry ${attempt + 1}/${retries - 1}] Got 503 error for ${address}, waiting 30s before retry...`);
+        await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+        continue; // Retry
+      }
+      
+      // For other errors or last attempt, throw
+      throw error;
     }
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const data = await response.json();
-    return data?.application || null;
-  } catch (error) {
-    if (error.message.includes('404')) {
-      return null;
-    }
-    throw error;
   }
+  
+  return null; // Should never reach here, but just in case
 }
 
 /**
- * Fetch supplier data from RPC
+ * Fetch supplier data from RPC with retry logic for 503 errors
  */
-async function fetchSupplierFromRpc(rpcUrl, operatorAddress) {
+async function fetchSupplierFromRpc(rpcUrl, operatorAddress, retries = 3) {
   const endpoint = `${rpcUrl}/pokt-network/poktroll/supplier/supplier/${operatorAddress}`;
   
-  try {
-    const response = await fetch(endpoint, { timeout: 30000 });
-    if (response.status === 404) {
-      return null; // Supplier not found
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const response = await fetch(endpoint, { timeout: 30000 });
+      
+      if (response.status === 404) {
+        return null; // Supplier not found
+      }
+      
+      // Handle 503 Service Unavailable - wait 30s and retry
+      if (response.status === 503) {
+        if (attempt < retries - 1) {
+          console.log(`  [Retry ${attempt + 1}/${retries - 1}] Got 503 for ${operatorAddress}, waiting 30s before retry...`);
+          await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+          continue; // Retry
+        } else {
+          throw new Error(`HTTP 503: Service Unavailable (after ${retries} attempts)`);
+        }
+      }
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      return data?.supplier || null;
+    } catch (error) {
+      // Handle 404 errors (from network errors that mention 404)
+      if (error.message.includes('404')) {
+        return null;
+      }
+      
+      // For 503 errors caught in the catch block (network-level), retry
+      if (error.message.includes('503') && attempt < retries - 1) {
+        console.log(`  [Retry ${attempt + 1}/${retries - 1}] Got 503 error for ${operatorAddress}, waiting 30s before retry...`);
+        await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+        continue; // Retry
+      }
+      
+      // For other errors or last attempt, throw
+      throw error;
     }
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const data = await response.json();
-    return data?.supplier || null;
-  } catch (error) {
-    if (error.message.includes('404')) {
-      return null;
-    }
-    throw error;
   }
+  
+  return null; // Should never reach here, but just in case
 }
 
 /**
