@@ -42,7 +42,7 @@ class TransactionWorkerPool {
           workerData: {
             rpcName: rpc.name,
             rpcUrl: rpc.url,
-            blockResultsRpcUrl: rpc.blockResultsUrl,
+            blockResultsRpcUrl: rpc.rpcUrl,
             batchSize: this.batchSize,
             concurrency: this.concurrency,
             id: `${rpc.name}-historical`,
@@ -80,7 +80,7 @@ class TransactionWorkerPool {
           workerData: {
             rpcName: rpc.name,
             rpcUrl: rpc.url,
-            blockResultsRpcUrl: rpc.blockResultsUrl,
+            blockResultsRpcUrl: rpc.rpcUrl,
             batchSize: this.batchSize,
             id: `${rpc.name}-monitor`,
             processType: 'monitor'

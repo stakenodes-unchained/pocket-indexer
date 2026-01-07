@@ -9,12 +9,13 @@
  * 3. Updates the database with the correct stake amount
  * 
  * Usage:
- *   node server/scripts/backfill_stake_amounts.js [--chain=chain_name] [--type=applications|suppliers|both] [--batch-size=100] [--dry-run]
+ *   node server/scripts/backfill_stake_amounts.js [--chain=chain_name] [--type=applications|suppliers|both] [--batch-size=100] [--concurrency=50] [--dry-run]
  * 
  * Options:
  *   --chain: Process only a specific chain (default: all chains)
  *   --type: Process only applications, suppliers, or both (default: both)
  *   --batch-size: Number of records to process in each batch (default: 100)
+ *   --concurrency: Number of concurrent RPC/DB operations per batch (default: 50)
  *   --dry-run: Show what would be updated without making changes
  */
 
@@ -32,6 +33,7 @@ function parseArgs() {
     chain: null,
     type: 'both', // 'applications', 'suppliers', or 'both'
     batchSize: 100,
+    concurrency: 50,
     dryRun: false
   };
 
@@ -42,6 +44,11 @@ function parseArgs() {
       options.type = arg.split('=')[1];
     } else if (arg.startsWith('--batch-size=')) {
       options.batchSize = parseInt(arg.split('=')[1], 10) || 100;
+    } else if (arg.startsWith('--concurrency=')) {
+      const parsed = parseInt(arg.split('=')[1], 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        options.concurrency = parsed;
+      }
     } else if (arg === '--dry-run') {
       options.dryRun = true;
     }
@@ -130,9 +137,34 @@ function extractStakeDenom(entityData) {
 }
 
 /**
+ * Process an array of items with a concurrency limit.
+ */
+async function runWithConcurrency(items, worker, concurrency) {
+  if (!items || items.length === 0) return;
+
+  const limit = Math.max(1, concurrency || 1);
+  let index = 0;
+
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (true) {
+        const currentIndex = index++;
+        if (currentIndex >= items.length) break;
+        const item = items[currentIndex];
+        // eslint-disable-next-line no-await-in-loop
+        await worker(item, currentIndex);
+      }
+    }
+  );
+
+  await Promise.all(workers);
+}
+
+/**
  * Backfill applications for a specific chain
  */
-async function backfillApplications(client, chain, rpcUrl, batchSize, dryRun) {
+async function backfillApplications(client, chain, rpcUrl, batchSize, dryRun, concurrency) {
   console.log(`\n=== Backfilling Applications for ${chain} ===`);
   
   let offset = 0;
@@ -159,65 +191,64 @@ async function backfillApplications(client, chain, rpcUrl, batchSize, dryRun) {
 
     console.log(`Processing batch: ${result.rows.length} applications (offset: ${offset})`);
 
-    for (const app of result.rows) {
-      totalProcessed++;
-      
-      try {
-        // Fetch from RPC
-        const appData = await fetchApplicationFromRpc(rpcUrl, app.address);
-        
-        if (!appData) {
-          totalNotFound++;
-          console.log(`  [${totalProcessed}] ${app.address}: Not found on chain`);
-          continue;
-        }
+    await runWithConcurrency(
+      result.rows,
+      async (app) => {
+        const recordNumber = ++totalProcessed;
 
-        const rpcStakeAmount = extractStakeAmount(appData);
-        const rpcStakeDenom = extractStakeDenom(appData);
+        try {
+          // Fetch from RPC
+          const appData = await fetchApplicationFromRpc(rpcUrl, app.address);
+          
+          if (!appData) {
+            totalNotFound++;
+            console.log(`  [${recordNumber}] ${app.address}: Not found on chain`);
+            return;
+          }
 
-        if (rpcStakeAmount === null) {
-          totalSkipped++;
-          console.log(`  [${totalProcessed}] ${app.address}: No stake amount in RPC response`);
-          continue;
-        }
+          const rpcStakeAmount = extractStakeAmount(appData);
+          const rpcStakeDenom = extractStakeDenom(appData);
 
-        // Check if update is needed
-        const currentAmount = parseFloat(app.staked_amount) || 0;
-        const needsUpdate = Math.abs(currentAmount - rpcStakeAmount) > 0.0001; // Allow small floating point differences
+          if (rpcStakeAmount === null) {
+            totalSkipped++;
+            console.log(`  [${recordNumber}] ${app.address}: No stake amount in RPC response`);
+            return;
+          }
 
-        if (needsUpdate) {
-          if (dryRun) {
-            console.log(`  [${totalProcessed}] ${app.address}: Would update ${currentAmount} -> ${rpcStakeAmount} ${rpcStakeDenom || app.stake_denom}`);
-            totalUpdated++;
+          // Check if update is needed
+          const currentAmount = parseFloat(app.staked_amount) || 0;
+          const needsUpdate = Math.abs(currentAmount - rpcStakeAmount) > 0.0001; // Allow small floating point differences
+
+          if (needsUpdate) {
+            if (dryRun) {
+              console.log(`  [${recordNumber}] ${app.address}: Would update ${currentAmount} -> ${rpcStakeAmount} ${rpcStakeDenom || app.stake_denom}`);
+              totalUpdated++;
+            } else {
+              // Update database
+              await client.query(
+                `UPDATE applications 
+                 SET staked_amount = $1, stake_denom = COALESCE($2, stake_denom, 'upokt')
+                 WHERE address = $3 AND chain = $4`,
+                [rpcStakeAmount, rpcStakeDenom, app.address, chain]
+              );
+              console.log(`  [${recordNumber}] ${app.address}: Updated ${currentAmount} -> ${rpcStakeAmount} ${rpcStakeDenom || app.stake_denom}`);
+              totalUpdated++;
+            }
           } else {
-            // Update database
-            await client.query(
-              `UPDATE applications 
-               SET staked_amount = $1, stake_denom = COALESCE($2, stake_denom, 'upokt')
-               WHERE address = $3 AND chain = $4`,
-              [rpcStakeAmount, rpcStakeDenom, app.address, chain]
-            );
-            console.log(`  [${totalProcessed}] ${app.address}: Updated ${currentAmount} -> ${rpcStakeAmount} ${rpcStakeDenom || app.stake_denom}`);
-            totalUpdated++;
+            totalSkipped++;
+            // Only log if verbose
+            if (recordNumber % 10 === 0) {
+              console.log(`  [${recordNumber}] ${app.address}: Already up to date (${rpcStakeAmount})`);
+            }
           }
-        } else {
-          totalSkipped++;
-          // Only log if verbose
-          if (totalProcessed % 10 === 0) {
-            console.log(`  [${totalProcessed}] ${app.address}: Already up to date (${rpcStakeAmount})`);
-          }
+        } catch (error) {
+          totalFailed++;
+          console.error(`  [${recordNumber}] ${app.address}: Error - ${error.message}`);
+          // Continue with next application
         }
-
-        // Rate limiting: 5 requests per second (200ms delay)
-        if (totalProcessed < result.rows.length + offset) {
-          await new Promise(resolve => setTimeout(resolve, 200));
-        }
-      } catch (error) {
-        totalFailed++;
-        console.error(`  [${totalProcessed}] ${app.address}: Error - ${error.message}`);
-        // Continue with next application
-      }
-    }
+      },
+      concurrency
+    );
 
     offset += batchSize;
 
@@ -239,7 +270,7 @@ async function backfillApplications(client, chain, rpcUrl, batchSize, dryRun) {
 /**
  * Backfill suppliers for a specific chain
  */
-async function backfillSuppliers(client, chain, rpcUrl, batchSize, dryRun) {
+async function backfillSuppliers(client, chain, rpcUrl, batchSize, dryRun, concurrency) {
   console.log(`\n=== Backfilling Suppliers for ${chain} ===`);
   
   let offset = 0;
@@ -266,65 +297,64 @@ async function backfillSuppliers(client, chain, rpcUrl, batchSize, dryRun) {
 
     console.log(`Processing batch: ${result.rows.length} suppliers (offset: ${offset})`);
 
-    for (const supplier of result.rows) {
-      totalProcessed++;
-      
-      try {
-        // Fetch from RPC
-        const supplierData = await fetchSupplierFromRpc(rpcUrl, supplier.address);
-        
-        if (!supplierData) {
-          totalNotFound++;
-          console.log(`  [${totalProcessed}] ${supplier.address}: Not found on chain`);
-          continue;
-        }
+    await runWithConcurrency(
+      result.rows,
+      async (supplier) => {
+        const recordNumber = ++totalProcessed;
 
-        const rpcStakeAmount = extractStakeAmount(supplierData);
-        const rpcStakeDenom = extractStakeDenom(supplierData);
+        try {
+          // Fetch from RPC
+          const supplierData = await fetchSupplierFromRpc(rpcUrl, supplier.address);
+          
+          if (!supplierData) {
+            totalNotFound++;
+            console.log(`  [${recordNumber}] ${supplier.address}: Not found on chain`);
+            return;
+          }
 
-        if (rpcStakeAmount === null) {
-          totalSkipped++;
-          console.log(`  [${totalProcessed}] ${supplier.address}: No stake amount in RPC response`);
-          continue;
-        }
+          const rpcStakeAmount = extractStakeAmount(supplierData);
+          const rpcStakeDenom = extractStakeDenom(supplierData);
 
-        // Check if update is needed
-        const currentAmount = parseFloat(supplier.staked_amount) || 0;
-        const needsUpdate = Math.abs(currentAmount - rpcStakeAmount) > 0.0001; // Allow small floating point differences
+          if (rpcStakeAmount === null) {
+            totalSkipped++;
+            console.log(`  [${recordNumber}] ${supplier.address}: No stake amount in RPC response`);
+            return;
+          }
 
-        if (needsUpdate) {
-          if (dryRun) {
-            console.log(`  [${totalProcessed}] ${supplier.address}: Would update ${currentAmount} -> ${rpcStakeAmount} ${rpcStakeDenom || supplier.stake_denom}`);
-            totalUpdated++;
+          // Check if update is needed
+          const currentAmount = parseFloat(supplier.staked_amount) || 0;
+          const needsUpdate = Math.abs(currentAmount - rpcStakeAmount) > 0.0001; // Allow small floating point differences
+
+          if (needsUpdate) {
+            if (dryRun) {
+              console.log(`  [${recordNumber}] ${supplier.address}: Would update ${currentAmount} -> ${rpcStakeAmount} ${rpcStakeDenom || supplier.stake_denom}`);
+              totalUpdated++;
+            } else {
+              // Update database
+              await client.query(
+                `UPDATE suppliers 
+                 SET staked_amount = $1, stake_denom = COALESCE($2, stake_denom, 'upokt')
+                 WHERE address = $3 AND chain = $4`,
+                [rpcStakeAmount, rpcStakeDenom, supplier.address, chain]
+              );
+              console.log(`  [${recordNumber}] ${supplier.address}: Updated ${currentAmount} -> ${rpcStakeAmount} ${rpcStakeDenom || supplier.stake_denom}`);
+              totalUpdated++;
+            }
           } else {
-            // Update database
-            await client.query(
-              `UPDATE suppliers 
-               SET staked_amount = $1, stake_denom = COALESCE($2, stake_denom, 'upokt')
-               WHERE address = $3 AND chain = $4`,
-              [rpcStakeAmount, rpcStakeDenom, supplier.address, chain]
-            );
-            console.log(`  [${totalProcessed}] ${supplier.address}: Updated ${currentAmount} -> ${rpcStakeAmount} ${rpcStakeDenom || supplier.stake_denom}`);
-            totalUpdated++;
+            totalSkipped++;
+            // Only log if verbose
+            if (recordNumber % 10 === 0) {
+              console.log(`  [${recordNumber}] ${supplier.address}: Already up to date (${rpcStakeAmount})`);
+            }
           }
-        } else {
-          totalSkipped++;
-          // Only log if verbose
-          if (totalProcessed % 10 === 0) {
-            console.log(`  [${totalProcessed}] ${supplier.address}: Already up to date (${rpcStakeAmount})`);
-          }
+        } catch (error) {
+          totalFailed++;
+          console.error(`  [${recordNumber}] ${supplier.address}: Error - ${error.message}`);
+          // Continue with next supplier
         }
-
-        // Rate limiting: 5 requests per second (200ms delay)
-        if (totalProcessed < result.rows.length + offset) {
-          await new Promise(resolve => setTimeout(resolve, 200));
-        }
-      } catch (error) {
-        totalFailed++;
-        console.error(`  [${totalProcessed}] ${supplier.address}: Error - ${error.message}`);
-        // Continue with next supplier
-      }
-    }
+      },
+      concurrency
+    );
 
     offset += batchSize;
 
