@@ -26,8 +26,12 @@ async function enqueueBlockResults(rpcName, height) {
     // Add to queue (left push for FIFO)
     await redis.lpush(queueKey, item);
     
-    // Set expiration on queue (7 days) to prevent unbounded growth
-    await redis.expire(queueKey, 7 * 24 * 60 * 60);
+    // Refresh expiration on queue (7 days) to prevent unbounded growth
+    // Only set expiration if queue has items
+    const queueSize = await redis.llen(queueKey);
+    if (queueSize > 0) {
+      await redis.expire(queueKey, 7 * 24 * 60 * 60);
+    }
     
     return true;
   } catch (error) {
@@ -222,6 +226,61 @@ async function getProcessingItemsCount(rpcName) {
 }
 
 /**
+ * Recover items with stale processing locks (from crashed workers)
+ * @param {string} rpcName - RPC endpoint name
+ * @returns {Promise<number>} Number of items recovered
+ */
+async function recoverStaleProcessingItems(rpcName) {
+  try {
+    const pattern = `block_results_processing:${rpcName}:*`;
+    const keys = await redis.keys(pattern);
+    const now = Date.now();
+    const queueKey = `block_results_queue:${rpcName}`;
+    let recoveredCount = 0;
+    
+    for (const key of keys) {
+      try {
+        const lockTimestamp = await redis.get(key);
+        if (lockTimestamp) {
+          const timestamp = parseInt(lockTimestamp, 10);
+          // If lock is stale (older than timeout), recover the item
+          if (now - timestamp >= PROCESSING_TIMEOUT_SEC * 1000) {
+            // Extract height from key: block_results_processing:rpcName:height
+            const height = parseInt(key.split(':').pop(), 10);
+            if (!isNaN(height)) {
+              // Recreate the item and requeue it
+              const item = JSON.stringify({
+                height: height,
+                timestamp: Date.now(),
+                retries: 0 // Reset retries on recovery
+              });
+              await redis.lpush(queueKey, item);
+              await redis.del(key); // Remove stale lock
+              recoveredCount++;
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`[BlockResultsQueue] Error recovering item from key ${key}:`, error.message);
+      }
+    }
+    
+    // Refresh expiration on queue if items were recovered
+    if (recoveredCount > 0) {
+      const queueSize = await redis.llen(queueKey);
+      if (queueSize > 0) {
+        await redis.expire(queueKey, 7 * 24 * 60 * 60);
+      }
+    }
+    
+    return recoveredCount;
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error recovering stale processing items for ${rpcName}:`, error.message);
+    return 0;
+  }
+}
+
+/**
  * Clear queue (for testing/maintenance)
  * @param {string} rpcName - RPC endpoint name
  * @returns {Promise<void>}
@@ -246,6 +305,7 @@ module.exports = {
   getQueueSize,
   getDelayedItemsCount,
   getProcessingItemsCount,
+  recoverStaleProcessingItems,
   clearQueue,
   MAX_RETRIES,
   PROCESSING_TIMEOUT_SEC

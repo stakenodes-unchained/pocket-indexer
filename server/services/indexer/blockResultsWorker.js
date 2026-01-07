@@ -11,13 +11,14 @@ const {
   markProcessed,
   markFailed,
   getReadyDelayedItems,
-  getQueueSize
+  getQueueSize,
+  recoverStaleProcessingItems
 } = require('./blockResultsQueue');
 
 const { rpcName, blockResultsRpcUrl, rpcUrl, id } = workerData;
 
 // Configuration
-const POLL_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_POLL_INTERVAL_MS || '1000', 10); // 1 second default
+const POLL_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_POLL_INTERVAL_MS || '500', 10); // 1 second default
 // Reduced default batch size from 10 to 8 to reduce memory usage
 const BATCH_SIZE = parseInt(process.env.BLOCK_RESULTS_BATCH_SIZE || '8', 10); // Batch size for dequeuing
 // Reduced default parallel limit from 5 to 3 to reduce memory usage  
@@ -320,6 +321,16 @@ async function processQueue() {
 async function start() {
   log(`[BlockResultsWorker ${id}] Starting block_results worker for ${rpcName}`);
   log(`[BlockResultsWorker ${id}] Poll interval: ${POLL_INTERVAL_MS}ms, Batch size: ${BATCH_SIZE}, Parallel limit: ${PARALLEL_PROCESSING_LIMIT}, Async events: ${ASYNC_EVENTS}, Rate limit: ${RATE_LIMIT_DELAY_MS}ms`);
+  
+  // Recover items with stale processing locks from previous crashes
+  try {
+    const recoveredCount = await recoverStaleProcessingItems(rpcName);
+    if (recoveredCount > 0) {
+      log(`[BlockResultsWorker ${id}] Recovered ${recoveredCount} items with stale processing locks`);
+    }
+  } catch (error) {
+    console.error(`[BlockResultsWorker ${id}] Error during recovery:`, error.message);
+  }
   
   // Send initial stats
   reportStats();
