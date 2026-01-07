@@ -761,7 +761,11 @@ class TransactionWorkerPool {
     const {
       getQueueSize,
       getDelayedItemsCount,
-      getProcessingItemsCount
+      getProcessingItemsCount,
+      getMaxProcessedHeight,
+      getProcessingLag,
+      getUnprocessedBlocks,
+      getProcessingCoverage
     } = require('./blockResultsQueue');
     
     try {
@@ -772,6 +776,30 @@ class TransactionWorkerPool {
       
       // Get aggregated worker stats (from worker messages)
       const workerStats = this.blockResultsWorkerStats.get(rpcName) || {};
+      
+      // Get database-derived metrics
+      const maxProcessedHeight = await getMaxProcessedHeight(rpcName);
+      const currentChainHeight = workerStats.currentChainHeight !== undefined ? workerStats.currentChainHeight : null;
+      let processingLag = null;
+      let processingGaps = [];
+      let coveragePercentage = null;
+      
+      if (currentChainHeight !== null && maxProcessedHeight !== null) {
+        processingLag = await getProcessingLag(rpcName, currentChainHeight);
+        
+        // Get sample of gaps (first 10 gaps)
+        if (maxProcessedHeight > 0) {
+          const gapStart = Math.max(1, maxProcessedHeight - 1000); // Check last 1000 blocks
+          const gaps = await getUnprocessedBlocks(rpcName, gapStart, maxProcessedHeight);
+          processingGaps = gaps.slice(0, 10).map(height => ({ height }));
+          
+          // Calculate coverage for recent blocks (last 1000 blocks)
+          if (maxProcessedHeight >= 1000) {
+            const coverage = await getProcessingCoverage(rpcName, maxProcessedHeight - 999, maxProcessedHeight);
+            coveragePercentage = coverage.coverage;
+          }
+        }
+      }
       
       // Check if any workers are running
       const workers = this.blockResultsWorkers.get(rpcName);
@@ -831,6 +859,11 @@ class TransactionWorkerPool {
         avg_processing_time_ms: workerStats.avgProcessingTimeMs !== undefined ? workerStats.avgProcessingTimeMs : null,
         current_block_height: workerStats.currentBlockHeight !== undefined ? workerStats.currentBlockHeight : null,
         last_processed_block_height: workerStats.lastProcessedBlockHeight !== undefined ? workerStats.lastProcessedBlockHeight : null,
+        max_processed_height: maxProcessedHeight,
+        current_chain_height: currentChainHeight,
+        processing_lag: processingLag,
+        processing_gaps: processingGaps,
+        coverage_percentage: coveragePercentage,
         worker_count: workerCount,
         last_update: workerStats.lastUpdate || null,
         individual_workers: individualWorkers
@@ -849,6 +882,11 @@ class TransactionWorkerPool {
         avg_processing_time_ms: null,
         current_block_height: null,
         last_processed_block_height: null,
+        max_processed_height: null,
+        current_chain_height: null,
+        processing_lag: null,
+        processing_gaps: [],
+        coverage_percentage: null,
         worker_count: 0,
         last_update: null,
         individual_workers: [],

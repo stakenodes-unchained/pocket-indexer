@@ -525,6 +525,108 @@ async function getQueueHealth(rpcName, currentChainHeight = null) {
 }
 
 /**
+ * Clear processed blocks tracking for heights >= minHeight
+ * @param {string} rpcName - RPC endpoint name
+ * @param {number} minHeight - Minimum height to clear from
+ * @returns {Promise<{dbDeleted: number, redisRemoved: number}>} Count of deleted records
+ */
+async function clearProcessedBlocks(rpcName, minHeight) {
+  let dbDeleted = 0;
+  let redisRemoved = 0;
+  
+  try {
+    // Clear from database
+    await connectClients();
+    const dbResult = await pgPool.query(
+      `DELETE FROM block_results_processed WHERE chain = $1 AND height >= $2`,
+      [rpcName, minHeight]
+    );
+    dbDeleted = dbResult.rowCount || 0;
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error clearing processed blocks from DB:`, error.message);
+  }
+  
+  try {
+    // Clear from Redis set
+    const processedKey = `block_results_processed:${rpcName}`;
+    const members = await redis.smembers(processedKey);
+    const heightsToRemove = members.filter(h => {
+      const height = parseInt(h, 10);
+      return !isNaN(height) && height >= minHeight;
+    });
+    
+    if (heightsToRemove.length > 0) {
+      // Remove in batches if too many (Redis SREM has limits)
+      const batchSize = 1000;
+      for (let i = 0; i < heightsToRemove.length; i += batchSize) {
+        const batch = heightsToRemove.slice(i, i + batchSize);
+        await redis.srem(processedKey, ...batch);
+      }
+      redisRemoved = heightsToRemove.length;
+    }
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error clearing processed blocks from Redis:`, error.message);
+  }
+  
+  return { dbDeleted, redisRemoved };
+}
+
+/**
+ * Get maximum processed height from database
+ * @param {string} rpcName - RPC endpoint name
+ * @returns {Promise<number|null>} Maximum processed height or null if none
+ */
+async function getMaxProcessedHeight(rpcName) {
+  try {
+    await connectClients();
+    const result = await pgPool.query(
+      `SELECT MAX(height) as max_height FROM block_results_processed WHERE chain = $1`,
+      [rpcName]
+    );
+    return result.rows[0]?.max_height ? parseInt(result.rows[0].max_height, 10) : null;
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error getting max processed height:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * Calculate processing coverage percentage in a height range
+ * @param {string} rpcName - RPC endpoint name
+ * @param {number} startHeight - Start height
+ * @param {number} endHeight - End height
+ * @returns {Promise<{coverage: number, processed: number, total: number}>} Coverage metrics
+ */
+async function getProcessingCoverage(rpcName, startHeight, endHeight) {
+  try {
+    await connectClients();
+    const total = endHeight - startHeight + 1;
+    
+    const result = await pgPool.query(
+      `SELECT COUNT(*) as count FROM block_results_processed 
+       WHERE chain = $1 AND height >= $2 AND height <= $3`,
+      [rpcName, startHeight, endHeight]
+    );
+    
+    const processed = parseInt(result.rows[0]?.count || 0, 10);
+    const coverage = total > 0 ? (processed / total) * 100 : 0;
+    
+    return {
+      coverage: parseFloat(coverage.toFixed(2)),
+      processed,
+      total
+    };
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error getting processing coverage:`, error.message);
+    return {
+      coverage: 0,
+      processed: 0,
+      total: 0
+    };
+  }
+}
+
+/**
  * Clear queue (for testing/maintenance)
  * @param {string} rpcName - RPC endpoint name
  * @returns {Promise<void>}
@@ -561,6 +663,9 @@ module.exports = {
   getProcessedBlocksCount,
   getProcessingLag,
   getQueueHealth,
+  clearProcessedBlocks,
+  getMaxProcessedHeight,
+  getProcessingCoverage,
   MAX_RETRIES,
   PROCESSING_TIMEOUT_SEC
 };

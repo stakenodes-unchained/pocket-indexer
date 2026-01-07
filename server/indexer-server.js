@@ -304,6 +304,24 @@ app.get('/api/v1/health/block-results-workers', async (req, res) => {
       return sum + (s.individual_workers?.filter(w => w.status === 'running').length || 0);
     }, 0);
     
+    // Calculate summary metrics including new fields
+    const maxProcessedHeights = allStats
+      .map(s => s.max_processed_height)
+      .filter(h => h !== null && h !== undefined);
+    const maxMaxProcessedHeight = maxProcessedHeights.length > 0 
+      ? Math.max(...maxProcessedHeights) 
+      : null;
+    
+    const processingLags = allStats
+      .map(s => s.processing_lag)
+      .filter(l => l !== null && l !== undefined);
+    const maxProcessingLag = processingLags.length > 0 
+      ? Math.max(...processingLags) 
+      : null;
+    
+    const totalProcessedCount = allStats.reduce((sum, s) => sum + (s.processed_count || 0), 0);
+    const totalFailedCount = allStats.reduce((sum, s) => sum + (s.failed_count || 0), 0);
+    
     const summary = {
       total_rpc_endpoints: allStats.length,
       active_rpc_endpoints: allStats.filter(s => s.status === 'running').length,
@@ -311,7 +329,11 @@ app.get('/api/v1/health/block-results-workers', async (req, res) => {
       active_individual_workers: activeIndividualWorkers,
       total_queue_size: allStats.reduce((sum, s) => sum + (s.queue_size || 0), 0),
       total_delayed_items: allStats.reduce((sum, s) => sum + (s.delayed_items || 0), 0),
-      total_processing_items: allStats.reduce((sum, s) => sum + (s.processing_items || 0), 0)
+      total_processing_items: allStats.reduce((sum, s) => sum + (s.processing_items || 0), 0),
+      max_processed_height: maxMaxProcessedHeight,
+      max_processing_lag: maxProcessingLag,
+      total_processed_count: totalProcessedCount,
+      total_failed_count: totalFailedCount
     };
     
     res.json({
