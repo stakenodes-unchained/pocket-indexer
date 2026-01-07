@@ -64,8 +64,15 @@ async function routeEvent(parsedEvent) {
   const eventType = parsedEvent.event_type;
   
   try {
-    // Tokenomics events
-    if (eventType.includes('EventClaim') || eventType.includes('tokenomics') ||
+    // Proof events (check FIRST before general EventClaim check)
+    if (eventType.startsWith('EventProof') || 
+        eventType === 'EventClaimCreated' ||
+        eventType === 'EventClaimUpdated') {
+      return await handleProofEvent(parsedEvent);
+    }
+    
+    // Tokenomics events (check for EventClaim* but exclude EventClaimCreated/Updated which are handled above)
+    else if (eventType.includes('EventClaim') || eventType.includes('tokenomics') ||
         eventType === 'EventSupplierSlashed' ||
         eventType === 'EventApplicationOverserviced' ||
         eventType === 'EventApplicationReimbursementRequest') {
@@ -87,13 +94,6 @@ async function routeEvent(parsedEvent) {
     // Gateway events
     else if (eventType.startsWith('EventGateway')) {
       return await handleGatewayEvent(parsedEvent);
-    }
-    
-    // Proof events
-    else if (eventType.startsWith('EventProof') || 
-             eventType === 'EventClaimCreated' ||
-             eventType === 'EventClaimUpdated') {
-      return await handleProofEvent(parsedEvent);
     }
     
     // Service events
