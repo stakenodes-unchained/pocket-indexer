@@ -354,13 +354,13 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
         FROM bounds b
       ),
       claim_settlements_agg AS (
-        SELECT DATE_TRUNC('day', cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day,
+        SELECT DATE_TRUNC('day', cs.timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day,
                SUM(cs.num_relays) AS relays,
                SUM(cs.num_claimed_compute_units) AS compute_units,
-               SUM(CASE WHEN cs.settlement_type = 'settled' THEN cs.num_claimed_compute_units ELSE 0 END) AS settled_claims_computed_units,
-               SUM(CASE WHEN cs.settlement_type = 'settled' THEN cs.num_estimated_compute_units ELSE 0 END) AS settled_claims_estimated_units
-        FROM claim_settlements cs
-        WHERE cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+               SUM(cs.num_claimed_compute_units) AS settled_claims_computed_units,
+               SUM(cs.num_estimated_compute_units) AS settled_claims_estimated_units
+        FROM claims cs
+        WHERE cs.timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
           AND ($1::text IS NULL OR cs.chain = $1)
         GROUP BY 1
       ),

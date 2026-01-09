@@ -3,7 +3,7 @@ const RPC_RETRY_CONFIG = {
   maxRetries: 5,
   retryDelay: 5000, // 5 seconds
   finalWaitTime: 30000, // 30 seconds after max retries
-  timeout: 30000, // 30 seconds timeout for each request
+  timeout: 300000, // 5 minutes timeout for each request
 };
 
 /**
