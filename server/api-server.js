@@ -12,6 +12,8 @@ const performanceService = require('./services/performanceService');
 const RewardAnalyticsRefreshService = require('./services/rewardAnalyticsRefreshService');
 const dockerService = require('./services/dockerService');
 const redis = require('./config/redis');
+const authService = require('./services/authService');
+const authenticateToken = require('./middleware/auth');
 
 // Load environment variables
 dotenv.config();
@@ -153,6 +155,9 @@ app.use((err, req, res, next) => {
 // Can be overridden per route if needed
 app.use(cacheMiddleware(60));
 
+// Authentication middleware - applies to all routes based on endpoint categorization
+app.use(authenticateToken);
+
 // Request logging middleware
 app.use((req, res, next) => {
   const start = Date.now();
@@ -172,6 +177,200 @@ app.use((req, res, next) => {
   
   next();
 });
+
+// ============================================================================
+// Authentication Endpoints
+// ============================================================================
+
+// POST /api/v1/auth/register - Register new account (PUBLIC)
+app.post('/api/v1/auth/register', async (req, res) => {
+  try {
+    const { email, password, name, organization } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    const result = await authService.registerAccount(email, password, name, organization);
+
+    res.status(201).json({
+      data: result,
+      message: 'Account created successfully. Please save your API token - it will not be shown again.',
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    
+    if (error.code === '23505') { // Unique constraint violation
+      return res.status(409).json({ error: 'Email already registered' });
+    }
+    
+    if (error.message.includes('Invalid email')) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/v1/auth/login - Login with email and password (PUBLIC)
+app.post('/api/v1/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const result = await authService.login(email, password || '');
+
+    res.json({
+      data: result,
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    
+    // Don't reveal if email exists or password is wrong
+    res.status(401).json({ error: 'Invalid email or password' });
+  }
+});
+
+// GET /api/v1/auth/account - Get account information (TOKEN)
+app.get('/api/v1/auth/account', async (req, res) => {
+  try {
+    const accountId = req.user?.accountId;
+    
+    if (!accountId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const account = await authService.getAccount(accountId);
+
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' });
+    }
+
+    res.json({ data: account });
+  } catch (error) {
+    console.error('Get account error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/v1/auth/tokens - List all tokens for account (TOKEN)
+app.get('/api/v1/auth/tokens', async (req, res) => {
+  try {
+    const accountId = req.user?.accountId;
+    
+    if (!accountId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const tokens = await authService.listTokens(accountId);
+
+    res.json({ data: tokens });
+  } catch (error) {
+    console.error('List tokens error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/v1/auth/tokens - Create new token (TOKEN)
+app.post('/api/v1/auth/tokens', async (req, res) => {
+  try {
+    const accountId = req.user?.accountId;
+    
+    if (!accountId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const { name } = req.body;
+    const tokenName = name || 'New Token';
+
+    const token = await authService.createToken(accountId, tokenName);
+
+    res.status(201).json({
+      data: token,
+      message: 'Token created successfully. Please save your API token - it will not be shown again.',
+    });
+  } catch (error) {
+    console.error('Create token error:', error);
+    
+    if (error.message.includes('Account not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/v1/auth/tokens/:token_id - Revoke token (TOKEN)
+app.delete('/api/v1/auth/tokens/:token_id', async (req, res) => {
+  try {
+    const accountId = req.user?.accountId;
+    const tokenId = parseInt(req.params.token_id, 10);
+    
+    if (!accountId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    if (isNaN(tokenId)) {
+      return res.status(400).json({ error: 'Invalid token ID' });
+    }
+
+    const success = await authService.revokeToken(tokenId, accountId);
+
+    if (!success) {
+      return res.status(404).json({ error: 'Token not found or already revoked' });
+    }
+
+    res.json({ message: 'Token revoked successfully' });
+  } catch (error) {
+    console.error('Revoke token error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/v1/auth/tokens/:token_id/regenerate - Regenerate token (TOKEN)
+app.post('/api/v1/auth/tokens/:token_id/regenerate', async (req, res) => {
+  try {
+    const accountId = req.user?.accountId;
+    const tokenId = parseInt(req.params.token_id, 10);
+    const { name } = req.body;
+    
+    if (!accountId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    if (isNaN(tokenId)) {
+      return res.status(400).json({ error: 'Invalid token ID' });
+    }
+
+    const token = await authService.regenerateToken(tokenId, accountId, name);
+
+    res.json({
+      data: token,
+      message: 'Token regenerated successfully. Please save your new API token - it will not be shown again.',
+    });
+  } catch (error) {
+    console.error('Regenerate token error:', error);
+    
+    if (error.message.includes('Token not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ============================================================================
+// API Endpoints
+// ============================================================================
 
 // Combined daily time series for entities and performance metrics.
 // Prefer `/network-growth/performance` + `/network-growth/entities` for new clients.

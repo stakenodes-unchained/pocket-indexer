@@ -79,5 +79,5 @@ COMMENT ON VIEW proof_submission_rewards IS 'View pointing to materialized view 
 
 -- Perform initial refresh to populate the materialized view
 -- Note: This may take some time depending on data volume
-REFRESH MATERIALIZED VIEW proof_submission_rewards_mv;
+-- REFRESH MATERIALIZED VIEW proof_submission_rewards_mv;
 
