@@ -172,6 +172,7 @@ async function handleClaimSettled(event) {
         ]);
       }
     }
+    console.log(`[TokenomicsHandler] EventClaimSettled: settlement_id=${settlementId}`);
     
     return { success: true, event_type: 'EventClaimSettled', settlement_id: settlementId };
   } catch (error) {

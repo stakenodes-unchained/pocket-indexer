@@ -117,12 +117,14 @@ class TransactionWorkerPool {
           const workers = [];
           
           for (let i = 0; i < this.blockResultsWorkerCount; i++) {
+            const blockResultsRole = i % 3 === 0 ? 'current' : 'historical';
             const blockResultsWorker = new Worker(path.join(__dirname, 'blockResultsWorker.js'), {
               workerData: {
                 rpcName: rpc.name,
                 rpcUrl: rpc.url,
                 blockResultsRpcUrl: rpc.blockResultsUrl,
-                id: `${rpc.name}-block-results-${i}`
+                id: `${rpc.name}-block-results-${i}`,
+                blockResultsRole
               }
             });
 
@@ -315,12 +317,14 @@ class TransactionWorkerPool {
       
       try {
         const rpc = this.rpcEndpoints.find(e => e.name === rpcName);
+        const blockResultsRole = workerIndex % 3 === 0 ? 'current' : 'historical';
         const newWorker = new Worker(path.join(__dirname, 'blockResultsWorker.js'), {
           workerData: {
             rpcName,
             rpcUrl: rpc?.url,
             blockResultsRpcUrl,
-            id: `${rpcName}-block-results-${workerIndex}`
+            id: `${rpcName}-block-results-${workerIndex}`,
+            blockResultsRole
           }
         });
 
@@ -446,12 +450,14 @@ class TransactionWorkerPool {
       
       for (let i = 0; i < this.blockResultsWorkerCount; i++) {
         try {
+          const blockResultsRole = i % 3 === 0 ? 'current' : 'historical';
           const newWorker = new Worker(path.join(__dirname, 'blockResultsWorker.js'), {
             workerData: {
               rpcName,
               rpcUrl: rpc?.url,
               blockResultsRpcUrl,
-              id: `${rpcName}-block-results-${i}`
+              id: `${rpcName}-block-results-${i}`,
+              blockResultsRole
             }
           });
 

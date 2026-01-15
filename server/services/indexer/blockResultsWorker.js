@@ -7,7 +7,7 @@ const { parentPort, workerData } = require('worker_threads');
 const { fetchBlockResultsByHeight, fetchBlockByHeight, fetchLatestBlock } = require('./rpc');
 const { processBlockEvents } = require('./eventProcessor');
 const {
-  dequeueBlockResults,
+  leaseScanDequeueBlockResults,
   markProcessed,
   markFailed,
   getReadyDelayedItems,
@@ -19,7 +19,7 @@ const {
   recoverStaleProcessingItems
 } = require('./blockResultsQueue');
 
-const { rpcName, blockResultsRpcUrl, rpcUrl, id } = workerData;
+const { rpcName, blockResultsRpcUrl, rpcUrl, id, blockResultsRole } = workerData;
 
 // Configuration
 const POLL_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_POLL_INTERVAL_MS || '500', 10); // 1 second default
@@ -31,6 +31,8 @@ const RATE_LIMIT_DELAY_MS = parseInt(process.env.BLOCK_RESULTS_RATE_LIMIT_MS || 
 const STATS_REPORT_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_STATS_INTERVAL_MS || '30000', 10); // 30 seconds default
 const ASYNC_EVENTS = process.env.BLOCK_RESULTS_ASYNC_EVENTS !== 'false'; // Process events asynchronously (default: true)
 const LAG_BLOCKS = parseInt(process.env.BLOCK_RESULTS_LAG_BLOCKS || '5', 10); // Number of blocks to lag behind current height
+const CURRENT_WINDOW_BLOCKS = parseInt(process.env.BLOCK_RESULTS_CURRENT_WINDOW_BLOCKS || '50', 10);
+const LEASE_SCAN_COUNT = parseInt(process.env.BLOCK_RESULTS_LEASE_SCAN_COUNT || '8', 10);
 const HEARTBEAT_LOG_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_HEARTBEAT_INTERVAL_MS || '60000', 10); // 60 seconds default
 
 // Stats tracking
@@ -58,6 +60,8 @@ function reportError(message) {
   console.error(`[${timestamp}] [BlockResultsWorker ${id}] ERROR: ${message}`);
 }
 
+const WORKER_ROLE = blockResultsRole === 'current' ? 'current' : 'historical';
+
 async function reportStats() {
   const avgProcessingTime = stats.processingTimes.length > 0
     ? stats.processingTimes.reduce((sum, t) => sum + t, 0) / stats.processingTimes.length
@@ -80,6 +84,7 @@ async function reportStats() {
     type: 'stats',
     data: {
       rpcName,
+      role: WORKER_ROLE,
       processedCount: stats.processedCount,
       failedCount: stats.failedCount,
       skippedCount: stats.skippedCount,
@@ -376,13 +381,29 @@ async function processQueue() {
   
   while (true) {
     try {
+      let latestHeight = null;
+      if (rpcUrl) {
+        try {
+          const latestBlock = await fetchLatestBlock(rpcUrl);
+          latestHeight = parseInt(latestBlock.block.header.height, 10);
+          stats.currentChainHeight = latestHeight;
+        } catch (error) {
+          log(`Could not fetch latest height for lease-scan: ${error.message}`);
+        }
+      }
+
       // First, check for delayed items that are ready
       await processDelayedItems();
       
       // Dequeue items up to batch size
       const items = [];
       for (let i = 0; i < BATCH_SIZE; i++) {
-        const item = await dequeueBlockResults(rpcName);
+        const item = await leaseScanDequeueBlockResults(rpcName, {
+          role: WORKER_ROLE,
+          latestHeight,
+          windowBlocks: CURRENT_WINDOW_BLOCKS,
+          scanCount: LEASE_SCAN_COUNT
+        });
         if (!item) {
           break; // Queue is empty
         }
@@ -463,8 +484,8 @@ async function processQueue() {
  * Start the worker
  */
 async function start() {
-  log(`Starting block_results worker for ${rpcName}`);
-  log(`Configuration: poll_interval=${POLL_INTERVAL_MS}ms, batch_size=${BATCH_SIZE}, parallel_limit=${PARALLEL_PROCESSING_LIMIT}, async_events=${ASYNC_EVENTS}, rate_limit=${RATE_LIMIT_DELAY_MS}ms, lag_blocks=${LAG_BLOCKS}`);
+  log(`Starting block_results worker for ${rpcName} (role=${WORKER_ROLE})`);
+  log(`Configuration: poll_interval=${POLL_INTERVAL_MS}ms, batch_size=${BATCH_SIZE}, parallel_limit=${PARALLEL_PROCESSING_LIMIT}, async_events=${ASYNC_EVENTS}, rate_limit=${RATE_LIMIT_DELAY_MS}ms, lag_blocks=${LAG_BLOCKS}, current_window_blocks=${CURRENT_WINDOW_BLOCKS}, lease_scan_count=${LEASE_SCAN_COUNT}`);
   
   // Recover items with stale processing locks from previous crashes
   try {

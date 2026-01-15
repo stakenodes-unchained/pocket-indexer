@@ -1,0 +1,82 @@
+---
+alwaysApply: true
+---
+Always look at the db structure before generating sql queries.
+Always look at the documentation available in .md files and the actual code implementation from the relevant files to understand the complete workflow of things.
+Always look at docker-compose.yml and server.js to understand the infra around indexer.
+
+## Pocket Indexer Overview
+
+Pocket Indexer ingests Pocket Network data into PostgreSQL and exposes REST APIs for explorer and analytics use cases.
+
+- **Indexer and APIs** live under `server/`.
+- **Core services** are in `server/services/` (indexer, metrics, transactions, validators, performance).
+- **Database migrations** are in `server/migrations/`.
+- **API documentation** lives in `*.md` files in the repo root and under `server/` (for example `NETWORK_GROWTH_API.md`, `TRANSACTIONS_API.md`, `SERVICES_API.md`).
+
+For a detailed description of the API surface and deployment flow, see `server/README.md`.
+
+### High-Level Architecture
+
+```text
+Pocket Nodes ──► Indexer (server/indexer-server.js) ──► PostgreSQL
+                            │
+                            └──► API Server (server/api-server.js) ──► REST clients / dashboard
+```
+
+### Running the System
+
+- See `server/README.md` for:
+  - Environment variables (`DB_*`, `RPC_ENDPOINTS`, Redis, worker config).
+  - Running with Docker (`server/docker-compose.yml`) or `npm start`.
+  - Explorer / dashboard endpoints.
+
+### Operational Notes
+
+- Historical and real-time indexing are handled by workers under `server/services/indexer/`.
+- Network growth, validator performance, and other analytics are computed from PostgreSQL tables (for example `claim_settlements`, `proof_submissions`, `validators`, `transactions`).
+- Production processing details and health checks are documented in `server/PRODUCTION_PROCESSING_README.md` and the `*_API.md` files.
+
+### Documentation Index
+
+Use this section as the entrypoint into all project documentation.
+
+- **Overview & Architecture**
+  - `Readme.md`: High-level overview and documentation index.
+  - `server/README.md`: How to run the indexer and API (env vars, ports, Docker/manual, health endpoints).
+  - `POCKET_NETWORK_INDEXER_REQUIREMENTS.md`: Detailed requirements and architecture guide for the indexer (design-level, not a 1:1 reflection of current implementation).
+
+- **Core APIs**
+  - `server/TRANSACTIONS_API.md`: Transaction listing, filters, stats, and related endpoints.
+  - `server/SERVICES_API.md`: Service-related APIs.
+  - `server/BLOCKS_API.md`: Block listing and statistics.
+  - `server/CLAIMS_API.md`: Claims and settlements APIs.
+  - `server/PROOF_SUBMISSIONS_API.md`: Proof submission APIs.
+  - `NETWORK_GROWTH_API.md`: Network Growth summary, performance, and entity endpoints.
+  - `VALIDATOR_PERFORMANCE_API.md`: Validator performance and analytics APIs.
+  - `VALIDATOR_SERVICE_SEARCH_API.md`: Validator/service search APIs.
+  - `server/ADMIN_API.md`: Admin/maintenance endpoints.
+  - `server/LOG_VIEWER_API.md`: Log viewer API.
+
+- **Operations & Production**
+  - `server/PRODUCTION_PROCESSING_README.md`: Production ingestion, backfilling, and monitoring flows.
+  - `server/PROOF_PARSER_SERVICE.md`: Proof parser service behavior and configuration.
+  - `server/PROOF_PARSER_HEALTH_API.md`: Proof parser health endpoints.
+  - `POCKET_NETWORK_EVENT_PROCESSING.md`: Event processing pipeline, tables, and workers.
+  - `API_UPDATES_STAT_CARDS.md`: Notes on API changes that feed dashboard stat cards.
+
+- **Message Types & Reference**
+  - `POCKET_NETWORK_MESSAGE_TYPES.md`: Message types relevant to Pocket Network.
+  - `MessageTypes.md` / `MessageTypes.index.json`: Additional message type reference and indexing information.
+
+- **Dashboards & Tasks**
+  - `DASHBOARD_TASKS.md`: Dashboard-related implementation tasks and notes.
+
+- **Design & Future Ideas**
+  - `POCKET_NETWORK_INDEXER_REQUIREMENTS.md`: Comprehensive design/requirements document (long-form design; some sections exceed what is currently implemented and should be treated as guidance and future ideas).
+
+### For New Maintainers
+
+- Start with `Readme.md` and `server/README.md` to set up a local environment and understand the main processes.
+- Use the **Core APIs** section above to jump into specific endpoints as needed.
+- Refer to **Operations & Production** docs before changing ingestion, backfilling, or proof parsing in production.
