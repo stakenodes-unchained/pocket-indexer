@@ -165,7 +165,8 @@ async function leaseScanDequeueBlockResults(rpcName, options = {}) {
       }
 
       if (!inRange) {
-        await redis.lpush(queueKey, itemStr);
+        const requeueCommand = role === 'current' ? 'rpush' : 'lpush';
+        await redis[requeueCommand](queueKey, itemStr);
         continue;
       }
 

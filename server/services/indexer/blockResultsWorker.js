@@ -382,10 +382,14 @@ async function processQueue() {
   while (true) {
     try {
       let latestHeight = null;
+      let minCurrentHeight = null;
       if (rpcUrl) {
         try {
           const latestBlock = await fetchLatestBlock(rpcUrl);
           latestHeight = parseInt(latestBlock.block.header.height, 10);
+          minCurrentHeight = Number.isFinite(latestHeight)
+            ? Math.max(0, latestHeight - CURRENT_WINDOW_BLOCKS)
+            : null;
           stats.currentChainHeight = latestHeight;
         } catch (error) {
           log(`Could not fetch latest height for lease-scan: ${error.message}`);
@@ -441,7 +445,7 @@ async function processQueue() {
           // Continue polling
           consecutiveEmptyPolls = 0;
           if (queueSize > 0) {
-            log(`Queue has ${queueSize} items but none dequeued (may be locked by other workers)`);
+            log(`Queue has ${queueSize} items but none dequeued (role=${WORKER_ROLE}, latest_height=${latestHeight ?? 'unknown'}, min_current_height=${minCurrentHeight ?? 'n/a'}, window=${CURRENT_WINDOW_BLOCKS}, scan_count=${LEASE_SCAN_COUNT}, delayed=${delayedItems}, processing=${processingItems})`);
           }
         }
       }
