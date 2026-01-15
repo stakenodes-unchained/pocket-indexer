@@ -253,12 +253,17 @@ async function processBlockResultsItem(item) {
         const eventResults = await processBlockEvents(blockData, blockResultsData, rpcName);
         if (eventResults.length > 0) {
           const successCount = eventResults.filter(r => r.success).length;
-          const failedCount = eventResults.length - successCount;
+          const failedResults = eventResults.filter(r => !r.success);
+          const failedCount = failedResults.length;
           const eventTime = Date.now() - eventStartTime;
           log(`Processed ${eventResults.length} events from block_results (${successCount} successful, ${failedCount} failed) for height ${height} in ${eventTime}ms`);
           
           if (failedCount > 0) {
             log(`WARNING: ${failedCount} events failed to process for height ${height}`);
+            const failedSummary = failedResults
+              .map(result => `${result?.event_type || 'unknown'}(${result?.error || 'unknown_error'})`)
+              .join(', ');
+            log(`Failed events for height ${height}: ${failedSummary}`);
           }
         } else {
           // Only log if we expected events but got none

@@ -326,7 +326,11 @@ async function routeEvents(parsedEvents) {
   const promises = parsedEvents.map(event => 
     limit(async () => {
       try {
-        return await routeEvent(event);
+        const result = await routeEvent(event);
+        return {
+          ...result,
+          event_type: result?.event_type || event?.event_type
+        };
       } catch (error) {
         console.error(`Error processing event ${event?.event_type}:`, error);
         return { success: false, error: error.message, event_type: event?.event_type };
