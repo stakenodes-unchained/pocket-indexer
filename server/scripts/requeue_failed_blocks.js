@@ -272,6 +272,7 @@ async function main() {
     await pgPool.end();
     await redis.quit();
   }
+  process.exit(0);
 }
 
 // Run the script

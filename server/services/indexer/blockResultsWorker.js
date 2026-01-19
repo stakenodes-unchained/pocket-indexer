@@ -18,6 +18,7 @@ const {
   getQueueHealth,
   recoverStaleProcessingItems
 } = require('./blockResultsQueue');
+const { pgPool, connectClients } = require('./db');
 
 const { rpcName, blockResultsRpcUrl, rpcUrl, id, blockResultsRole } = workerData;
 
@@ -101,6 +102,31 @@ async function reportStats() {
 }
 
 /**
+ * Check if block results data already exists in database for a block
+ * @param {number} height - Block height
+ * @returns {Promise<boolean>} True if data exists (status = 'processed'), false otherwise
+ */
+async function hasBlockResultsData(height) {
+  try {
+    await connectClients();
+    
+    // Check if block has been processed successfully in block_results_processed table
+    const result = await pgPool.query(
+      `SELECT 1 FROM block_results_processed 
+       WHERE chain = $1 AND height = $2 AND status = 'processed' 
+       LIMIT 1`,
+      [rpcName, height]
+    );
+    
+    return result.rows.length > 0;
+  } catch (error) {
+    log(`Error checking if block ${height} has existing data: ${error.message}`);
+    // On error, assume no data exists
+    return false;
+  }
+}
+
+/**
  * Process a single block_results item
  */
 async function processBlockResultsItem(item) {
@@ -112,6 +138,12 @@ async function processBlockResultsItem(item) {
   
   try {
     log(`Dequeued block ${height} for processing`);
+    
+    // Check if data already exists in database for this block
+    const hasData = await hasBlockResultsData(height);
+    if (hasData) {
+      log(`Block ${height} already has data in block_results_processed table, will process and update status`);
+    }
     
     // Check lag before processing (if RPC URL is available)
     if (rpcUrl) {
