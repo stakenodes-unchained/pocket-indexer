@@ -324,9 +324,12 @@ async function processBlockResultsItem(item) {
           
           if (failedCount > 0) {
             log(`WARNING: ${failedCount} events failed to process for height ${height}`);
-            const failedSummary = failedResults
-              .map(result => `${result?.event_type || 'unknown'}(${result?.error || 'unknown_error'})`)
-              .join(', ');
+            // Truncate failed summary for very large blocks to prevent memory issues
+            const failedSummary = failedCount > 100
+              ? `${failedCount} failed events (too many to list)`
+              : failedResults
+                  .map(result => `${result?.event_type || 'unknown'}(${result?.error || 'unknown_error'})`)
+                  .join(', ');
             log(`Failed events for height ${height}: ${failedSummary}`);
           }
         } else {
@@ -338,8 +341,26 @@ async function processBlockResultsItem(item) {
           }
         }
       } catch (error) {
-        log(`Error processing events for height ${height}: ${error.message}`);
-        console.error(`[BlockResultsWorker ${id}] Error processing events for height ${height}:`, error);
+        // Check for memory-related errors
+        const isMemoryError = error instanceof RangeError ||
+          (error.message && (
+            error.message.includes('Invalid string length') ||
+            error.message.includes('Cannot create a string longer than') ||
+            error.message.includes('0x1fffffe8') ||
+            error.message.includes('string length') ||
+            error.message.includes('out of memory') ||
+            error.message.includes('heap') ||
+            error.message.includes('allocation')
+          ));
+        
+        if (isMemoryError) {
+          log(`ERROR: Memory error processing events for height ${height}: ${error.message}`);
+          console.error(`[BlockResultsWorker ${id}] Memory error processing events for height ${height}:`, error.message);
+          // Don't throw - allow block to be marked as processed even if events failed
+        } else {
+          log(`Error processing events for height ${height}: ${error.message}`);
+          console.error(`[BlockResultsWorker ${id}] Error processing events for height ${height}:`, error);
+        }
       }
     };
     
