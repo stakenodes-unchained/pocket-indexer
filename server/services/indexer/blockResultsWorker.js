@@ -185,8 +185,40 @@ async function processBlockResultsItem(item) {
     const fetchTime = Date.now() - fetchStartTime;
     
     // Calculate response size for monitoring large responses
-    const responseSize = JSON.stringify(blockResultsData).length;
-    const responseSizeMB = (responseSize / 1024 / 1024).toFixed(2);
+    // Use a safe method that doesn't stringify the entire object (which can exceed string length limits)
+    let responseSizeMB = '0.00';
+    try {
+      // Try to calculate size, but catch errors for very large objects
+      const responseSize = JSON.stringify(blockResultsData).length;
+      responseSizeMB = (responseSize / 1024 / 1024).toFixed(2);
+    } catch (error) {
+      // For very large objects, estimate size based on structure
+      // This is a rough estimate but avoids the string length limit error
+      // Catch all string length related errors (RangeError with "Invalid string length" message)
+      const isStringLengthError = error instanceof RangeError || 
+        (error.message && (
+          error.message.includes('Invalid string length') ||
+          error.message.includes('Cannot create a string longer than') ||
+          error.message.includes('0x1fffffe8') ||
+          error.message.includes('string length')
+        ));
+      
+      if (isStringLengthError) {
+        const result = blockResultsData?.result;
+        const txsCount = result?.txs_results?.length || 0;
+        const finalizeBlockEventsCount = result?.finalize_block_events?.length || 0;
+        
+        // Estimate: ~50KB per tx, ~1KB per event
+        const estimatedTxSize = txsCount * 50;
+        const estimatedEventSize = finalizeBlockEventsCount;
+        const estimatedSize = (estimatedTxSize + estimatedEventSize) / 1024; // Convert to MB
+        responseSizeMB = estimatedSize.toFixed(2);
+        log(`WARNING: Block ${height} too large to calculate exact size (${error.message || 'Invalid string length'}), estimated: ${responseSizeMB}MB`);
+      } else {
+        // Re-throw if it's not a string length error
+        throw error;
+      }
+    }
     
     // Count data in response
     const result = blockResultsData?.result;
