@@ -1,3 +1,8 @@
+const { Readable } = require('stream');
+const { chain } = require('stream-chain');
+const { parser } = require('stream-json');
+const { streamValues } = require('stream-json/streamers/StreamValues');
+
 // RPC retry configuration
 const RPC_RETRY_CONFIG = {
   maxRetries: 5,
@@ -6,18 +11,143 @@ const RPC_RETRY_CONFIG = {
   timeout: 300000, // 5 minutes timeout for each request
 };
 
+// Node.js maximum string length (approximately 536MB)
+const MAX_STRING_LENGTH = 0x1fffffe8;
+const LARGE_RESPONSE_THRESHOLD_MB = 400; // Warn if response exceeds this size
+
+/**
+ * Parse JSON from response using streaming parser to handle large responses
+ * This avoids Node.js string length limit errors for responses > 536MB
+ * @param {Response} response - Fetch response object
+ * @returns {Promise<any>} - Parsed JSON object
+ */
+async function parseJsonStreaming(response) {
+  const startTime = Date.now();
+  let responseSize = 0;
+  
+  // Check Content-Length header if available
+  const contentLength = response.headers.get('content-length');
+  if (contentLength) {
+    const sizeBytes = parseInt(contentLength, 10);
+    const sizeMB = sizeBytes / 1024 / 1024;
+    
+    if (sizeMB > LARGE_RESPONSE_THRESHOLD_MB) {
+      console.warn(`Large response detected: ${sizeMB.toFixed(2)}MB (using streaming parser)`);
+    }
+    
+    if (sizeBytes > MAX_STRING_LENGTH) {
+      throw new Error(
+        `Response size (${sizeMB.toFixed(2)}MB) exceeds Node.js maximum string length ` +
+        `(${(MAX_STRING_LENGTH / 1024 / 1024).toFixed(2)}MB). Cannot safely parse this response.`
+      );
+    }
+  }
+  
+  try {
+    // Convert response body to a readable stream
+    // In Node.js, response.body is a ReadableStream (web streams API)
+    const reader = response.body.getReader();
+    
+    // Create a Node.js Readable stream from the fetch response
+    const readableStream = new Readable({
+      objectMode: false, // Binary mode
+      async read() {
+        try {
+          const { done, value } = await reader.read();
+          if (done) {
+            this.push(null); // End of stream
+          } else {
+            // value is a Uint8Array, convert to Buffer for Node.js streams
+            responseSize += value.length;
+            this.push(Buffer.from(value));
+          }
+        } catch (error) {
+          this.destroy(error);
+        }
+      }
+    });
+    
+    // Parse JSON using stream-json
+    // Use streamValues which works for both objects and arrays
+    // For a single JSON object, it will emit the entire object as one value
+    let parsedData = null;
+    let parseError = null;
+    
+    const pipeline = chain([
+      readableStream,
+      parser(),
+      streamValues()
+    ]);
+    
+    // Collect the parsed JSON object/array
+    await new Promise((resolve, reject) => {
+      pipeline.on('data', (data) => {
+        // streamValues emits {key, value} for objects or {value} for arrays
+        // For a single object at root, we get one data event with the full object
+        if (data && data.value !== undefined) {
+          parsedData = data.value;
+        } else if (data && typeof data === 'object' && !parsedData) {
+          // Fallback: if we get the object directly
+          parsedData = data;
+        }
+      });
+      
+      pipeline.on('end', () => {
+        resolve();
+      });
+      
+      pipeline.on('error', (error) => {
+        parseError = error;
+        reject(error);
+      });
+    });
+    
+    if (parseError) {
+      throw parseError;
+    }
+    
+    if (!parsedData) {
+      throw new Error('Failed to parse JSON - no data received');
+    }
+    
+    const parseTime = Date.now() - startTime;
+    if (contentLength) {
+      const sizeMB = (responseSize / 1024 / 1024).toFixed(2);
+      console.log(`Streaming parser: parsed ${sizeMB}MB in ${parseTime}ms`);
+    }
+    
+    return parsedData;
+    
+  } catch (error) {
+    // If it's the string length error, provide a clearer message
+    if (error.message.includes('Cannot create a string longer than') || 
+        error.message.includes('0x1fffffe8')) {
+      throw new Error(
+        `Response too large to process: exceeds Node.js maximum string length. ` +
+        `Consider using a streaming parser or processing the response in chunks. ` +
+        `Original error: ${error.message}`
+      );
+    }
+    // Re-throw other errors
+    throw error;
+  }
+}
+
 /**
  * Retry mechanism for RPC requests with exponential backoff
  * @param {Function} requestFn - The request function to retry
  * @param {string} operationName - Name of the operation for logging
+ * @param {Object} options - Optional configuration
+ * @param {boolean} options.useStreaming - Use streaming JSON parser (default: false)
  * @returns {Promise<any>} - The response from the request
  */
-async function retryRequest(requestFn, operationName) {
+async function retryRequest(requestFn, operationName, options = {}) {
   const { maxRetries, retryDelay, finalWaitTime, timeout } = RPC_RETRY_CONFIG;
+  const { useStreaming = false } = options;
   
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     try {
-      console.log(`${operationName}: Attempt ${attempt}/${maxRetries + 1}`);
+      console.log(`${operationName}: Attempt ${attempt}/${maxRetries + 1}${useStreaming ? ' (streaming)' : ''}`);
       
       const response = await Promise.race([
         requestFn(),
@@ -46,11 +176,21 @@ async function retryRequest(requestFn, operationName) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       
-      // Success - return the JSON response
+      // Success - parse JSON response (streaming or regular)
       console.log(`${operationName}: Success on attempt ${attempt}`);
-      return response.json();
+      return useStreaming ? await parseJsonStreaming(response) : response.json();
       
     } catch (error) {
+      // Handle string length errors specifically - don't retry, these will always fail
+      if (error.message.includes('Cannot create a string longer than') || 
+          error.message.includes('0x1fffffe8') ||
+          error.message.includes('exceeds Node.js maximum string length') ||
+          error.message.includes('Response too large')) {
+        console.error(`${operationName}: Response too large to process: ${error.message}`);
+        // Don't retry for size errors - they will always fail
+        throw error;
+      }
+      
       // If it's a 503 error and we haven't exceeded max retries
       if (error.message.includes('503') && attempt <= maxRetries) {
         console.warn(`${operationName}: Got 503 error, retrying in ${retryDelay/1000} seconds (attempt ${attempt}/${maxRetries})`);
@@ -131,7 +271,8 @@ async function fetchBlockResultsByHeight(height, rpcUrl) {
   try {
     return await retryRequest(
       () => fetch(`${rpcUrl}/block_results?height=${height}`),
-      `Fetch block results ${height}`
+      `Fetch block results ${height}`,
+      { useStreaming: true } // Enable streaming parser for block results to handle large responses
     );
   } catch (error) {
     throw new Error(`Error fetching block results ${height}: ${error.message}`);
