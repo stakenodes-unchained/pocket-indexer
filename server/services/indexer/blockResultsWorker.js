@@ -372,6 +372,10 @@ async function processBlockResultsItem(item) {
     
     log(`Successfully processed block ${height} in ${processingTime}ms`);
     
+    // Send stats immediately after processing to prevent stale status during long operations
+    // This ensures the parent process knows the worker is alive even during 3-4 minute block processing
+    await reportStats();
+    
     return { success: true, height };
   } catch (error) {
     const processingTime = Date.now() - startTime;
@@ -393,6 +397,9 @@ async function processBlockResultsItem(item) {
     if (!requeued) {
       stats.failedCount++;
     }
+    
+    // Send stats immediately after failure to prevent stale status
+    await reportStats();
     
     return { success: false, height, error: error.message };
   }

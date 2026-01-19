@@ -826,8 +826,10 @@ class TransactionWorkerPool {
       if (isRunning) {
         const lastUpdate = workerStats.lastUpdate || 0;
         const timeSinceUpdate = Date.now() - lastUpdate;
-        // If no update in last 2 minutes, consider it stale
-        if (timeSinceUpdate < 120000) {
+        // If no update in last 5 minutes, consider it stale
+        // Increased from 2 minutes to account for very large blocks (2-4GB) that can take 3-4+ minutes to process
+        const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+        if (timeSinceUpdate < STALE_THRESHOLD_MS) {
           workerStatus = workerStats.status || 'running';
         } else {
           workerStatus = 'stale';
