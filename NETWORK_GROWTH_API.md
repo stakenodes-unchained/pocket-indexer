@@ -28,11 +28,8 @@ Authentication: not required.
   - Gateways: first `pocket.gateway.MsgStakeGateway`.
   - Services: first `pocket.service.MsgAddService` per `service_id`.
 - **Performance metrics**:
-  - `claim_settlements`:
+  - `proof_events` (event_type='created'):
     - `num_relays`
-    - `num_claimed_compute_units`
-    - `num_estimated_compute_units`
-  - `proof_submissions`:
     - `num_claimed_compute_units`
     - `num_estimated_compute_units`
 
@@ -58,7 +55,8 @@ Authentication: not required.
     "gateways": 3,
     "services": 4,
     "relays": 654321,
-    "compute_units": 210987
+    "claimed_compute_units": 120000000000,
+    "estimated_compute_units": 125000000000
   }
 }
 ```
@@ -66,14 +64,14 @@ Authentication: not required.
 **Notes:**
 - `applications`, `suppliers`, `gateways`, `services`:
   - Distinct entities whose first `stake`/`add-service` event falls within the window.
-- `relays`, `compute_units`:
-  - Summed from `claim_settlements` over the window using New York day boundaries.
+- `relays`, `claimed_compute_units`, `estimated_compute_units`:
+  - Summed from `proof_events` (event_type='created') over the window using New York day boundaries.
 
 ### 2. Network Growth Performance (Daily Time Series, Fast)
 
 **Endpoint:** `GET /api/v1/network-growth/performance`
 
-**Description:** Returns a per-day time series over the selected window for relays, compute units, and detailed compute unit metrics from `claim_settlements` and `proof_submissions`. This is the preferred endpoint for performance dashboards.
+**Description:** Returns a per-day time series over the selected window for relays and compute units from `proof_events`. This is the preferred endpoint for performance dashboards.
 
 **Query Parameters:**
 - `window` (optional, integer days): Number of days to include ending today. Default `7`. Max `365`.
@@ -88,11 +86,8 @@ Authentication: not required.
       {
         "day": "2025-11-01",
         "relays": 1234567890,
-        "compute_units": 126000000000,
-        "proof_submissions_computed_units": 120000000000,
-        "proof_submissions_estimated_units": 125000000000,
-        "settled_claims_computed_units": 6000000000,
-        "settled_claims_estimated_units": 6100000000
+        "claimed_compute_units": 120000000000,
+        "estimated_compute_units": 125000000000
       }
       // ... one object per day in ascending order
     ]
@@ -101,14 +96,11 @@ Authentication: not required.
 ```
 
 **Notes:**
-- `relays` and `compute_units`:
-  - All claim settlements from `claim_settlements`.
-- `proof_submissions_computed_units`, `proof_submissions_estimated_units`:
-  - Aggregated from `proof_submissions`.
-- `settled_claims_computed_units`, `settled_claims_estimated_units`:
-  - Aggregated from settled claims in `claim_settlements` (`settlement_type = 'settled'`).
+- `relays`, `claimed_compute_units`, `estimated_compute_units`:
+  - All metrics aggregated from `proof_events` table where `event_type = 'created'`.
+  - Data is joined with `blocks` table to get accurate timestamp information.
 - Uses `America/New_York` time zone for day boundaries.
-- Recommended for clients that need performance metrics with a detailed compute‑unit breakdown.
+- Recommended for clients that need performance metrics with compute unit breakdown.
 
 ### 3. Network Growth Entities (Daily Time Series)
 
@@ -167,7 +159,8 @@ Authentication: not required.
         "gateways": 0,
         "services": 1,
         "relays": 123456,
-        "compute_units": 789012
+        "claimed_compute_units": 120000000000,
+        "estimated_compute_units": 125000000000
       }
       // ... one object per day in ascending order
     ]
@@ -177,7 +170,7 @@ Authentication: not required.
 
 **Notes:**
 - Entity counts match `/entities` semantics.
-- Relays and compute units match `/performance` semantics (using `claim_settlements`).
+- Relays and compute units match `/performance` semantics (using `proof_events`).
 - For new clients, prefer `/performance` + `/entities` to reduce load and improve responsiveness.
 
 ## Example Usage
@@ -217,4 +210,4 @@ curl "http://localhost:3007/api/v1/network-growth/entities?chain=pokt-mainnet&wi
 
 - Implementation lives in `server/api-server.js` under the `/api/v1/network-growth*` routes.
 - Entity calculations rely on decoded `tx_data` messages in `transactions`; if message formats change, update the message type filters and projection logic.
-- Performance calculations rely on `claim_settlements` and `proof_submissions`; schema changes there should be mirrored in both the SQL queries and this documentation.
+- Performance calculations rely on `proof_events` table (filtered by `event_type = 'created'`) joined with `blocks` for timestamp information; schema changes there should be mirrored in both the SQL queries and this documentation.

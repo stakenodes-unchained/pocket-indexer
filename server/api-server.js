@@ -279,20 +279,33 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
         FROM bounds b
       ),
-      agg AS (
-        SELECT DATE_TRUNC('day', cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day,
-               SUM(cs.num_relays) AS relays,
-               SUM(cs.num_claimed_compute_units) AS compute_units
-        FROM claim_settlements cs
-        WHERE cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
-          AND ($1::text IS NULL OR cs.chain = $1)
-        GROUP BY 1
+      block_days AS (
+        SELECT
+          height,
+          chain,
+          DATE_TRUNC('day', timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day
+        FROM blocks
+        WHERE timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+      ),
+      proof_events_agg AS (
+        SELECT
+          bd.day,
+          SUM(pe.num_relays) AS relays,
+          SUM(pe.num_claimed_compute_units) AS claimed_compute_units,
+          SUM(pe.num_estimated_compute_units) AS estimated_compute_units
+        FROM proof_events pe
+        INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
+        WHERE pe.event_type = 'created'
+          AND ($1::text IS NULL OR pe.chain = $1)
+        GROUP BY bd.day
       )
-      SELECT d.day,
-             COALESCE(a.relays, 0) AS relays,
-             COALESCE(a.compute_units, 0) AS compute_units
+      SELECT
+        d.day,
+        COALESCE(p.relays, 0) AS relays,
+        COALESCE(p.claimed_compute_units, 0) AS claimed_compute_units,
+        COALESCE(p.estimated_compute_units, 0) AS estimated_compute_units
       FROM days d
-      LEFT JOIN agg a USING(day)
+      LEFT JOIN proof_events_agg p USING(day)
       ORDER BY d.day ASC;
     `;
 
@@ -308,7 +321,8 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
         gateways: Number(row.gateways || 0),
         services: Number(row.services || 0),
         relays: 0,
-        compute_units: 0
+        claimed_compute_units: 0,
+        estimated_compute_units: 0
       });
     }
     for (const row of perfSeries) {
@@ -319,10 +333,12 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
         gateways: 0,
         services: 0,
         relays: 0,
-        compute_units: 0
+        claimed_compute_units: 0,
+        estimated_compute_units: 0
       };
       existing.relays = Number(row.relays || 0);
-      existing.compute_units = Number(row.compute_units || 0);
+      existing.claimed_compute_units = Number(row.claimed_compute_units || 0);
+      existing.estimated_compute_units = Number(row.estimated_compute_units || 0);
       byDay.set(row.day, existing);
     }
 
@@ -335,7 +351,7 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
   }
 });
 
-// Daily performance metrics (relays and compute units) with proof/claims breakdown.
+// Daily performance metrics (relays and compute units) from proof_events.
 app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
@@ -353,36 +369,33 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
         FROM bounds b
       ),
-      claim_settlements_agg AS (
-        SELECT DATE_TRUNC('day', cs.timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day,
-               SUM(cs.num_relays) AS relays,
-               SUM(cs.num_claimed_compute_units) AS compute_units,
-               SUM(cs.num_claimed_compute_units) AS settled_claims_computed_units,
-               SUM(cs.num_estimated_compute_units) AS settled_claims_estimated_units
-        FROM claims cs
-        WHERE cs.timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
-          AND ($1::text IS NULL OR cs.chain = $1)
-        GROUP BY 1
+      block_days AS (
+        SELECT
+          height,
+          chain,
+          DATE_TRUNC('day', timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day
+        FROM blocks
+        WHERE timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
       ),
-      proof_submissions_agg AS (
-        SELECT DATE_TRUNC('day', ps.timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day,
-               SUM(ps.num_claimed_compute_units) AS proof_submissions_computed_units,
-               SUM(ps.num_estimated_compute_units) AS proof_submissions_estimated_units
-        FROM proof_submissions ps
-        WHERE ps.timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
-          AND ($1::text IS NULL OR ps.chain = $1)
-        GROUP BY 1
+      proof_events_agg AS (
+        SELECT
+          bd.day,
+          SUM(pe.num_relays) AS relays,
+          SUM(pe.num_claimed_compute_units) AS claimed_compute_units,
+          SUM(pe.num_estimated_compute_units) AS estimated_compute_units
+        FROM proof_events pe
+        INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
+        WHERE pe.event_type = 'created'
+          AND ($1::text IS NULL OR pe.chain = $1)
+        GROUP BY bd.day
       )
-      SELECT d.day,
-             COALESCE(c.relays, 0) AS relays,
-             COALESCE(c.compute_units, 0) AS compute_units,
-             COALESCE(p.proof_submissions_computed_units, 0) AS proof_submissions_computed_units,
-             COALESCE(p.proof_submissions_estimated_units, 0) AS proof_submissions_estimated_units,
-             COALESCE(c.settled_claims_computed_units, 0) AS settled_claims_computed_units,
-             COALESCE(c.settled_claims_estimated_units, 0) AS settled_claims_estimated_units
+      SELECT
+        d.day,
+        COALESCE(p.relays, 0) AS relays,
+        COALESCE(p.claimed_compute_units, 0) AS claimed_compute_units,
+        COALESCE(p.estimated_compute_units, 0) AS estimated_compute_units
       FROM days d
-      LEFT JOIN claim_settlements_agg c USING(day)
-      LEFT JOIN proof_submissions_agg p USING(day)
+      LEFT JOIN proof_events_agg p USING(day)
       ORDER BY d.day ASC;
     `;
 
@@ -390,11 +403,8 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
     const timeline = (perfRes.rows || []).map(row => ({
       day: row.day,
       relays: Number(row.relays || 0),
-      compute_units: Number(row.compute_units || 0),
-      proof_submissions_computed_units: Number(row.proof_submissions_computed_units || 0),
-      proof_submissions_estimated_units: Number(row.proof_submissions_estimated_units || 0),
-      settled_claims_computed_units: Number(row.settled_claims_computed_units || 0),
-      settled_claims_estimated_units: Number(row.settled_claims_estimated_units || 0)
+      claimed_compute_units: Number(row.claimed_compute_units || 0),
+      estimated_compute_units: Number(row.estimated_compute_units || 0)
     }));
 
     res.json({ data: { window_days: windowDays, timeline } });
@@ -588,14 +598,25 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
     const entities = entitiesRes.rows[0] || {};
 
     const perfSql = `
+      WITH bounds AS (
+        SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
+      ),
+      block_days AS (
+        SELECT
+          height,
+          chain,
+          DATE_TRUNC('day', timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day
+        FROM blocks
+        WHERE timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+      )
       SELECT
-        COALESCE(SUM(cs.num_relays), 0) AS relays,
-        COALESCE(SUM(cs.num_claimed_compute_units), 0) AS compute_units
-      FROM claim_settlements cs
-      LEFT JOIN transactions t ON cs.transaction_hash = t.hash
-      WHERE cs.created_timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= 
-            ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date - make_interval(days => $2::int))
-        AND ($1::text IS NULL OR t.chain = $1);
+        COALESCE(SUM(pe.num_relays), 0) AS relays,
+        COALESCE(SUM(pe.num_claimed_compute_units), 0) AS claimed_compute_units,
+        COALESCE(SUM(pe.num_estimated_compute_units), 0) AS estimated_compute_units
+      FROM proof_events pe
+      INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
+      WHERE pe.event_type = 'created'
+        AND ($1::text IS NULL OR pe.chain = $1);
     `;
 
     const perfRes = await client.query(perfSql, [chain || null, windowDays]);
@@ -608,7 +629,8 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
       gateways: Number(entities.gateways || 0),
       services: Number(entities.services || 0),
       relays: Number(perf.relays || 0),
-      compute_units: Number(perf.compute_units || 0)
+      claimed_compute_units: Number(perf.claimed_compute_units || 0),
+      estimated_compute_units: Number(perf.estimated_compute_units || 0)
     }});
   } catch (error) {
     console.error('Error fetching network growth summary:', error);
