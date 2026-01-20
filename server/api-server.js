@@ -186,11 +186,13 @@ app.use((req, res, next) => {
 // Authentication Endpoints
 // ============================================================================
 
-// POST /api/v1/auth/register - Register new account (PUBLIC)
+// POST /api/v1/auth/register - Unified registration endpoint (PUBLIC)
+// Intelligently handles both quick (email-only) and full (with password) registration
 app.post('/api/v1/auth/register', async (req, res) => {
   try {
     const { email, password, name, organization } = req.body;
 
+    // Validate required fields
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
@@ -201,47 +203,74 @@ app.post('/api/v1/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Invalid email format' });
     }
 
-    const result = await authService.registerAccount(email, password, name, organization);
+    // Determine registration type based on password presence
+    if (password) {
+      // ===== FULL REGISTRATION (with password) =====
+      // Requires: email, password, name
+      // Flow: Create account → Send verification email → User verifies → Token generated
 
-    // Send verification email if email verification is enabled
-    if (authService.isEmailVerificationRequired()) {
+      // Validate password
+      if (password.length < 8) {
+        return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+      }
+
+      // Name is required for full registration
+      if (!name) {
+        return res.status(400).json({
+          error: 'Name is required when registering with a password'
+        });
+      }
+
+      const result = await authService.registerFull(email, password, name, organization);
+
+      // Send verification email
       try {
-        await authService.sendVerificationCode(result.account.id);
+        await authService.sendVerificationLink(result.account.id);
 
-        res.status(201).json({
+        return res.status(201).json({
           data: {
             account: result.account,
-            token: result.token,
           },
-          message: 'Account created successfully. A verification code has been sent to your email. Please verify your email to activate your account.',
-          emailVerificationRequired: true,
+          message: 'Account created successfully. A verification link has been sent to your email. Please verify your email to receive your API token.',
+          requiresVerification: true,
+          accountType: 'full',
         });
       } catch (emailError) {
         console.error('Failed to send verification email:', emailError);
-        // Account created but email failed - still return success
-        res.status(201).json({
-          data: result,
-          message: 'Account created successfully but failed to send verification email. Please use the resend endpoint.',
-          emailVerificationRequired: true,
+        return res.status(201).json({
+          data: {
+            account: result.account,
+          },
+          message: 'Account created successfully but failed to send verification email. Please use the resend verification endpoint.',
+          requiresVerification: true,
           emailSendFailed: true,
+          accountType: 'full',
         });
       }
     } else {
-      // Email verification disabled - return standard response
-      res.status(201).json({
-        data: result,
-        message: 'Account created successfully. Please save your API token - it will not be shown again.',
+      // ===== QUICK REGISTRATION (email-only) =====
+      // Requires: email only (name/org optional)
+      // Flow: Create account → Return token immediately (no verification)
+
+      const result = await authService.registerQuick(email, name, organization);
+
+      return res.status(201).json({
+        data: {
+          account: result.account,
+          token: result.token,
+        },
+        message: 'Account created successfully. You can start using the API immediately with your token.',
+        requiresVerification: false,
+        accountType: 'api_only',
       });
     }
   } catch (error) {
     console.error('Registration error:', error);
 
-    if (error.code === '23505') { // Unique constraint violation
-      return res.status(409).json({ error: 'Email already registered' });
-    }
-
-    if (error.message.includes('Invalid email')) {
-      return res.status(400).json({ error: error.message });
+    if (error.message.includes('duplicate key') || error.code === '23505') {
+      return res.status(409).json({
+        error: 'An account with this email already exists'
+      });
     }
 
     res.status(500).json({ error: 'Internal server error' });
@@ -510,30 +539,35 @@ app.post('/api/v1/auth/tokens/:token_id/regenerate', async (req, res) => {
   }
 });
 
-// POST /api/v1/auth/verify-email - Verify email with code (PUBLIC)
+// POST /api/v1/auth/verify-email - Verify email with token (PUBLIC)
 app.post('/api/v1/auth/verify-email', async (req, res) => {
   try {
-    const { email, code } = req.body;
+    const { token } = req.body;
 
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
+    if (!token) {
+      return res.status(400).json({ error: 'Verification token is required' });
     }
 
-    if (!code) {
-      return res.status(400).json({ error: 'Verification code is required' });
+    // Validate token format (64 hex characters)
+    if (!/^[a-f0-9]{64}$/i.test(token)) {
+      return res.status(400).json({ error: 'Invalid verification token format' });
     }
 
-    // Validate code format (6 digits)
-    if (!/^\d{6}$/.test(code)) {
-      return res.status(400).json({ error: 'Invalid verification code format. Code must be 6 digits.' });
-    }
+    const result = await authService.verifyEmailWithToken(token);
 
-    const result = await authService.verifyEmailByEmail(email, code);
-
-    res.json({
+    // Include API token in response if it was generated (for full accounts)
+    const response = {
       data: result,
       message: result.message,
-    });
+    };
+
+    // If API token was generated, highlight it in the message
+    if (result.apiToken) {
+      response.message = 'Email verified successfully! Your API token has been generated. Please save it - it will not be shown again.';
+      response.data.token = result.apiToken;
+    }
+
+    res.json(response);
   } catch (error) {
     console.error('Email verification error:', error);
 
@@ -541,19 +575,22 @@ app.post('/api/v1/auth/verify-email', async (req, res) => {
       return res.status(400).json({ error: error.message });
     }
 
-    if (error.message.includes('Invalid verification code')) {
+    if (error.message.includes('Invalid verification token')) {
       return res.status(400).json({ error: error.message });
     }
 
-    if (error.message.includes('No verification code')) {
-      return res.status(400).json({ error: error.message });
+    if (error.message.includes('already verified')) {
+      return res.status(200).json({
+        data: { success: true, alreadyVerified: true },
+        message: error.message
+      });
     }
 
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// POST /api/v1/auth/resend-verification - Resend verification code (PUBLIC)
+// POST /api/v1/auth/resend-verification - Resend verification link (PUBLIC)
 app.post('/api/v1/auth/resend-verification', async (req, res) => {
   try {
     const { email } = req.body;
@@ -568,14 +605,14 @@ app.post('/api/v1/auth/resend-verification', async (req, res) => {
       return res.status(400).json({ error: 'Invalid email format' });
     }
 
-    const result = await authService.resendVerificationCode(email);
+    const result = await authService.resendVerificationLink(email);
 
     res.json({
       data: {
         email: result.email,
-        codeExpiry: result.codeExpiry,
+        tokenExpiry: result.tokenExpiry,
       },
-      message: 'Verification code sent successfully. Please check your email.',
+      message: 'Verification link sent successfully. Please check your email.',
     });
   } catch (error) {
     console.error('Resend verification error:', error);
@@ -594,6 +631,147 @@ app.post('/api/v1/auth/resend-verification', async (req, res) => {
 
     if (error.message.includes('already sent')) {
       return res.status(429).json({ error: error.message });
+    }
+
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/v1/auth/forgot-password - Request password reset link (PUBLIC)
+app.post('/api/v1/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    await authService.requestPasswordReset(email);
+
+    // Always return success even if email doesn't exist (security best practice)
+    // Don't reveal whether the email is registered
+    res.json({
+      data: { email },
+      message: 'If an account exists with this email, a password reset link has been sent. Please check your email.',
+    });
+  } catch (error) {
+    console.error('Password reset request error:', error);
+
+    // Handle rate limiting
+    if (error.message.includes('Too many')) {
+      return res.status(429).json({ error: error.message });
+    }
+
+    // Always return generic success to avoid email enumeration
+    res.json({
+      data: { email: req.body.email },
+      message: 'If an account exists with this email, a password reset link has been sent. Please check your email.',
+    });
+  }
+});
+
+// POST /api/v1/auth/reset-password - Reset password with token (PUBLIC)
+app.post('/api/v1/auth/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ error: 'Reset token is required' });
+    }
+
+    if (!newPassword) {
+      return res.status(400).json({ error: 'New password is required' });
+    }
+
+    // Validate token format (64 hex characters)
+    if (!/^[a-f0-9]{64}$/i.test(token)) {
+      return res.status(400).json({ error: 'Invalid reset token format' });
+    }
+
+    // Validate password strength
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+    }
+
+    const result = await authService.resetPassword(token, newPassword);
+
+    res.json({
+      data: {
+        success: true,
+        email: result.email,
+      },
+      message: 'Password reset successfully. All active sessions have been logged out. Please login with your new password.',
+    });
+  } catch (error) {
+    console.error('Password reset error:', error);
+
+    if (error.message.includes('Invalid') || error.message.includes('expired')) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// PUT /api/v1/auth/password - Change password (JWT_AUTH)
+// Requires JWT authentication - user must be logged in
+app.put('/api/v1/auth/password', async (req, res) => {
+  try {
+    const accountId = req.user?.accountId;
+
+    if (!accountId) {
+      return res.status(401).json({ error: 'Authentication required. Please login first.' });
+    }
+
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword) {
+      return res.status(400).json({ error: 'Current password is required' });
+    }
+
+    if (!newPassword) {
+      return res.status(400).json({ error: 'New password is required' });
+    }
+
+    // Validate password strength
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters long' });
+    }
+
+    // Check if new password is different from current
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ error: 'New password must be different from current password' });
+    }
+
+    const result = await authService.changePassword(accountId, currentPassword, newPassword);
+
+    res.json({
+      data: {
+        success: true,
+        email: result.email,
+        lastPasswordChange: result.lastPasswordChange,
+      },
+      message: 'Password changed successfully. All other sessions have been logged out for security.',
+    });
+  } catch (error) {
+    console.error('Change password error:', error);
+
+    if (error.message.includes('Current password is incorrect')) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    if (error.message.includes('Account not found')) {
+      return res.status(404).json({ error: 'Account not found' });
+    }
+
+    if (error.message.includes('api_only')) {
+      return res.status(400).json({ error: 'Cannot change password for API-only accounts. Please use password reset instead.' });
     }
 
     res.status(500).json({ error: 'Internal server error' });

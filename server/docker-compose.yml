@@ -82,6 +82,24 @@ services:
       - HISTORY_CACHE_TTL=${HISTORY_CACHE_TTL:-3600}  # Cache TTL for historical data (1 hour default)
       - TX_EXPIRE_TIME=${TX_EXPIRE_TIME:-2592000}  # Transaction data expiration in seconds (30 days)
       - PROCESSING_DELAY=${PROCESSING_DELAY:-50}   # Delay between transaction batches to prevent Redis overload
+
+      # JWT Configuration
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - JWT_ACCESS_EXPIRY=${JWT_ACCESS_EXPIRY}
+      - JWT_REFRESH_EXPIRY=${JWT_REFRESH_EXPIRY}
+      
+
+      # Email configuration
+      - EMAIL_HOST=${EMAIL_HOST:-smtp.gmail.com}
+      - EMAIL_PORT=${EMAIL_PORT:-587}
+      - EMAIL_SECURE=${EMAIL_SECURE:-false}
+      - EMAIL_USER=${EMAIL_USER}
+      - EMAIL_PASSWORD=${EMAIL_PASSWORD}
+      - EMAIL_FROM_NAME=${EMAIL_FROM_NAME:-Pocket Indexer}
+      - EMAIL_FROM_ADDRESS=${EMAIL_FROM_ADDRESS}
+      - EMAIL_VERIFICATION_CODE_EXPIRY=${EMAIL_VERIFICATION_CODE_EXPIRY:-900}
+      - EMAIL_VERIFICATION_REQUIRED=${EMAIL_VERIFICATION_REQUIRED:-true}
     depends_on:
       redis:
         condition: service_healthy

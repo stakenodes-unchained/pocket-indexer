@@ -64,30 +64,23 @@ class AuthService {
   }
 
   /**
-   * Register a new account
+   * Quick registration - Email only, no password, instant API access
    * @param {string} email - User email
-   * @param {string} password - User password (optional for passwordless)
-   * @param {string} name - User name
+   * @param {string} name - User name (optional)
    * @param {string} organization - Organization name (optional)
    * @returns {Promise<Object>} { account, token }
    */
-  async registerAccount(email, password, name, organization) {
+  async registerQuick(email, name = null, organization = null) {
     const client = await this.pgPool.connect();
     try {
       await client.query('BEGIN');
 
-      // Hash password if provided
-      let passwordHash = null;
-      if (password) {
-        passwordHash = await bcrypt.hash(password, 10);
-      }
-
-      // Create account
+      // Create account without password, mark as verified, set type to api_only
       const accountResult = await client.query(
-        `INSERT INTO api_accounts (email, password_hash, name, organization, status)
-         VALUES ($1, $2, $3, $4, 'active')
-         RETURNING id, email, name, organization, status, created_at`,
-        [email, passwordHash, name, organization]
+        `INSERT INTO api_accounts (email, password_hash, name, organization, status, account_type, email_verified, email_verified_at)
+         VALUES ($1, NULL, $2, $3, 'active', 'api_only', true, NOW())
+         RETURNING id, email, name, organization, status, account_type, email_verified, created_at`,
+        [email, name, organization]
       );
 
       const account = accountResult.rows[0];
@@ -106,6 +99,8 @@ class AuthService {
 
       await client.query('COMMIT');
 
+      console.log(`✅ Quick registration completed for ${email} (API-only account)`);
+
       return {
         account: {
           id: account.id,
@@ -113,6 +108,8 @@ class AuthService {
           name: account.name,
           organization: account.organization,
           status: account.status,
+          account_type: account.account_type,
+          email_verified: account.email_verified,
           created_at: account.created_at,
         },
         token: {
@@ -127,6 +124,90 @@ class AuthService {
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Full registration - Email + password, requires email verification
+   * @param {string} email - User email
+   * @param {string} password - User password (required)
+   * @param {string} name - User name
+   * @param {string} organization - Organization name (optional)
+   * @returns {Promise<Object>} { account } - Token will be provided after verification
+   */
+  async registerFull(email, password, name, organization = null) {
+    const client = await this.pgPool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Hash password
+      const passwordHash = await bcrypt.hash(password, 10);
+
+      // Create account with password, unverified, set type to full
+      // Do NOT generate token yet - token will be sent after email verification
+      const accountResult = await client.query(
+        `INSERT INTO api_accounts (email, password_hash, name, organization, status, account_type, email_verified)
+         VALUES ($1, $2, $3, $4, 'active', 'full', false)
+         RETURNING id, email, name, organization, status, account_type, email_verified, created_at`,
+        [email, passwordHash, name, organization]
+      );
+
+      const account = accountResult.rows[0];
+
+      await client.query('COMMIT');
+
+      console.log(`✅ Full registration initiated for ${email} (requires email verification)`);
+
+      return {
+        account: {
+          id: account.id,
+          email: account.email,
+          name: account.name,
+          organization: account.organization,
+          status: account.status,
+          account_type: account.account_type,
+          email_verified: account.email_verified,
+          created_at: account.created_at,
+        },
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Generate API token for verified account
+   * @param {number} accountId - Account ID
+   * @returns {Promise<Object>} { token }
+   */
+  async generateApiTokenForAccount(accountId) {
+    const client = await this.pgPool.connect();
+    try {
+      // Generate default token
+      const { token, tokenHash, tokenPrefix } = this.generateToken();
+      const tokenName = 'Default Token';
+
+      // Create token
+      const tokenResult = await client.query(
+        `INSERT INTO api_tokens (account_id, token_hash, token_prefix, name, status)
+         VALUES ($1, $2, $3, $4, 'active')
+         RETURNING id, token_prefix, name, created_at, expires_at`,
+        [accountId, tokenHash, tokenPrefix, tokenName]
+      );
+
+      return {
+        id: tokenResult.rows[0].id,
+        token: token, // Only shown once
+        token_prefix: tokenResult.rows[0].token_prefix,
+        name: tokenResult.rows[0].name,
+        created_at: tokenResult.rows[0].created_at,
+        expires_at: tokenResult.rows[0].expires_at,
+      };
     } finally {
       client.release();
     }
@@ -499,21 +580,20 @@ class AuthService {
   }
 
   /**
-   * Generate a 6-digit verification code
-   * @returns {string} 6-digit code
+   * Generate a secure verification token
+   * @returns {string} 64-character hex token
    */
-  generateVerificationCode() {
-    // Generate cryptographically secure random 6-digit code
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    return code;
+  generateVerificationToken() {
+    // Generate cryptographically secure random token (32 bytes = 64 hex chars)
+    return crypto.randomBytes(32).toString('hex');
   }
 
   /**
-   * Send email verification code
+   * Send email verification link
    * @param {number} accountId - Account ID
-   * @returns {Promise<Object>} { success, codeExpiry }
+   * @returns {Promise<Object>} { success, tokenExpiry, email }
    */
-  async sendVerificationCode(accountId) {
+  async sendVerificationLink(accountId) {
     const client = await this.pgPool.connect();
     try {
       // Get account details
@@ -540,29 +620,32 @@ class AuthService {
         throw new Error('Too many verification attempts. Please try again later.');
       }
 
-      // Generate new verification code
-      const code = this.generateVerificationCode();
-      const expirySeconds = parseInt(process.env.EMAIL_VERIFICATION_CODE_EXPIRY || '3600', 10);
+      // Generate new verification token
+      const token = this.generateVerificationToken();
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+      // Token expires in 24 hours (configurable)
+      const expirySeconds = parseInt(process.env.EMAIL_VERIFICATION_TOKEN_EXPIRY || '86400', 10);
       const expiresAt = new Date(Date.now() + expirySeconds * 1000);
 
-      // Update account with verification code
+      // Update account with verification token hash
       await client.query(
         `UPDATE api_accounts
-         SET email_verification_code = $1,
-             email_verification_code_expires_at = $2,
+         SET email_verification_token_hash = $1,
+             email_verification_token_expires_at = $2,
              email_verification_attempts = email_verification_attempts + 1
          WHERE id = $3`,
-        [code, expiresAt, accountId]
+        [tokenHash, expiresAt, accountId]
       );
 
-      // Send verification email
-      await emailService.sendVerificationEmail(account.email, code, account.name);
+      // Send verification email with link
+      await emailService.sendVerificationEmail(account.email, token, account.name);
 
-      console.log(`📧 Verification code sent to account ${accountId} (${account.email})`);
+      console.log(`📧 Verification link sent to account ${accountId} (${account.email})`);
 
       return {
         success: true,
-        codeExpiry: expiresAt,
+        tokenExpiry: expiresAt,
         email: account.email,
       };
     } finally {
@@ -571,27 +654,29 @@ class AuthService {
   }
 
   /**
-   * Verify email with code
-   * @param {number} accountId - Account ID
-   * @param {string} code - 6-digit verification code
-   * @returns {Promise<Object>} { success, message }
+   * Verify email with token (PUBLIC - no authentication required)
+   * @param {string} token - Verification token from email link
+   * @returns {Promise<Object>} { success, message, email }
    */
-  async verifyEmail(accountId, code) {
+  async verifyEmailWithToken(token) {
     const client = await this.pgPool.connect();
     try {
       await client.query('BEGIN');
 
-      // Get account with verification code
+      // Hash the token to match against database
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+      // Get account with verification token
       const accountResult = await client.query(
-        `SELECT id, email, name, email_verified, email_verification_code, email_verification_code_expires_at
+        `SELECT id, email, name, account_type, email_verified, email_verification_token_hash, email_verification_token_expires_at
          FROM api_accounts
-         WHERE id = $1
+         WHERE email_verification_token_hash = $1
          FOR UPDATE`,
-        [accountId]
+        [tokenHash]
       );
 
       if (accountResult.rows.length === 0) {
-        throw new Error('Account not found');
+        throw new Error('Invalid verification token');
       }
 
       const account = accountResult.rows[0];
@@ -602,23 +687,14 @@ class AuthService {
         return {
           success: true,
           message: 'Email already verified',
+          email: account.email,
           alreadyVerified: true,
         };
       }
 
-      // Check if code exists
-      if (!account.email_verification_code) {
-        throw new Error('No verification code found. Please request a new code.');
-      }
-
-      // Check if code expired
-      if (new Date() > new Date(account.email_verification_code_expires_at)) {
-        throw new Error('Verification code expired. Please request a new code.');
-      }
-
-      // Verify code
-      if (account.email_verification_code !== code) {
-        throw new Error('Invalid verification code');
+      // Check if token expired
+      if (new Date() > new Date(account.email_verification_token_expires_at)) {
+        throw new Error('Verification link expired. Please request a new verification email.');
       }
 
       // Mark email as verified
@@ -626,98 +702,38 @@ class AuthService {
         `UPDATE api_accounts
          SET email_verified = true,
              email_verified_at = NOW(),
-             email_verification_code = NULL,
-             email_verification_code_expires_at = NULL,
-             email_verification_attempts = 0
-         WHERE id = $1`,
-        [accountId]
-      );
-
-      await client.query('COMMIT');
-
-      // Send welcome email (non-blocking, don't wait)
-      emailService.sendWelcomeEmail(account.email, account.name).catch(err => {
-        console.error('Error sending welcome email:', err);
-      });
-
-      console.log(`✅ Email verified for account ${accountId} (${account.email})`);
-
-      return {
-        success: true,
-        message: 'Email verified successfully',
-        email: account.email,
-      };
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * Verify email with code using email address (PUBLIC - no token required)
-   * @param {string} email - Email address
-   * @param {string} code - Verification code
-   * @returns {Promise<Object>} Verification result
-   */
-  async verifyEmailByEmail(email, code) {
-    const client = await this.pgPool.connect();
-    try {
-      await client.query('BEGIN');
-
-      // Get account with verification code
-      const accountResult = await client.query(
-        `SELECT id, email, name, email_verified, email_verification_code, email_verification_code_expires_at
-         FROM api_accounts
-         WHERE email = $1
-         FOR UPDATE`,
-        [email]
-      );
-
-      if (accountResult.rows.length === 0) {
-        throw new Error('Account not found');
-      }
-
-      const account = accountResult.rows[0];
-
-      // Check if already verified
-      if (account.email_verified) {
-        await client.query('COMMIT');
-        return {
-          success: true,
-          message: 'Email already verified',
-          alreadyVerified: true,
-        };
-      }
-
-      // Check if code exists
-      if (!account.email_verification_code) {
-        throw new Error('No verification code found. Please request a new code.');
-      }
-
-      // Check if code expired
-      if (new Date() > new Date(account.email_verification_code_expires_at)) {
-        throw new Error('Verification code expired. Please request a new code.');
-      }
-
-      // Verify code
-      if (account.email_verification_code !== code) {
-        throw new Error('Invalid verification code');
-      }
-
-      // Mark email as verified
-      await client.query(
-        `UPDATE api_accounts
-         SET email_verified = true,
-             email_verified_at = NOW(),
-             email_verification_code = NULL,
-             email_verification_code_expires_at = NULL,
+             email_verification_token_hash = NULL,
+             email_verification_token_expires_at = NULL,
              email_verification_attempts = 0
          WHERE id = $1`,
         [account.id]
       );
 
+      // For full accounts, generate API token after verification
+      let apiToken = null;
+      if (account.account_type === 'full') {
+        const { token, tokenHash: newTokenHash, tokenPrefix } = this.generateToken();
+        const tokenName = 'Default Token';
+
+        const tokenResult = await client.query(
+          `INSERT INTO api_tokens (account_id, token_hash, token_prefix, name, status)
+           VALUES ($1, $2, $3, $4, 'active')
+           RETURNING id, token_prefix, name, created_at, expires_at`,
+          [account.id, newTokenHash, tokenPrefix, tokenName]
+        );
+
+        apiToken = {
+          id: tokenResult.rows[0].id,
+          token: token,
+          token_prefix: tokenResult.rows[0].token_prefix,
+          name: tokenResult.rows[0].name,
+          created_at: tokenResult.rows[0].created_at,
+          expires_at: tokenResult.rows[0].expires_at,
+        };
+
+        console.log(`🔑 API token generated for account ${account.id} after verification`);
+      }
+
       await client.query('COMMIT');
 
       // Send welcome email (non-blocking, don't wait)
@@ -725,12 +741,13 @@ class AuthService {
         console.error('Error sending welcome email:', err);
       });
 
-      console.log(`✅ Email verified for ${email}`);
+      console.log(`✅ Email verified for account ${account.id} (${account.email})`);
 
       return {
         success: true,
         message: 'Email verified successfully',
         email: account.email,
+        apiToken: apiToken, // Will be null for api_only accounts, populated for full accounts
       };
     } catch (error) {
       await client.query('ROLLBACK');
@@ -741,17 +758,17 @@ class AuthService {
   }
 
   /**
-   * Resend verification code
+   * Resend verification link
    * @param {string} email - User email
-   * @returns {Promise<Object>} { success, codeExpiry }
+   * @returns {Promise<Object>} { success, tokenExpiry, email }
    */
-  async resendVerificationCode(email) {
+  async resendVerificationLink(email) {
     const client = await this.pgPool.connect();
     try {
       // Get account by email
       const accountResult = await client.query(
         `SELECT id, email, name, email_verified, email_verification_attempts,
-                email_verification_code_expires_at
+                email_verification_token_expires_at
          FROM api_accounts
          WHERE email = $1`,
         [email]
@@ -773,16 +790,16 @@ class AuthService {
         throw new Error('Too many verification attempts. Please try again later.');
       }
 
-      // Check if previous code is still valid (don't send too frequently)
-      if (account.email_verification_code_expires_at) {
-        const timeLeft = new Date(account.email_verification_code_expires_at) - new Date();
-        if (timeLeft > 55 * 60 * 1000) { // More than 55 minutes left
-          throw new Error('Verification code already sent. Please check your email or wait a few minutes.');
+      // Check if previous link is still valid (don't send too frequently)
+      if (account.email_verification_token_expires_at) {
+        const timeLeft = new Date(account.email_verification_token_expires_at) - new Date();
+        if (timeLeft > 23 * 60 * 60 * 1000) { // More than 23 hours left
+          throw new Error('Verification link already sent. Please check your email or wait a while.');
         }
       }
 
-      // Send new verification code
-      return await this.sendVerificationCode(account.id);
+      // Send new verification link
+      return await this.sendVerificationLink(account.id);
     } finally {
       client.release();
     }
@@ -1118,6 +1135,230 @@ class AuthService {
         accessToken: newAccessToken,
         refreshToken: newRefreshToken,
       };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Request password reset - Send reset link to email
+   * @param {string} email - User email
+   * @returns {Promise<Object>} { success, email, tokenExpiry }
+   */
+  async requestPasswordReset(email) {
+    const client = await this.pgPool.connect();
+    try {
+      // Get account by email
+      const accountResult = await client.query(
+        `SELECT id, email, name, account_type, password_reset_attempts
+         FROM api_accounts
+         WHERE email = $1 AND status = 'active'`,
+        [email]
+      );
+
+      // Don't reveal if email exists or not (security best practice)
+      if (accountResult.rows.length === 0) {
+        // Return success even if account doesn't exist
+        return {
+          success: true,
+          message: 'If an account exists with this email, a password reset link has been sent.',
+        };
+      }
+
+      const account = accountResult.rows[0];
+
+      // Only full accounts (with passwords) can reset password
+      if (account.account_type !== 'full') {
+        return {
+          success: true,
+          message: 'If an account exists with this email, a password reset link has been sent.',
+        };
+      }
+
+      // Rate limiting: max 5 reset requests per hour
+      if (account.password_reset_attempts >= 5) {
+        throw new Error('Too many password reset requests. Please try again later.');
+      }
+
+      // Generate reset token
+      const token = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+      // Token expires in 1 hour
+      const expirySeconds = parseInt(process.env.PASSWORD_RESET_TOKEN_EXPIRY || '3600', 10);
+      const expiresAt = new Date(Date.now() + expirySeconds * 1000);
+
+      // Update account with reset token
+      await client.query(
+        `UPDATE api_accounts
+         SET password_reset_token_hash = $1,
+             password_reset_token_expires_at = $2,
+             password_reset_attempts = password_reset_attempts + 1
+         WHERE id = $3`,
+        [tokenHash, expiresAt, account.id]
+      );
+
+      // Send password reset email
+      const emailService = require('./emailService');
+      await emailService.sendPasswordResetEmail(account.email, token, account.name);
+
+      console.log(`🔑 Password reset link sent to account ${account.id} (${account.email})`);
+
+      return {
+        success: true,
+        email: account.email,
+        tokenExpiry: expiresAt,
+        message: 'Password reset link sent to your email.',
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Reset password with token
+   * @param {string} token - Reset token from email
+   * @param {string} newPassword - New password
+   * @returns {Promise<Object>} { success, message }
+   */
+  async resetPassword(token, newPassword) {
+    const client = await this.pgPool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Hash token to match against database
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+      // Get account with reset token
+      const accountResult = await client.query(
+        `SELECT id, email, name, password_reset_token_hash, password_reset_token_expires_at
+         FROM api_accounts
+         WHERE password_reset_token_hash = $1
+         FOR UPDATE`,
+        [tokenHash]
+      );
+
+      if (accountResult.rows.length === 0) {
+        throw new Error('Invalid or expired password reset token');
+      }
+
+      const account = accountResult.rows[0];
+
+      // Check if token expired
+      if (new Date() > new Date(account.password_reset_token_expires_at)) {
+        throw new Error('Password reset token expired. Please request a new one.');
+      }
+
+      // Hash new password
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+
+      // Update password and clear reset token
+      await client.query(
+        `UPDATE api_accounts
+         SET password_hash = $1,
+             password_reset_token_hash = NULL,
+             password_reset_token_expires_at = NULL,
+             password_reset_attempts = 0,
+             last_password_change = NOW()
+         WHERE id = $2`,
+        [passwordHash, account.id]
+      );
+
+      // Revoke all JWT sessions for security
+      await client.query(
+        `UPDATE jwt_sessions
+         SET revoked_at = NOW()
+         WHERE account_id = $1 AND revoked_at IS NULL`,
+        [account.id]
+      );
+
+      await client.query('COMMIT');
+
+      console.log(`✅ Password reset successful for account ${account.id} (${account.email})`);
+
+      return {
+        success: true,
+        message: 'Password reset successfully. Please login with your new password.',
+        email: account.email,
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Change password (requires current password)
+   * @param {number} accountId - Account ID
+   * @param {string} currentPassword - Current password
+   * @param {string} newPassword - New password
+   * @returns {Promise<Object>} { success, message }
+   */
+  async changePassword(accountId, currentPassword, newPassword) {
+    const client = await this.pgPool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Get account
+      const accountResult = await client.query(
+        `SELECT id, email, password_hash, account_type
+         FROM api_accounts
+         WHERE id = $1 AND status = 'active'
+         FOR UPDATE`,
+        [accountId]
+      );
+
+      if (accountResult.rows.length === 0) {
+        throw new Error('Account not found');
+      }
+
+      const account = accountResult.rows[0];
+
+      // Only full accounts can change password
+      if (account.account_type !== 'full') {
+        throw new Error('This account type does not support passwords');
+      }
+
+      // Verify current password
+      const passwordValid = await bcrypt.compare(currentPassword, account.password_hash);
+      if (!passwordValid) {
+        throw new Error('Current password is incorrect');
+      }
+
+      // Hash new password
+      const newPasswordHash = await bcrypt.hash(newPassword, 10);
+
+      // Update password
+      await client.query(
+        `UPDATE api_accounts
+         SET password_hash = $1,
+             last_password_change = NOW()
+         WHERE id = $2`,
+        [newPasswordHash, accountId]
+      );
+
+      // Revoke all JWT sessions except current one for security
+      // (User stays logged in on current device but logged out everywhere else)
+      await client.query(
+        `UPDATE jwt_sessions
+         SET revoked_at = NOW()
+         WHERE account_id = $1 AND revoked_at IS NULL`,
+        [accountId]
+      );
+
+      await client.query('COMMIT');
+
+      console.log(`✅ Password changed for account ${accountId} (${account.email})`);
+
+      return {
+        success: true,
+        message: 'Password changed successfully. You have been logged out of all other devices.',
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
     } finally {
       client.release();
     }
