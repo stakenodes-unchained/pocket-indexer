@@ -3,9 +3,10 @@ const { getEndpointCategory, isValidReferrer } = require('../config/endpointAcce
 
 /**
  * Authentication middleware
- * Handles three types of endpoints:
+ * Handles four types of endpoints:
  * - PUBLIC: No authentication required
- * - TOKEN: Requires valid API token
+ * - JWT_AUTH: Requires valid JWT access token (for user-facing features)
+ * - TOKEN: Requires valid API token (for programmatic access)
  * - INTERNAL: Requires valid referrer domain
  */
 const authenticateToken = async (req, res, next) => {
@@ -14,7 +15,7 @@ const authenticateToken = async (req, res, next) => {
     const method = 'WS';
     const path = req.path;
     const category = getEndpointCategory(method, path);
-    
+
     if (category === 'INTERNAL') {
       const referer = req.headers.referer || req.headers.origin || req.headers.referrer;
       if (!isValidReferrer(referer)) {
@@ -39,7 +40,7 @@ const authenticateToken = async (req, res, next) => {
   // INTERNAL endpoints - check referrer
   if (category === 'INTERNAL') {
     const referer = req.headers.referer || req.headers.origin || req.headers.referrer;
-    
+
     if (!isValidReferrer(referer)) {
       // Return 404 to hide endpoint existence
       return res.status(404).json({ error: 'Not found' });
@@ -49,20 +50,49 @@ const authenticateToken = async (req, res, next) => {
     return next();
   }
 
-  // TOKEN endpoints - require authentication
-  if (category === 'TOKEN') {
+  // JWT_AUTH endpoints - require JWT access token
+  if (category === 'JWT_AUTH') {
     // Extract token from Authorization header
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
     const token = authHeader.substring(7).trim();
 
-    // Validate token
+    // Verify JWT token
+    const decoded = authService.verifyAccessToken(token);
+
+    if (!decoded) {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+
+    // Attach user info to request
+    req.user = {
+      accountId: decoded.accountId,
+      email: decoded.email,
+      name: decoded.name,
+      email_verified: decoded.email_verified,
+    };
+
+    return next();
+  }
+
+  // TOKEN endpoints - require API token
+  if (category === 'TOKEN') {
+    // Extract token from Authorization header
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const token = authHeader.substring(7).trim();
+
+    // Validate API token
     const tokenData = await authService.validateToken(token);
-    
+
     if (!tokenData) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
@@ -96,7 +126,7 @@ const authenticateToken = async (req, res, next) => {
     return next();
   }
 
-  // Unknown category - default to requiring token (secure by default)
+  // Unknown category - default to requiring API token (secure by default)
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Authentication required' });
@@ -104,7 +134,7 @@ const authenticateToken = async (req, res, next) => {
 
   const token = authHeader.substring(7).trim();
   const tokenData = await authService.validateToken(token);
-  
+
   if (!tokenData) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }

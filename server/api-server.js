@@ -38,9 +38,11 @@ const cacheMiddleware = (ttl = 60) => {
     }
     
     try {
-      // Create cache key from URL and query params
-      const cacheKey = `api:${req.method}:${req.path}:${JSON.stringify(req.query)}`;
-      
+      // Create cache key from URL, query params, AND authentication status
+      // This ensures authenticated and unauthenticated requests don't share cache
+      const accountId = req.user?.accountId || 'public';
+      const cacheKey = `api:${req.method}:${req.path}:${JSON.stringify(req.query)}:user:${accountId}`;
+
       // Try to get from cache
       const cached = await redis.get(cacheKey);
       if (cached) {
@@ -82,10 +84,11 @@ const postCacheMiddleware = (ttl = 120) => {
     }
     
     try {
-      // Create cache key from path and request body (sorted for consistency)
+      // Create cache key from path, request body, AND authentication status
       const bodyKey = req.body ? JSON.stringify(req.body, Object.keys(req.body).sort()) : '{}';
-      const cacheKey = `api:${req.method}:${req.path}:${bodyKey}`;
-      
+      const accountId = req.user?.accountId || 'public';
+      const cacheKey = `api:${req.method}:${req.path}:${bodyKey}:user:${accountId}`;
+
       // Try to get from cache
       const cached = await redis.get(cacheKey);
       if (cached) {
@@ -151,12 +154,13 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
-// Add caching middleware for GET requests (60 second TTL by default)
-// Can be overridden per route if needed
-app.use(cacheMiddleware(60));
-
 // Authentication middleware - applies to all routes based on endpoint categorization
+// MUST come BEFORE caching to ensure auth is always checked
 app.use(authenticateToken);
+
+// Add caching middleware for GET requests (60 second TTL by default)
+// Comes AFTER auth so cache keys include authentication context
+app.use(cacheMiddleware(60));
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -199,17 +203,43 @@ app.post('/api/v1/auth/register', async (req, res) => {
 
     const result = await authService.registerAccount(email, password, name, organization);
 
-    res.status(201).json({
-      data: result,
-      message: 'Account created successfully. Please save your API token - it will not be shown again.',
-    });
+    // Send verification email if email verification is enabled
+    if (authService.isEmailVerificationRequired()) {
+      try {
+        await authService.sendVerificationCode(result.account.id);
+
+        res.status(201).json({
+          data: {
+            account: result.account,
+            token: result.token,
+          },
+          message: 'Account created successfully. A verification code has been sent to your email. Please verify your email to activate your account.',
+          emailVerificationRequired: true,
+        });
+      } catch (emailError) {
+        console.error('Failed to send verification email:', emailError);
+        // Account created but email failed - still return success
+        res.status(201).json({
+          data: result,
+          message: 'Account created successfully but failed to send verification email. Please use the resend endpoint.',
+          emailVerificationRequired: true,
+          emailSendFailed: true,
+        });
+      }
+    } else {
+      // Email verification disabled - return standard response
+      res.status(201).json({
+        data: result,
+        message: 'Account created successfully. Please save your API token - it will not be shown again.',
+      });
+    }
   } catch (error) {
     console.error('Registration error:', error);
-    
+
     if (error.code === '23505') { // Unique constraint violation
       return res.status(409).json({ error: 'Email already registered' });
     }
-    
+
     if (error.message.includes('Invalid email')) {
       return res.status(400).json({ error: error.message });
     }
@@ -219,6 +249,7 @@ app.post('/api/v1/auth/register', async (req, res) => {
 });
 
 // POST /api/v1/auth/login - Login with email and password (PUBLIC)
+// Returns JWT tokens for user authentication
 app.post('/api/v1/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -227,20 +258,99 @@ app.post('/api/v1/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email is required' });
     }
 
-    const result = await authService.login(email, password || '');
+    // Get user agent and IP for session tracking
+    const userAgent = req.headers['user-agent'];
+    const ipAddress = req.ip || req.socket?.remoteAddress;
+
+    const result = await authService.loginWithJWT(email, password || '', userAgent, ipAddress);
 
     res.json({
-      data: result,
+      data: {
+        account: result.account,
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken,
+      },
+      message: 'Login successful',
     });
   } catch (error) {
     console.error('Login error:', error);
-    
+
     // Don't reveal if email exists or password is wrong
     res.status(401).json({ error: 'Invalid email or password' });
   }
 });
 
-// GET /api/v1/auth/account - Get account information (TOKEN)
+// POST /api/v1/auth/refresh - Refresh access token (PUBLIC)
+// Uses refresh token to get new access token
+app.post('/api/v1/auth/refresh', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({ error: 'Refresh token is required' });
+    }
+
+    const result = await authService.refreshAccessToken(refreshToken);
+
+    res.json({
+      data: {
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken,
+      },
+      message: 'Token refreshed successfully',
+    });
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    res.status(401).json({ error: 'Invalid or expired refresh token' });
+  }
+});
+
+// POST /api/v1/auth/logout - Logout and revoke refresh token (PUBLIC)
+// Revokes the provided refresh token
+app.post('/api/v1/auth/logout', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({ error: 'Refresh token is required' });
+    }
+
+    const success = await authService.revokeRefreshToken(refreshToken);
+
+    if (!success) {
+      return res.status(404).json({ error: 'Token not found or already revoked' });
+    }
+
+    res.json({ message: 'Logged out successfully' });
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/v1/auth/logout-all - Logout from all devices (JWT_AUTH)
+// Revokes all refresh tokens for the authenticated user
+app.post('/api/v1/auth/logout-all', async (req, res) => {
+  try {
+    const accountId = req.user?.accountId;
+
+    if (!accountId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const count = await authService.revokeAllRefreshTokens(accountId);
+
+    res.json({
+      message: `Logged out from ${count} device(s) successfully`,
+      devicesLoggedOut: count,
+    });
+  } catch (error) {
+    console.error('Logout all error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/v1/auth/account - Get account information (JWT_AUTH)
 app.get('/api/v1/auth/account', async (req, res) => {
   try {
     const accountId = req.user?.accountId;
@@ -266,9 +376,17 @@ app.get('/api/v1/auth/account', async (req, res) => {
 app.get('/api/v1/auth/tokens', async (req, res) => {
   try {
     const accountId = req.user?.accountId;
-    
+
     if (!accountId) {
       return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    // Check if email is verified
+    const account = await authService.getAccount(accountId);
+    if (!account.email_verified) {
+      return res.status(403).json({
+        error: 'Email not verified. Please verify your email address before managing tokens.'
+      });
     }
 
     const tokens = await authService.listTokens(accountId);
@@ -284,9 +402,17 @@ app.get('/api/v1/auth/tokens', async (req, res) => {
 app.post('/api/v1/auth/tokens', async (req, res) => {
   try {
     const accountId = req.user?.accountId;
-    
+
     if (!accountId) {
       return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    // Check if email is verified
+    const account = await authService.getAccount(accountId);
+    if (!account.email_verified) {
+      return res.status(403).json({
+        error: 'Email not verified. Please verify your email address before creating tokens.'
+      });
     }
 
     const { name } = req.body;
@@ -300,7 +426,7 @@ app.post('/api/v1/auth/tokens', async (req, res) => {
     });
   } catch (error) {
     console.error('Create token error:', error);
-    
+
     if (error.message.includes('Account not found')) {
       return res.status(404).json({ error: error.message });
     }
@@ -314,9 +440,17 @@ app.delete('/api/v1/auth/tokens/:token_id', async (req, res) => {
   try {
     const accountId = req.user?.accountId;
     const tokenId = parseInt(req.params.token_id, 10);
-    
+
     if (!accountId) {
       return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    // Check if email is verified
+    const account = await authService.getAccount(accountId);
+    if (!account.email_verified) {
+      return res.status(403).json({
+        error: 'Email not verified. Please verify your email address before deleting tokens.'
+      });
     }
 
     if (isNaN(tokenId)) {
@@ -342,9 +476,17 @@ app.post('/api/v1/auth/tokens/:token_id/regenerate', async (req, res) => {
     const accountId = req.user?.accountId;
     const tokenId = parseInt(req.params.token_id, 10);
     const { name } = req.body;
-    
+
     if (!accountId) {
       return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    // Check if email is verified
+    const account = await authService.getAccount(accountId);
+    if (!account.email_verified) {
+      return res.status(403).json({
+        error: 'Email not verified. Please verify your email address before regenerating tokens.'
+      });
     }
 
     if (isNaN(tokenId)) {
@@ -359,11 +501,130 @@ app.post('/api/v1/auth/tokens/:token_id/regenerate', async (req, res) => {
     });
   } catch (error) {
     console.error('Regenerate token error:', error);
-    
+
     if (error.message.includes('Token not found')) {
       return res.status(404).json({ error: error.message });
     }
 
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/v1/auth/verify-email - Verify email with code (PUBLIC)
+app.post('/api/v1/auth/verify-email', async (req, res) => {
+  try {
+    const { email, code } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    if (!code) {
+      return res.status(400).json({ error: 'Verification code is required' });
+    }
+
+    // Validate code format (6 digits)
+    if (!/^\d{6}$/.test(code)) {
+      return res.status(400).json({ error: 'Invalid verification code format. Code must be 6 digits.' });
+    }
+
+    const result = await authService.verifyEmailByEmail(email, code);
+
+    res.json({
+      data: result,
+      message: result.message,
+    });
+  } catch (error) {
+    console.error('Email verification error:', error);
+
+    if (error.message.includes('expired')) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    if (error.message.includes('Invalid verification code')) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    if (error.message.includes('No verification code')) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/v1/auth/resend-verification - Resend verification code (PUBLIC)
+app.post('/api/v1/auth/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    const result = await authService.resendVerificationCode(email);
+
+    res.json({
+      data: {
+        email: result.email,
+        codeExpiry: result.codeExpiry,
+      },
+      message: 'Verification code sent successfully. Please check your email.',
+    });
+  } catch (error) {
+    console.error('Resend verification error:', error);
+
+    if (error.message.includes('Account not found')) {
+      return res.status(404).json({ error: 'Account not found' });
+    }
+
+    if (error.message.includes('already verified')) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    if (error.message.includes('Too many')) {
+      return res.status(429).json({ error: error.message });
+    }
+
+    if (error.message.includes('already sent')) {
+      return res.status(429).json({ error: error.message });
+    }
+
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/v1/auth/verification-status - Get email verification status (TOKEN)
+app.get('/api/v1/auth/verification-status', async (req, res) => {
+  try {
+    const accountId = req.user?.accountId;
+
+    if (!accountId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const account = await authService.getAccount(accountId);
+
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' });
+    }
+
+    res.json({
+      data: {
+        emailVerified: account.email_verified,
+        emailVerifiedAt: account.email_verified_at,
+        email: account.email,
+        verificationRequired: authService.isEmailVerificationRequired(),
+      },
+    });
+  } catch (error) {
+    console.error('Verification status error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
