@@ -4,7 +4,7 @@
  * Restart Block Results Processing Script
  * 
  * This script allows you to restart block results processing from a specific height by:
- * 1. Clearing processed tracking from database and Redis
+ * 1. Clearing processed tracking from Redis (not database)
  * 2. Clearing the queue and delayed items
  * 3. Optionally re-enqueueing blocks from restart height to current height
  * 
@@ -25,17 +25,16 @@ dotenv.config();
 
 const readline = require('readline');
 const { Pool } = require('pg');
-const Redis = require('ioredis');
 const { getRpcEndpoints } = require('../config/rpc');
 const { fetchLatestBlock } = require('../services/indexer/rpc');
 const {
-  clearProcessedBlocks,
   clearQueue,
   enqueueBlockResults,
   getMaxProcessedHeight,
   getQueueSize,
   getDelayedItemsCount
 } = require('../services/indexer/blockResultsQueue');
+const redis = require('../config/redis');
 
 // Parse command line arguments
 function parseArgs() {
@@ -132,8 +131,6 @@ async function main() {
     database: process.env.DB_NAME
   });
 
-  const redis = new Redis(process.env.REDIS_URL);
-
   try {
     // Test connections
     await pgPool.query('SELECT 1');
@@ -173,14 +170,13 @@ async function main() {
 
     // Show what will be done
     console.log('Actions to be performed:');
-    console.log(`  1. Delete processed records from database (height >= ${options.restartHeight})`);
-    console.log(`  2. Remove processed heights from Redis (height >= ${options.restartHeight})`);
-    console.log(`  3. Clear queue and delayed items`);
+    console.log(`  1. Remove processed heights from Redis (height >= ${options.restartHeight})`);
+    console.log(`  2. Clear queue and delayed items`);
     if (!options.skipEnqueue && enqueueTo) {
       const blocksToEnqueue = enqueueTo - options.restartHeight + 1;
-      console.log(`  4. Re-enqueue blocks from ${options.restartHeight} to ${enqueueTo} (${blocksToEnqueue} blocks)`);
+      console.log(`  3. Re-enqueue blocks from ${options.restartHeight} to ${enqueueTo} (${blocksToEnqueue} blocks)`);
     } else {
-      console.log(`  4. Skip re-enqueueing (blocks will be enqueued automatically as main worker processes them)`);
+      console.log(`  3. Skip re-enqueueing (blocks will be enqueued automatically as main worker processes them)`);
     }
     console.log(`\n`);
 
@@ -203,10 +199,6 @@ async function main() {
     if (options.dryRun) {
       console.log('DRY RUN: No changes will be made.\n');
       console.log('Summary:');
-      if (maxProcessed && maxProcessed >= options.restartHeight) {
-        const blocksToClear = maxProcessed - options.restartHeight + 1;
-        console.log(`  Would clear ~${blocksToClear} processed block records`);
-      }
       console.log(`  Would clear queue (${queueSize} items) and delayed items (${delayedItems} items)`);
       if (!options.skipEnqueue && enqueueTo) {
         console.log(`  Would enqueue ${enqueueTo - options.restartHeight + 1} blocks`);
@@ -217,11 +209,26 @@ async function main() {
     // Execute operations
     console.log('Executing operations...\n');
 
-    // 1. Clear processed blocks from database and Redis
-    console.log('1. Clearing processed blocks tracking...');
-    const clearResult = await clearProcessedBlocks(options.rpcName, options.restartHeight);
-    console.log(`   ✓ Deleted ${clearResult.dbDeleted} records from database`);
-    console.log(`   ✓ Removed ${clearResult.redisRemoved} heights from Redis\n`);
+    // 1. Clear processed blocks from Redis only (not database)
+    console.log('1. Clearing processed blocks tracking from Redis...');
+    const processedKey = `block_results_processed:${options.rpcName}`;
+    const members = await redis.smembers(processedKey);
+    const heightsToRemove = members.filter(h => {
+      const height = parseInt(h, 10);
+      return !isNaN(height) && height >= options.restartHeight;
+    });
+    
+    if (heightsToRemove.length > 0) {
+      // Remove in batches if too many (Redis SREM has limits)
+      const batchSize = 1000;
+      for (let i = 0; i < heightsToRemove.length; i += batchSize) {
+        const batch = heightsToRemove.slice(i, i + batchSize);
+        await redis.srem(processedKey, ...batch);
+      }
+      console.log(`   ✓ Removed ${heightsToRemove.length} heights from Redis\n`);
+    } else {
+      console.log(`   ✓ No heights to remove from Redis\n`);
+    }
 
     // 2. Clear queue
     console.log('2. Clearing queue and delayed items...');
@@ -257,6 +264,7 @@ async function main() {
     await pgPool.end();
     await redis.quit();
   }
+  process.exit(0);
 }
 
 // Run the script

@@ -15,23 +15,61 @@ const PROCESSING_TIMEOUT_SEC = 300; // 5 minutes timeout for processing
  * @param {number} height - Block height
  * @returns {Promise<boolean>} Success status
  */
-async function enqueueBlockResults(rpcName, height) {
+async function enqueueBlockResults(rpcName, height, options = {}) {
   try {
     const queueKey = `block_results_queue:${rpcName}`;
+    const queuedSetKey = `block_results_queued:${rpcName}`;
+    const processingKey = (h) => `block_results_processing:${rpcName}:${h}`;
+    
+    // Check if already queued (using Redis Set for O(1) lookup)
+    try {
+      const isQueued = await redis.sismember(queuedSetKey, height.toString());
+      if (isQueued) {
+        // Already in queue, skip
+        return false;
+      }
+    } catch (error) {
+      // If Set check fails, log warning but continue (fail open)
+      console.warn(`[BlockResultsQueue] Error checking queued set for block ${height}: ${error.message}, continuing...`);
+    }
+    
+    // Check if currently being processed
+    const isProcessing = await redis.exists(processingKey(height));
+    if (isProcessing) {
+      // Currently being processed, skip
+      return false;
+    }
+    
+    // Check if already processed
+    const isProcessed = await isBlockProcessed(rpcName, height);
+    if (isProcessed) {
+      // Already processed, skip
+      return false;
+    }
+    
+    const pushSide = options.pushSide === 'right' ? 'right' : 'left';
     const item = JSON.stringify({
       height: height,
       timestamp: Date.now(),
       retries: 0
     });
     
-    // Add to queue (left push for FIFO)
-    await redis.lpush(queueKey, item);
+    // Add to queue (left push for higher priority, right push for lower priority)
+    if (pushSide === 'right') {
+      await redis.rpush(queueKey, item);
+    } else {
+      await redis.lpush(queueKey, item);
+    }
     
-    // Refresh expiration on queue (7 days) to prevent unbounded growth
+    // Add to queued Set to track this height
+    await redis.sadd(queuedSetKey, height.toString());
+    
+    // Refresh expiration on queue and set (7 days) to prevent unbounded growth
     // Only set expiration if queue has items
     const queueSize = await redis.llen(queueKey);
     if (queueSize > 0) {
       await redis.expire(queueKey, 7 * 24 * 60 * 60);
+      await redis.expire(queuedSetKey, 7 * 24 * 60 * 60);
     }
     
     return true;
@@ -78,9 +116,110 @@ async function dequeueBlockResults(rpcName) {
     // Set processing lock
     await redis.setex(processingKey(item.height), PROCESSING_TIMEOUT_SEC, Date.now().toString());
     
+    // Remove from queued Set since item is being processed
+    const queuedSetKey = `block_results_queued:${rpcName}`;
+    await redis.srem(queuedSetKey, item.height.toString());
+    
     return item;
   } catch (error) {
     console.error(`[BlockResultsQueue] Error dequeuing block for ${rpcName}:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * Lease-scan dequeue to pick an item within a role-specific height range.
+ * Scans a small batch and requeues out-of-range items to the front.
+ * @param {string} rpcName - RPC endpoint name
+ * @param {Object} options - Role and range options
+ * @param {'current'|'historical'} options.role - Worker role
+ * @param {number|null} options.latestHeight - Latest chain height (null if unknown)
+ * @param {number} options.windowBlocks - Current window size in blocks
+ * @param {number} options.scanCount - Max items to scan per attempt
+ * @returns {Promise<Object|null>} Block item or null if none found
+ */
+async function leaseScanDequeueBlockResults(rpcName, options = {}) {
+  const {
+    role = 'historical',
+    latestHeight = null,
+    windowBlocks = 50,
+    scanCount = 8
+  } = options;
+
+  const queueKey = `block_results_queue:${rpcName}`;
+  const processingKey = (height) => `block_results_processing:${rpcName}:${height}`;
+  const popCommand = role === 'current' ? 'lpop' : 'rpop';
+
+  const hasLatestHeight = Number.isFinite(latestHeight);
+  const minCurrentHeight = hasLatestHeight
+    ? Math.max(0, latestHeight - windowBlocks)
+    : null;
+
+  try {
+    for (let i = 0; i < scanCount; i++) {
+      const itemStr = await redis[popCommand](queueKey);
+      if (!itemStr) {
+        return null;
+      }
+
+      let item;
+      try {
+        item = JSON.parse(itemStr);
+      } catch (error) {
+        console.error(`[BlockResultsQueue] Invalid queue item JSON for ${rpcName}:`, error.message);
+        // Requeue to avoid data loss
+        await redis.lpush(queueKey, itemStr);
+        continue;
+      }
+
+      const height = item?.height;
+      if (!Number.isFinite(height)) {
+        console.error(`[BlockResultsQueue] Invalid queue item height for ${rpcName}:`, item);
+        await redis.lpush(queueKey, itemStr);
+        continue;
+      }
+
+      // Check if already being processed (stale processing lock)
+      const existingLock = await redis.get(processingKey(height));
+      if (existingLock) {
+        const lockTimestamp = parseInt(existingLock, 10);
+        const now = Date.now();
+        if (!Number.isNaN(lockTimestamp) && now - lockTimestamp < PROCESSING_TIMEOUT_SEC * 1000) {
+          await redis.lpush(queueKey, itemStr);
+          continue;
+        }
+        await redis.del(processingKey(height));
+      }
+
+      // Range check
+      let inRange = true;
+      if (hasLatestHeight) {
+        inRange = role === 'current'
+          ? height >= minCurrentHeight
+          : height < minCurrentHeight;
+      } else if (role === 'current') {
+        inRange = false;
+      }
+
+      if (!inRange) {
+        const requeueCommand = role === 'current' ? 'rpush' : 'lpush';
+        await redis[requeueCommand](queueKey, itemStr);
+        continue;
+      }
+
+      // Set processing lock and return item
+      await redis.setex(processingKey(height), PROCESSING_TIMEOUT_SEC, Date.now().toString());
+      
+      // Remove from queued Set since item is being processed
+      const queuedSetKey = `block_results_queued:${rpcName}`;
+      await redis.srem(queuedSetKey, height.toString());
+      
+      return item;
+    }
+
+    return null;
+  } catch (error) {
+    console.error(`[BlockResultsQueue] Error lease-scanning block for ${rpcName}:`, error.message);
     return null;
   }
 }
@@ -137,6 +276,10 @@ async function markProcessed(rpcName, height, status = 'processed', errorMessage
   try {
     const processingKey = `block_results_processing:${rpcName}:${height}`;
     await redis.del(processingKey);
+    
+    // Remove from queued Set when marking as processed
+    const queuedSetKey = `block_results_queued:${rpcName}`;
+    await redis.srem(queuedSetKey, height.toString());
     
     // Mark in both Redis and DB
     await Promise.all([
@@ -277,10 +420,18 @@ async function markFailed(rpcName, height, item) {
       await redis.zadd(delayKey, score, JSON.stringify(item));
       await redis.expire(delayKey, 7 * 24 * 60 * 60);
       
+      // Keep in queued Set since it's being requeued to delayed queue
+      // (will be added back to main queue later via getReadyDelayedItems)
+      
       return true;
     } else {
       // Max retries exceeded, log for manual review
       console.error(`[BlockResultsQueue] Block ${height} exceeded max retries (${MAX_RETRIES}), skipping`);
+      
+      // Remove from queued Set when max retries exceeded
+      const queuedSetKey = `block_results_queued:${rpcName}`;
+      await redis.srem(queuedSetKey, height.toString());
+      
       return false;
     }
   } catch (error) {
@@ -326,9 +477,25 @@ async function getReadyDelayedItems(rpcName) {
     if (readyItems.length > 0) {
       // Remove them from delay set and add to main queue
       const queueKey = `block_results_queue:${rpcName}`;
+      const queuedSetKey = `block_results_queued:${rpcName}`;
       for (const itemStr of readyItems) {
         await redis.lpush(queueKey, itemStr);
         await redis.zrem(delayKey, itemStr);
+        
+        // Add to queued Set when moving from delayed to main queue
+        try {
+          const item = JSON.parse(itemStr);
+          if (item && Number.isFinite(item.height)) {
+            await redis.sadd(queuedSetKey, item.height.toString());
+          }
+        } catch (parseError) {
+          // Skip if item can't be parsed
+        }
+      }
+      
+      // Refresh expiration on queued Set
+      if (readyItems.length > 0) {
+        await redis.expire(queuedSetKey, 7 * 24 * 60 * 60);
       }
     }
     
@@ -428,6 +595,11 @@ async function recoverStaleProcessingItems(rpcName) {
               });
               await redis.lpush(queueKey, item);
               await redis.del(key); // Remove stale lock
+              
+              // Add to queued Set when requeuing recovered items
+              const queuedSetKey = `block_results_queued:${rpcName}`;
+              await redis.sadd(queuedSetKey, height.toString());
+              
               recoveredCount++;
             }
           }
@@ -635,8 +807,10 @@ async function clearQueue(rpcName) {
   try {
     const queueKey = `block_results_queue:${rpcName}`;
     const delayKey = `block_results_delay:${rpcName}`;
+    const queuedSetKey = `block_results_queued:${rpcName}`;
     await redis.del(queueKey);
     await redis.del(delayKey);
+    await redis.del(queuedSetKey);
   } catch (error) {
     console.error(`[BlockResultsQueue] Error clearing queue:`, error.message);
   }
@@ -645,6 +819,7 @@ async function clearQueue(rpcName) {
 module.exports = {
   enqueueBlockResults,
   dequeueBlockResults,
+  leaseScanDequeueBlockResults,
   markProcessed,
   markFailed,
   getReadyDelayedItems,

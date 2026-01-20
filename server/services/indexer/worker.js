@@ -272,7 +272,8 @@ async function processBlock(blockData) {
       const height = typeof blockHeightForResults === 'string' ? parseInt(blockHeightForResults, 10) : blockHeightForResults;
       if (!isNaN(height)) {
         // Enqueue for async processing - don't block on this
-        enqueueBlockResults(rpcName, height)
+        const enqueueOptions = processType === 'historical' ? { pushSide: 'right' } : { pushSide: 'left' };
+        enqueueBlockResults(rpcName, height, enqueueOptions)
           .then(success => {
             if (success) {
               // Only log every 100th block to reduce noise

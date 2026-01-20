@@ -27,6 +27,7 @@
     "node-worker-threads-pool": "^1.5.1",
     "pg": "^8.16.2",
     "protobufjs": "^7.5.3",
+    "stream-json": "^1.8.6",
     "winston": "^3.11.0",
     "ws": "^8.18.0",
     "dockerode": "^4.0.2"

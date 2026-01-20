@@ -57,10 +57,14 @@ async function handleClaimSettled(event) {
     
     // Log for debugging
     if (session_id) {
-      console.log(`[TokenomicsHandler] Processing EventClaimSettled: session_id=${session_id.substring(0, 20)}... (from event), supplier=${supplier_operator_address?.substring(0, 20)}..., estimated_cu=${num_estimated_compute_units}`);
+      console.log(
+        `[TokenomicsHandler] Processing EventClaimSettled: session_id=${session_id.substring(0, 20)}... (from event), supplier=${supplier_operator_address?.substring(0, 20)}..., estimated_cu=${num_estimated_compute_units}, block_height=${metadata.block_height}, chain=${metadata.chain || 'unknown'}`
+      );
     } else {
       console.warn(`[TokenomicsHandler] EventClaimSettled missing session_id, constructed: ${sessionId}`);
-      console.warn(`[TokenomicsHandler] Event data: supplier=${supplier_operator_address}, app=${application_address}, service=${service_id}, session_end=${session_end_block_height}`);
+      console.warn(
+        `[TokenomicsHandler] Event data: supplier=${supplier_operator_address}, app=${application_address}, service=${service_id}, session_end=${session_end_block_height}, block_height=${metadata.block_height}, chain=${metadata.chain || 'unknown'}`
+      );
     }
     
     // Update claim status
@@ -172,6 +176,9 @@ async function handleClaimSettled(event) {
         ]);
       }
     }
+    console.log(
+      `[TokenomicsHandler] EventClaimSettled: settlement_id=${settlementId}, block_height=${metadata.block_height}, chain=${metadata.chain || 'unknown'}, session_end=${session_end_block_height}`
+    );
     
     return { success: true, event_type: 'EventClaimSettled', settlement_id: settlementId };
   } catch (error) {

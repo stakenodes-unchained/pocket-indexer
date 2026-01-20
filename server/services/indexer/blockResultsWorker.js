@@ -7,7 +7,7 @@ const { parentPort, workerData } = require('worker_threads');
 const { fetchBlockResultsByHeight, fetchBlockByHeight, fetchLatestBlock } = require('./rpc');
 const { processBlockEvents } = require('./eventProcessor');
 const {
-  dequeueBlockResults,
+  leaseScanDequeueBlockResults,
   markProcessed,
   markFailed,
   getReadyDelayedItems,
@@ -18,8 +18,9 @@ const {
   getQueueHealth,
   recoverStaleProcessingItems
 } = require('./blockResultsQueue');
+const { pgPool, connectClients } = require('./db');
 
-const { rpcName, blockResultsRpcUrl, rpcUrl, id } = workerData;
+const { rpcName, blockResultsRpcUrl, rpcUrl, id, blockResultsRole } = workerData;
 
 // Configuration
 const POLL_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_POLL_INTERVAL_MS || '500', 10); // 1 second default
@@ -31,6 +32,8 @@ const RATE_LIMIT_DELAY_MS = parseInt(process.env.BLOCK_RESULTS_RATE_LIMIT_MS || 
 const STATS_REPORT_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_STATS_INTERVAL_MS || '30000', 10); // 30 seconds default
 const ASYNC_EVENTS = process.env.BLOCK_RESULTS_ASYNC_EVENTS !== 'false'; // Process events asynchronously (default: true)
 const LAG_BLOCKS = parseInt(process.env.BLOCK_RESULTS_LAG_BLOCKS || '5', 10); // Number of blocks to lag behind current height
+const CURRENT_WINDOW_BLOCKS = parseInt(process.env.BLOCK_RESULTS_CURRENT_WINDOW_BLOCKS || '50', 10);
+const LEASE_SCAN_COUNT = parseInt(process.env.BLOCK_RESULTS_LEASE_SCAN_COUNT || '8', 10);
 const HEARTBEAT_LOG_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_HEARTBEAT_INTERVAL_MS || '60000', 10); // 60 seconds default
 
 // Stats tracking
@@ -58,6 +61,8 @@ function reportError(message) {
   console.error(`[${timestamp}] [BlockResultsWorker ${id}] ERROR: ${message}`);
 }
 
+const WORKER_ROLE = blockResultsRole === 'current' ? 'current' : 'historical';
+
 async function reportStats() {
   const avgProcessingTime = stats.processingTimes.length > 0
     ? stats.processingTimes.reduce((sum, t) => sum + t, 0) / stats.processingTimes.length
@@ -80,6 +85,7 @@ async function reportStats() {
     type: 'stats',
     data: {
       rpcName,
+      role: WORKER_ROLE,
       processedCount: stats.processedCount,
       failedCount: stats.failedCount,
       skippedCount: stats.skippedCount,
@@ -96,6 +102,31 @@ async function reportStats() {
 }
 
 /**
+ * Check if block results data already exists in database for a block
+ * @param {number} height - Block height
+ * @returns {Promise<boolean>} True if data exists (status = 'processed'), false otherwise
+ */
+async function hasBlockResultsData(height) {
+  try {
+    await connectClients();
+    
+    // Check if block has been processed successfully in block_results_processed table
+    const result = await pgPool.query(
+      `SELECT 1 FROM block_results_processed 
+       WHERE chain = $1 AND height = $2 AND status = 'processed' 
+       LIMIT 1`,
+      [rpcName, height]
+    );
+    
+    return result.rows.length > 0;
+  } catch (error) {
+    log(`Error checking if block ${height} has existing data: ${error.message}`);
+    // On error, assume no data exists
+    return false;
+  }
+}
+
+/**
  * Process a single block_results item
  */
 async function processBlockResultsItem(item) {
@@ -107,6 +138,12 @@ async function processBlockResultsItem(item) {
   
   try {
     log(`Dequeued block ${height} for processing`);
+    
+    // Check if data already exists in database for this block
+    const hasData = await hasBlockResultsData(height);
+    if (hasData) {
+      log(`Block ${height} already has data in block_results_processed table, will process and update status`);
+    }
     
     // Check lag before processing (if RPC URL is available)
     if (rpcUrl) {
@@ -148,8 +185,40 @@ async function processBlockResultsItem(item) {
     const fetchTime = Date.now() - fetchStartTime;
     
     // Calculate response size for monitoring large responses
-    const responseSize = JSON.stringify(blockResultsData).length;
-    const responseSizeMB = (responseSize / 1024 / 1024).toFixed(2);
+    // Use a safe method that doesn't stringify the entire object (which can exceed string length limits)
+    let responseSizeMB = '0.00';
+    try {
+      // Try to calculate size, but catch errors for very large objects
+      const responseSize = JSON.stringify(blockResultsData).length;
+      responseSizeMB = (responseSize / 1024 / 1024).toFixed(2);
+    } catch (error) {
+      // For very large objects, estimate size based on structure
+      // This is a rough estimate but avoids the string length limit error
+      // Catch all string length related errors (RangeError with "Invalid string length" message)
+      const isStringLengthError = error instanceof RangeError || 
+        (error.message && (
+          error.message.includes('Invalid string length') ||
+          error.message.includes('Cannot create a string longer than') ||
+          error.message.includes('0x1fffffe8') ||
+          error.message.includes('string length')
+        ));
+      
+      if (isStringLengthError) {
+        const result = blockResultsData?.result;
+        const txsCount = result?.txs_results?.length || 0;
+        const finalizeBlockEventsCount = result?.finalize_block_events?.length || 0;
+        
+        // Estimate: ~50KB per tx, ~1KB per event
+        const estimatedTxSize = txsCount * 50;
+        const estimatedEventSize = finalizeBlockEventsCount;
+        const estimatedSize = (estimatedTxSize + estimatedEventSize) / 1024; // Convert to MB
+        responseSizeMB = estimatedSize.toFixed(2);
+        log(`WARNING: Block ${height} too large to calculate exact size (${error.message || 'Invalid string length'}), estimated: ${responseSizeMB}MB`);
+      } else {
+        // Re-throw if it's not a string length error
+        throw error;
+      }
+    }
     
     // Count data in response
     const result = blockResultsData?.result;
@@ -248,12 +317,20 @@ async function processBlockResultsItem(item) {
         const eventResults = await processBlockEvents(blockData, blockResultsData, rpcName);
         if (eventResults.length > 0) {
           const successCount = eventResults.filter(r => r.success).length;
-          const failedCount = eventResults.length - successCount;
+          const failedResults = eventResults.filter(r => !r.success);
+          const failedCount = failedResults.length;
           const eventTime = Date.now() - eventStartTime;
           log(`Processed ${eventResults.length} events from block_results (${successCount} successful, ${failedCount} failed) for height ${height} in ${eventTime}ms`);
           
           if (failedCount > 0) {
             log(`WARNING: ${failedCount} events failed to process for height ${height}`);
+            // Truncate failed summary for very large blocks to prevent memory issues
+            const failedSummary = failedCount > 100
+              ? `${failedCount} failed events (too many to list)`
+              : failedResults
+                  .map(result => `${result?.event_type || 'unknown'}(${result?.error || 'unknown_error'})`)
+                  .join(', ');
+            log(`Failed events for height ${height}: ${failedSummary}`);
           }
         } else {
           // Only log if we expected events but got none
@@ -264,8 +341,26 @@ async function processBlockResultsItem(item) {
           }
         }
       } catch (error) {
-        log(`Error processing events for height ${height}: ${error.message}`);
-        console.error(`[BlockResultsWorker ${id}] Error processing events for height ${height}:`, error);
+        // Check for memory-related errors
+        const isMemoryError = error instanceof RangeError ||
+          (error.message && (
+            error.message.includes('Invalid string length') ||
+            error.message.includes('Cannot create a string longer than') ||
+            error.message.includes('0x1fffffe8') ||
+            error.message.includes('string length') ||
+            error.message.includes('out of memory') ||
+            error.message.includes('heap') ||
+            error.message.includes('allocation')
+          ));
+        
+        if (isMemoryError) {
+          log(`ERROR: Memory error processing events for height ${height}: ${error.message}`);
+          console.error(`[BlockResultsWorker ${id}] Memory error processing events for height ${height}:`, error.message);
+          // Don't throw - allow block to be marked as processed even if events failed
+        } else {
+          log(`Error processing events for height ${height}: ${error.message}`);
+          console.error(`[BlockResultsWorker ${id}] Error processing events for height ${height}:`, error);
+        }
       }
     };
     
@@ -298,6 +393,10 @@ async function processBlockResultsItem(item) {
     
     log(`Successfully processed block ${height} in ${processingTime}ms`);
     
+    // Send stats immediately after processing to prevent stale status during long operations
+    // This ensures the parent process knows the worker is alive even during 3-4 minute block processing
+    await reportStats();
+    
     return { success: true, height };
   } catch (error) {
     const processingTime = Date.now() - startTime;
@@ -319,6 +418,9 @@ async function processBlockResultsItem(item) {
     if (!requeued) {
       stats.failedCount++;
     }
+    
+    // Send stats immediately after failure to prevent stale status
+    await reportStats();
     
     return { success: false, height, error: error.message };
   }
@@ -376,13 +478,33 @@ async function processQueue() {
   
   while (true) {
     try {
+      let latestHeight = null;
+      let minCurrentHeight = null;
+      if (rpcUrl) {
+        try {
+          const latestBlock = await fetchLatestBlock(rpcUrl);
+          latestHeight = parseInt(latestBlock.block.header.height, 10);
+          minCurrentHeight = Number.isFinite(latestHeight)
+            ? Math.max(0, latestHeight - CURRENT_WINDOW_BLOCKS)
+            : null;
+          stats.currentChainHeight = latestHeight;
+        } catch (error) {
+          log(`Could not fetch latest height for lease-scan: ${error.message}`);
+        }
+      }
+
       // First, check for delayed items that are ready
       await processDelayedItems();
       
       // Dequeue items up to batch size
       const items = [];
       for (let i = 0; i < BATCH_SIZE; i++) {
-        const item = await dequeueBlockResults(rpcName);
+        const item = await leaseScanDequeueBlockResults(rpcName, {
+          role: WORKER_ROLE,
+          latestHeight,
+          windowBlocks: CURRENT_WINDOW_BLOCKS,
+          scanCount: LEASE_SCAN_COUNT
+        });
         if (!item) {
           break; // Queue is empty
         }
@@ -420,7 +542,7 @@ async function processQueue() {
           // Continue polling
           consecutiveEmptyPolls = 0;
           if (queueSize > 0) {
-            log(`Queue has ${queueSize} items but none dequeued (may be locked by other workers)`);
+            log(`Queue has ${queueSize} items but none dequeued (role=${WORKER_ROLE}, latest_height=${latestHeight ?? 'unknown'}, min_current_height=${minCurrentHeight ?? 'n/a'}, window=${CURRENT_WINDOW_BLOCKS}, scan_count=${LEASE_SCAN_COUNT}, delayed=${delayedItems}, processing=${processingItems})`);
           }
         }
       }
@@ -463,8 +585,8 @@ async function processQueue() {
  * Start the worker
  */
 async function start() {
-  log(`Starting block_results worker for ${rpcName}`);
-  log(`Configuration: poll_interval=${POLL_INTERVAL_MS}ms, batch_size=${BATCH_SIZE}, parallel_limit=${PARALLEL_PROCESSING_LIMIT}, async_events=${ASYNC_EVENTS}, rate_limit=${RATE_LIMIT_DELAY_MS}ms, lag_blocks=${LAG_BLOCKS}`);
+  log(`Starting block_results worker for ${rpcName} (role=${WORKER_ROLE})`);
+  log(`Configuration: poll_interval=${POLL_INTERVAL_MS}ms, batch_size=${BATCH_SIZE}, parallel_limit=${PARALLEL_PROCESSING_LIMIT}, async_events=${ASYNC_EVENTS}, rate_limit=${RATE_LIMIT_DELAY_MS}ms, lag_blocks=${LAG_BLOCKS}, current_window_blocks=${CURRENT_WINDOW_BLOCKS}, lease_scan_count=${LEASE_SCAN_COUNT}`);
   
   // Recover items with stale processing locks from previous crashes
   try {
