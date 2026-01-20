@@ -16,21 +16,37 @@ async function parseEventsInBatches(eventData, blockHeight, chain = null) {
   const totalEvents = eventData.length;
   const parsedEvents = [];
   let parseFailures = 0;
+  const startTime = Date.now();
+  const totalBatches = Math.ceil(totalEvents / EVENT_PARSE_BATCH_SIZE);
+  
+  console.log(
+    `[EventProcessor] Starting batch parsing for block ${blockHeight} (chain=${chain || 'unknown'}): ` +
+    `${totalEvents} total events, batch size: ${EVENT_PARSE_BATCH_SIZE}, ` +
+    `${totalBatches} batches to process`
+  );
   
   // Process events in batches
   for (let i = 0; i < totalEvents; i += EVENT_PARSE_BATCH_SIZE) {
     const batch = eventData.slice(i, i + EVENT_PARSE_BATCH_SIZE);
     const batchNum = Math.floor(i / EVENT_PARSE_BATCH_SIZE) + 1;
-    const totalBatches = Math.ceil(totalEvents / EVENT_PARSE_BATCH_SIZE);
+    const batchStartTime = Date.now();
+    const batchSize = batch.length;
+    const eventsProcessed = Math.min(i + EVENT_PARSE_BATCH_SIZE, totalEvents);
+    const progressPercent = ((eventsProcessed / totalEvents) * 100).toFixed(1);
     
     try {
+      console.log(
+        `[EventProcessor] Processing batch ${batchNum}/${totalBatches} for block ${blockHeight}: ` +
+        `${batchSize} events (${eventsProcessed}/${totalEvents}, ${progressPercent}% complete)`
+      );
+      
       // Parse batch in parallel
       const parsePromises = batch.map(async ({ event, metadata }) => {
         try {
           const parsed = parseTypedEvent(event, metadata);
           return parsed;
         } catch (error) {
-          console.error(`Error parsing event ${event?.type}:`, error);
+          console.error(`[EventProcessor] Error parsing event ${event?.type} in block ${blockHeight}:`, error.message);
           parseFailures += 1;
           return null;
         }
@@ -38,28 +54,64 @@ async function parseEventsInBatches(eventData, blockHeight, chain = null) {
       
       const batchResults = await Promise.all(parsePromises);
       const batchParsed = batchResults.filter(parsed => parsed !== null);
+      const batchFailed = batchSize - batchParsed.length;
       parsedEvents.push(...batchParsed);
       
-      // Log progress for large blocks
-      if (totalEvents > 100000) {
+      const batchTime = Date.now() - batchStartTime;
+      const batchRate = batchSize > 0 ? (batchSize / (batchTime / 1000)).toFixed(0) : 0;
+      const elapsedTime = Date.now() - startTime;
+      const avgRate = eventsProcessed > 0 ? (eventsProcessed / (elapsedTime / 1000)).toFixed(0) : 0;
+      const estimatedRemaining = totalEvents - eventsProcessed;
+      const estimatedTimeRemaining = avgRate > 0 ? Math.round(estimatedRemaining / avgRate) : 0;
+      
+      // Log progress for all batches (not just large blocks)
+      console.log(
+        `[EventProcessor] Completed batch ${batchNum}/${totalBatches} for block ${blockHeight}: ` +
+        `${batchParsed.length} parsed, ${batchFailed} failed, ` +
+        `batch time: ${batchTime}ms (${batchRate} events/sec), ` +
+        `total progress: ${parsedEvents.length}/${totalEvents} parsed ` +
+        `(${avgRate} events/sec avg, ~${estimatedTimeRemaining}s remaining)`
+      );
+      
+      // Log detailed progress for large blocks
+      if (totalEvents > 100000 && batchNum % 10 === 0) {
+        const memoryUsage = process.memoryUsage();
+        const heapUsedMB = (memoryUsage.heapUsed / 1024 / 1024).toFixed(2);
+        const heapTotalMB = (memoryUsage.heapTotal / 1024 / 1024).toFixed(2);
         console.log(
-          `[EventProcessor] Parsed batch ${batchNum}/${totalBatches} for block ${blockHeight} ` +
-          `(${Math.min(i + EVENT_PARSE_BATCH_SIZE, totalEvents)}/${totalEvents} events, ` +
-          `${parsedEvents.length} parsed so far)`
+          `[EventProcessor] Progress checkpoint for block ${blockHeight}: ` +
+          `${parsedEvents.length}/${totalEvents} events parsed (${((parsedEvents.length / totalEvents) * 100).toFixed(1)}%), ` +
+          `elapsed: ${(elapsedTime / 1000).toFixed(1)}s, ` +
+          `memory: ${heapUsedMB}MB/${heapTotalMB}MB heap`
         );
       }
     } catch (error) {
+      const batchTime = Date.now() - batchStartTime;
       console.error(
-        `[EventProcessor] Error parsing batch ${batchNum}/${totalBatches} for block ${blockHeight}:`,
-        error.message
+        `[EventProcessor] Error parsing batch ${batchNum}/${totalBatches} for block ${blockHeight} ` +
+        `after ${batchTime}ms: ${error.message}`
       );
+      console.error(`[EventProcessor] Stack trace:`, error.stack);
       // Continue with next batch instead of failing completely
     }
   }
   
+  const totalTime = Date.now() - startTime;
+  const successCount = parsedEvents.length;
+  const successRate = totalEvents > 0 ? ((successCount / totalEvents) * 100).toFixed(2) : 0;
+  const overallRate = totalTime > 0 ? (totalEvents / (totalTime / 1000)).toFixed(0) : 0;
+  
+  console.log(
+    `[EventProcessor] Completed batch parsing for block ${blockHeight} (chain=${chain || 'unknown'}): ` +
+    `${successCount}/${totalEvents} events parsed successfully (${successRate}% success rate), ` +
+    `${parseFailures} parse failures, ` +
+    `total time: ${totalTime}ms (${(totalTime / 1000).toFixed(2)}s), ` +
+    `average rate: ${overallRate} events/sec`
+  );
+  
   if (parseFailures > 0) {
     console.warn(
-      `[EventProcessor] Failed to parse ${parseFailures}/${totalEvents} events for block ${blockHeight} (chain=${chain || 'unknown'})`
+      `[EventProcessor] Warning: Failed to parse ${parseFailures}/${totalEvents} events for block ${blockHeight} (chain=${chain || 'unknown'})`
     );
   }
   
