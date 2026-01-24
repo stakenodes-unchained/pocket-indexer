@@ -598,16 +598,12 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
     const entities = entitiesRes.rows[0] || {};
 
     const perfSql = `
-      WITH bounds AS (
-        SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
-      ),
-      block_days AS (
+      WITH block_days AS (
         SELECT
           height,
-          chain,
-          DATE_TRUNC('day', timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day
+          chain
         FROM blocks
-        WHERE timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+        WHERE timestamp >= NOW() - make_interval(days => $2::int)
       )
       SELECT
         COALESCE(SUM(pe.num_relays), 0) AS relays,

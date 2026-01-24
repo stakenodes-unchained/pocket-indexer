@@ -18,8 +18,11 @@ Authentication: not required.
 
 ## Data Model (Conceptual)
 
-- **Window**: integer number of days ending “today”.
-- **Day buckets**:
+- **Window**: integer number of days.
+- **Window Types**:
+  - **Summary endpoint** (`/summary`): Uses rolling time window (e.g., `window=1` = last 24 hours from NOW).
+  - **Timeline endpoints** (`/performance`, `/entities`, combined): Use calendar day boundaries for bucketing daily data.
+- **Day buckets** (for timeline endpoints):
   - Entity endpoints use UTC day boundaries.
   - Performance endpoints use `America/New_York` (EST/EDT) day boundaries.
 - **Entities (first-seen)**:
@@ -39,10 +42,10 @@ Authentication: not required.
 
 **Endpoint:** `GET /api/v1/network-growth/summary`
 
-**Description:** Returns aggregate counts for the selected window (no per-day breakdown).
+**Description:** Returns aggregate counts for the selected rolling window (no per-day breakdown). For example, `window=1` returns data from the last 24 hours.
 
 **Query Parameters:**
-- `window` (optional, integer days): Number of days to include ending today. Default `7`. Max `365`.
+- `window` (optional, integer days): Number of days for rolling window from NOW (e.g., `window=1` = last 24 hours). Default `7`. Max `365`.
 - `chain` (optional): Filter by chain (e.g., `pokt-mainnet`).
 
 **Response:**
@@ -63,9 +66,9 @@ Authentication: not required.
 
 **Notes:**
 - `applications`, `suppliers`, `gateways`, `services`:
-  - Distinct entities whose first `stake`/`add-service` event falls within the window.
+  - Distinct entities whose first `stake`/`add-service` event falls within the window (rolling time window).
 - `relays`, `claimed_compute_units`, `estimated_compute_units`:
-  - Summed from `proof_events` (event_type='created') over the window using New York day boundaries.
+  - Summed from `proof_events` (event_type='created') over the window (rolling time window from NOW - N days).
 
 ### 2. Network Growth Performance (Daily Time Series, Fast)
 

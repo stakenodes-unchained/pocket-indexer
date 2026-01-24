@@ -289,6 +289,28 @@ If you need to rollback to the old behavior:
 2. Search for commit message containing "Network Growth API Migration" to find the changes
 3. Revert the changes to `server/api-server.js` and `NETWORK_GROWTH_API.md`
 
+## Additional Changes (January 24, 2026)
+
+### Rolling Time Windows for Summary Endpoint
+
+The `/api/v1/network-growth/summary` endpoint now uses **rolling time windows** instead of calendar day boundaries for performance metrics.
+
+**What Changed:**
+- **Before:** `window=1` returned data from midnight (America/New_York timezone) of the current day to now
+- **After:** `window=1` returns data from NOW - 24 hours to NOW (true rolling 24-hour window)
+
+**Impact:**
+- More accurate representation of "last N days" of activity
+- Consistent with how entity metrics were already calculated
+- `window=1` now truly means "last 24 hours" rather than "today's calendar day so far"
+
+**Example:**
+If you query at 2:00 PM on January 24:
+- **Old behavior:** Data from 12:00 AM Jan 24 to 2:00 PM Jan 24 (14 hours)
+- **New behavior:** Data from 2:00 PM Jan 23 to 2:00 PM Jan 24 (24 hours)
+
+This change makes the API more intuitive and consistent.
+
 ## Support
 
 For questions or issues related to this migration:
