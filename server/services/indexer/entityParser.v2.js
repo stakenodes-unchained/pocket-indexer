@@ -181,6 +181,7 @@ function parseSuppliers(txEnvelope, block, chain) {
       if (msgType === 'pocket.supplier.MsgStakeSupplier') {
         const sup = {
           operator_address: evSupp.operator_address || msg.operator_address || '',
+          owner_address: msg.owner_address || msg.signer || null,
           staked_amount: (evSupp.stake && evSupp.stake.amount) || msg.stake?.amount || '0',
       stake_denom: (evSupp.stake && evSupp.stake.denom) || msg.stake?.denom || null,
           services: evSupp.services?.map(s => s?.service_id).filter(Boolean) || (Array.isArray(msg.services) ? msg.services.map(s => s?.service_id).filter(Boolean) : []),

@@ -1055,6 +1055,7 @@ async function upsertSupplier(supplier) {
     stake_change: supplier.stake_change,
     status: supplier.status || 'unknown',
     service_url: supplier.service_url || null,
+    owner_address: supplier.owner_address || null,
     last_seen: supplier.last_seen || new Date().toISOString(),
     geo: supplier.geo || null
   };
@@ -1064,16 +1065,17 @@ async function upsertSupplier(supplier) {
     if (normalizedSupplier.stake_change) {
       const stakeChange = parseFloat(normalizedSupplier.stake_change) || 0;
       await pgPool.query(
-        `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, owner_address, last_seen, geo)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
          ON CONFLICT (address, chain) DO UPDATE SET
            public_key=EXCLUDED.public_key,
-           staked_amount=GREATEST(0, suppliers.staked_amount + $9),
+           staked_amount=GREATEST(0, suppliers.staked_amount + $10),
            status=CASE 
-             WHEN suppliers.staked_amount + $9 <= 0 THEN 'unstaked'
+             WHEN suppliers.staked_amount + $10 <= 0 THEN 'unstaked'
              ELSE COALESCE(EXCLUDED.status, suppliers.status)
            END,
            service_url=COALESCE(EXCLUDED.service_url, suppliers.service_url),
+           owner_address=COALESCE(EXCLUDED.owner_address, suppliers.owner_address),
            last_seen=EXCLUDED.last_seen,
            geo=COALESCE(EXCLUDED.geo, suppliers.geo)`,
         [
@@ -1083,6 +1085,7 @@ async function upsertSupplier(supplier) {
           parseFloat(normalizedSupplier.staked_amount) || 0,
           normalizedSupplier.status,
           normalizedSupplier.service_url,
+          normalizedSupplier.owner_address,
           normalizedSupplier.last_seen,
           normalizedSupplier.geo,
           stakeChange, // This is the incremental change
@@ -1091,13 +1094,14 @@ async function upsertSupplier(supplier) {
     } else {
       // Original behavior for non-staking operations
       await pgPool.query(
-        `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, last_seen, geo)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        `INSERT INTO suppliers (address, chain, public_key, staked_amount, status, service_url, owner_address, last_seen, geo)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
          ON CONFLICT (address, chain) DO UPDATE SET
            public_key=EXCLUDED.public_key,
            staked_amount=EXCLUDED.staked_amount,
            status=EXCLUDED.status,
            service_url=EXCLUDED.service_url,
+           owner_address=COALESCE(EXCLUDED.owner_address, suppliers.owner_address),
            last_seen=EXCLUDED.last_seen,
            geo=EXCLUDED.geo`,
         [
@@ -1107,6 +1111,7 @@ async function upsertSupplier(supplier) {
           parseFloat(normalizedSupplier.staked_amount) || 0,
           normalizedSupplier.status,
           normalizedSupplier.service_url,
+          normalizedSupplier.owner_address,
           normalizedSupplier.last_seen,
           normalizedSupplier.geo,
         ]
