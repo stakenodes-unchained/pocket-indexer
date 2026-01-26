@@ -169,22 +169,31 @@ async function searchSuppliersAndServices(params, client) {
   const supplierWhere = `WHERE ${supplierConditions.join(' AND ')}`;
   
   // Search suppliers by owner_address or operator_address (address field)
+  // Use subquery to handle DISTINCT with ORDER BY properly
   const supplierSql = `
-    SELECT DISTINCT
-      s.owner_address,
-      s.address AS supplier_operator_address,
-      s.chain,
-      s.status,
-      s.staked_amount
-    FROM suppliers s
-    ${supplierWhere}
+    SELECT 
+      owner_address,
+      supplier_operator_address,
+      chain,
+      status,
+      staked_amount
+    FROM (
+      SELECT DISTINCT
+        s.owner_address,
+        s.address AS supplier_operator_address,
+        s.chain,
+        s.status,
+        s.staked_amount
+      FROM suppliers s
+      ${supplierWhere}
+    ) AS distinct_suppliers
     ORDER BY 
       CASE 
-        WHEN s.owner_address = $2 OR s.address = $2 THEN 1
-        WHEN s.owner_address ILIKE $1 THEN 2
+        WHEN owner_address = $2 OR supplier_operator_address = $2 THEN 1
+        WHEN owner_address ILIKE $1 THEN 2
         ELSE 3
       END,
-      s.owner_address NULLS LAST
+      owner_address NULLS LAST
     LIMIT $${idx}::integer
   `;
   values.push(limitNum);
