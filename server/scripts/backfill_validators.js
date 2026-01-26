@@ -55,6 +55,7 @@ async function backfillValidatorsForAllChains() {
 
   // Close pool gracefully
   if (transactionService.pgPool) transactionService.pgPool.end();
+  process.exit(0);
 }
 
 backfillValidatorsForAllChains().catch(async (err) => {

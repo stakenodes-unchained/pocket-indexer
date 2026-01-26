@@ -1112,6 +1112,30 @@ async function upsertSupplier(supplier) {
         ]
       );
     }
+
+    // Insert service configs if provided
+    if (Array.isArray(supplier.service_configs) && supplier.service_configs.length > 0) {
+      for (const sc of supplier.service_configs) {
+        if (sc.service_id) {
+          await pgPool.query(
+            `INSERT INTO supplier_service_configs (supplier_address, chain, service_id, endpoints, config_options, last_seen)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (supplier_address, chain, service_id) DO UPDATE SET
+               endpoints = EXCLUDED.endpoints,
+               config_options = EXCLUDED.config_options,
+               last_seen = EXCLUDED.last_seen`,
+            [
+              normalizedSupplier.address,
+              normalizedSupplier.chain,
+              sc.service_id,
+              Array.isArray(sc.endpoints) ? sc.endpoints : [],
+              sc.config_options || {},
+              normalizedSupplier.last_seen
+            ]
+          );
+        }
+      }
+    }
   } catch (error) {
     console.error('Error in upsertSupplier:', {
       error: error.message,
@@ -1183,6 +1207,30 @@ async function upsertApplication(app) {
           app.last_seen,
         ]
       );
+    }
+
+    // Insert service configs if provided
+    if (Array.isArray(app.service_configs) && app.service_configs.length > 0) {
+      for (const sc of app.service_configs) {
+        if (sc.service_id) {
+          await pgPool.query(
+            `INSERT INTO application_service_configs (application_address, chain, service_id, endpoints, config_options, last_seen)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (application_address, chain, service_id) DO UPDATE SET
+               endpoints = EXCLUDED.endpoints,
+               config_options = EXCLUDED.config_options,
+               last_seen = EXCLUDED.last_seen`,
+            [
+              app.address,
+              app.chain,
+              sc.service_id,
+              Array.isArray(sc.endpoints) ? sc.endpoints : [],
+              sc.config_options || {},
+              app.last_seen
+            ]
+          );
+        }
+      }
     }
   } catch (error) {
     console.error('Error in upsertApplication:', {
