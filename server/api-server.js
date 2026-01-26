@@ -3046,12 +3046,12 @@ async function getClaimsSummary(params, client) {
     needsSupplierJoin = true;
     if (supplier_addresses.length === 1) {
       // Single address - check if it's owner or operator
-      conditions.push(`(s.owner_address = $${idx}::text OR c.supplier_operator_address = $${idx}::text)`);
+      conditions.push(`c.supplier_operator_address = $${idx}::text`);
       values.push(supplier_addresses[0]);
       idx++;
     } else {
       // Multiple addresses - use ANY(array) for efficiency
-      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR c.supplier_operator_address = ANY($${idx}::text[]))`);
+      conditions.push(`c.supplier_operator_address = ANY($${idx}::text[])`);
       values.push(supplier_addresses);
       idx++;
     }
