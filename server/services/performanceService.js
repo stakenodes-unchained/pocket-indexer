@@ -141,12 +141,13 @@ async function searchValidatorsAndServices(params, client) {
  * @param {Object} params - Search parameters
  * @param {string} params.q - Search query string (owner address, operator address, or service URL)
  * @param {string} [params.chain] - Optional chain filter
+ * @param {string} [params.status='staked'] - Filter by supplier status (staked, unstaked, unstake_requested, all)
  * @param {number} [params.limit=20] - Maximum results per category
  * @param {Object} client - PostgreSQL client
  * @returns {Promise<Object>} Search results with unique owner addresses and supplier operator addresses
  */
 async function searchSuppliersAndServices(params, client) {
-  const { q, chain, limit = 20 } = params;
+  const { q, chain, status = 'staked', limit = 20 } = params;
   
   if (!q || q.trim().length === 0) {
     throw new Error("Query parameter 'q' is required");
@@ -174,6 +175,13 @@ async function searchSuppliersAndServices(params, client) {
       supplierConditions.push(`s.chain = $${idx++}`);
       values.push(chain);
     }
+    
+    // Add status filter (skip if status is 'all')
+    if (status && status !== 'all' && ['staked', 'unstaked', 'unstake_requested'].includes(status)) {
+      supplierConditions.push(`s.status = $${idx++}`);
+      values.push(status);
+    }
+    
     const supplierWhere = `WHERE ${supplierConditions.join(' AND ')}`;
     
     // Find suppliers matching the address query
@@ -215,6 +223,14 @@ async function searchSuppliersAndServices(params, client) {
     }
     const serviceWhere = serviceConditions.length ? `WHERE ${serviceConditions.join(' AND ')}` : '';
     
+    // Add status filter parameter if needed (skip if status is 'all')
+    let statusParamIdx = null;
+    if (status && status !== 'all' && ['staked', 'unstaked', 'unstake_requested'].includes(status)) {
+      statusParamIdx = idx;
+      values.push(status);
+      idx++;
+    }
+    
     // Find all suppliers that have service URLs matching the search query
     // Return unique owner addresses and unique supplier operator addresses
     const searchSql = `
@@ -234,7 +250,9 @@ async function searchSuppliersAndServices(params, client) {
           me.chain,
           s.owner_address
         FROM matching_endpoints me
-        LEFT JOIN suppliers s ON s.address = me.supplier_address AND s.chain = me.chain
+        LEFT JOIN suppliers s ON s.address = me.supplier_address 
+          AND s.chain = me.chain
+          ${statusParamIdx ? `AND s.status = $${statusParamIdx}` : ''}
       )
       SELECT 
         array_agg(DISTINCT si.owner_address) FILTER (WHERE si.owner_address IS NOT NULL) AS owner_addresses,

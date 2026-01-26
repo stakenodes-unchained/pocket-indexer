@@ -34,6 +34,7 @@ Search for suppliers based on a query string. The search supports two modes:
 |-----------|------|----------|---------|-------------|
 | `q` | string | Yes | - | Search query string (owner address or service URL) |
 | `chain` | string | No | - | Filter by blockchain chain identifier (e.g., "pocket-mainnet") |
+| `status` | string | No | "staked" | Filter by supplier status: "staked", "unstaked", "unstake_requested", or "all" (returns all statuses) |
 | `limit` | integer | No | 20 | Maximum number of results per category (suppliers/services), capped at 100 |
 
 #### Response Schema
@@ -51,15 +52,17 @@ interface SupplierServiceSearchResponse {
 
 #### Search Logic
 
-1. **Address Search** (when query starts with `pokt1` or `poktvaloper1`):
+1. **Address Search** (when query starts with `pokt`):
    - Searches suppliers table for owner_address or operator_address (address field)
    - Uses case-insensitive partial matching (ILIKE) and exact matching
+   - Filters by supplier status (default: 'staked', use 'all' to return all statuses)
    - Returns unique owner addresses and unique supplier operator addresses that match
    - Supports both exact and partial address matches
 
 2. **Service URL Search** (when query is not an address):
    - Searches in service JSON-RPC URLs stored in `supplier_service_configs.endpoints` array
    - Uses case-insensitive partial matching (ILIKE) - matches URLs containing the search query
+   - Filters by supplier status (default: 'staked', use 'all' to return all statuses)
    - Finds all suppliers that have at least one service endpoint matching the search
    - Returns unique owner addresses and unique supplier operator addresses for all matching suppliers
 
@@ -79,7 +82,17 @@ interface SupplierServiceSearchResponse {
 #### Example Request
 
 ```bash
+# Search with default status (staked)
 GET /api/v1/suppliers/search?q=pokt1abc123&chain=pocket-mainnet&limit=10
+
+# Search with specific status
+GET /api/v1/suppliers/search?q=stakenodes.org&chain=pocket-mainnet&status=staked
+
+# Search unstaked suppliers
+GET /api/v1/suppliers/search?q=pokt1abc123&status=unstaked
+
+# Search all suppliers regardless of status
+GET /api/v1/suppliers/search?q=stakenodes.org&status=all
 ```
 
 #### Example Response

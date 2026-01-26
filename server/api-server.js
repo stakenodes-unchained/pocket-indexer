@@ -1133,20 +1133,24 @@ app.get('/api/v1/applications/:address', async (req, res) => {
 
 // Supplier and Service Search endpoint
 // GET /api/v1/suppliers/search
-// Query: q (required), chain (optional), limit (optional, default 20)
+// Query: q (required), chain (optional), status (optional, default 'staked'), limit (optional, default 20)
 // Searches suppliers by owner_address and services by service_url (from supplier_service_configs.endpoints)
 app.get('/api/v1/suppliers/search', cacheMiddleware(300), async (req, res) => {
   try {
-    const { q, chain, limit = 20 } = req.query;
+    const { q, chain, status = 'staked', limit = 20 } = req.query;
     
     if (!q || q.trim().length === 0) {
       return res.status(400).json({ error: "Query parameter 'q' is required" });
     }
     
+    // Validate status parameter
+    const validStatuses = ['staked', 'unstaked', 'unstake_requested', 'all'];
+    const supplierStatus = validStatuses.includes(status) ? status : 'staked';
+    
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
-    const result = await performanceService.searchSuppliersAndServices({ q, chain, limit }, client);
+    const result = await performanceService.searchSuppliersAndServices({ q, chain, status: supplierStatus, limit }, client);
     
     res.json(result);
   } catch (error) {
