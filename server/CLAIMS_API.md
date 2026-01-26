@@ -82,57 +82,83 @@ curl -X POST "http://localhost:3006/api/v1/claims" \
 
 ---
 
-### 2. Get Reward Analytics (Hourly Aggregated)
+### 2. Get Reward Analytics (Service Aggregated)
 **GET** `/api/v1/claims/rewards`  
 **POST** `/api/v1/claims/rewards`
 
-Retrieve hourly aggregated reward and performance metrics for claims.
+Retrieve reward and performance metrics aggregated by service across a time period. Returns one record per service (per chain) with totals aggregated across all hours in the specified time range. Results are sorted by total rewards in descending order.
+
+**Important:** 
+- Results are aggregated by `service_id` and `chain` (not by hour or supplier)
+- Supplier filters are applied to filter the underlying data, but aggregation remains by service
+- When `days` parameter is used, it returns rewards collected in the last X days
+- When `start_date`/`end_date` are used, it returns rewards for that specific date range
 
 **GET Query Parameters:**
 - `chain` (string, optional): Filter by chain identifier
-- `supplier_address` (string, optional): Filter by supplier operator address
+- `owner_address` (string, optional): Filter by supplier owner address
+- `supplier_address` (string, optional): Filter by supplier operator address (used for filtering, but aggregation is still by service)
+- `supplier_addresses` (string, optional): Comma-separated supplier operator addresses (for GET requests)
 - `application_address` (string, optional): Filter by application address
-- `service_id` (string, optional): Filter by service ID
-- `start_date` (datetime, optional): Filter from this date
-- `end_date` (datetime, optional): Filter to this date
+- `service_id` (string, optional): Filter by specific service ID
+- `days` (integer, optional): Get rewards for the last X days (e.g., `days=7` for last 7 days)
+- `start_date` (datetime, optional): Filter from this date (used if `days` is not provided)
+- `end_date` (datetime, optional): Filter to this date (used if `days` is not provided)
 - `page` (integer, default: 1): Page number
 - `limit` (integer, default: 100): Results per page
 
 **POST Request Body:**
 - `chain` (string, optional): Filter by chain identifier
+- `owner_address` (string, optional): Filter by supplier owner address
 - `supplier_address` (string, optional): Filter by a single supplier operator address
 - `supplier_addresses` (array of strings, optional): Filter by multiple supplier operator addresses
 - `application_address` (string, optional): Filter by application address
-- `service_id` (string, optional): Filter by service ID
-- `start_date` (datetime, optional): Filter from this date
-- `end_date` (datetime, optional): Filter to this date
+- `service_id` (string, optional): Filter by specific service ID
+- `days` (integer, optional): Get rewards for the last X days (e.g., `days=30` for last 30 days)
+- `start_date` (datetime, optional): Filter from this date (used if `days` is not provided)
+- `end_date` (datetime, optional): Filter to this date (used if `days` is not provided)
 - `page` (integer, default: 1): Page number
 - `limit` (integer, default: 100): Results per page
 
-**Note:** When using POST, you can provide either `supplier_address` (single) or `supplier_addresses` (array). If both are provided, `supplier_addresses` takes precedence.
+**Note:** 
+- When using POST, you can provide either `supplier_address` (single) or `supplier_addresses` (array). If both are provided, `supplier_addresses` takes precedence.
+- If `days` is provided, `start_date` and `end_date` are ignored.
+- Supplier filters (owner_address, supplier_address) are applied to the data but results are still aggregated by service (not by supplier).
+- The `owner_address` parameter filters claims from suppliers owned by that address.
 
 **Response Example:**
 ```json
 {
   "data": [
     {
-      "supplier_operator_address": "pokt1q9nzr2fa33yy0vux5gpv6qxk79umfcvwxrv2qj",
-      "application_address": "pokt185tgfw9lxyuznh9rz89556l4p8dshdkjd5283d",
-      "service_id": "eth",
-      "hour_bucket": "2025-09-13T10:00:00Z",
-      "claim_count": 4,
-      "total_rewards_upokt": 223161,
-      "total_relays": 1484,
-      "total_claimed_compute_units": 7420000,
-      "total_estimated_compute_units": 7420000,
-      "avg_efficiency_percent": 100.00,
-      "avg_reward_per_relay": 150.38,
-      "max_reward_per_claim": 89175,
-      "min_reward_per_claim": 24060
+      "service_id": "fuse",
+      "chain": "pocket-mainnet",
+      "total_claims": 15000,
+      "total_rewards_upokt": 5000000,
+      "total_relays": 100000,
+      "total_claimed_compute_units": 500000000,
+      "total_estimated_compute_units": 550000000,
+      "avg_efficiency_percent": 90.91,
+      "avg_reward_per_relay": 50.00,
+      "max_reward_per_claim": 1000,
+      "min_reward_per_claim": 10
+    },
+    {
+      "service_id": "iotex",
+      "chain": "pocket-mainnet",
+      "total_claims": 12000,
+      "total_rewards_upokt": 4500000,
+      "total_relays": 90000,
+      "total_claimed_compute_units": 450000000,
+      "total_estimated_compute_units": 480000000,
+      "avg_efficiency_percent": 93.75,
+      "avg_reward_per_relay": 50.00,
+      "max_reward_per_claim": 950,
+      "min_reward_per_claim": 15
     }
   ],
   "meta": {
-    "total": 50,
+    "total": 25,
     "page": 1,
     "limit": 100,
     "totalPages": 1
@@ -142,8 +168,17 @@ Retrieve hourly aggregated reward and performance metrics for claims.
 
 **Curl Examples:**
 ```bash
+# GET - Get rewards for last 7 days, aggregated by service
+curl "http://localhost:3006/api/v1/claims/rewards?days=7"
+
 # GET - Get rewards for a specific service
 curl "http://localhost:3006/api/v1/claims/rewards?service_id=eth&start_date=2025-09-13T00:00:00Z"
+
+# GET - Get rewards filtered by owner address
+curl "http://localhost:3006/api/v1/claims/rewards?owner_address=pokt1abc123&days=30"
+
+# GET - Get rewards filtered by supplier operator address
+curl "http://localhost:3006/api/v1/claims/rewards?supplier_address=pokt1q9nzr2fa33yy0vux5gpv6qxk79umfcvwxrv2qj&days=7"
 
 # POST - Get rewards for multiple supplier addresses
 curl -X POST "http://localhost:3006/api/v1/claims/rewards" \
@@ -155,6 +190,14 @@ curl -X POST "http://localhost:3006/api/v1/claims/rewards" \
     ],
     "service_id": "eth",
     "start_date": "2025-09-13T00:00:00Z"
+  }'
+
+# POST - Get rewards filtered by owner address
+curl -X POST "http://localhost:3006/api/v1/claims/rewards" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "owner_address": "pokt1abc123",
+    "days": 30
   }'
 ```
 
@@ -338,6 +381,19 @@ curl -X POST "http://localhost:3006/api/v1/claims/summary" \
 - `reward_per_relay`: Average reward per relay (upokt per relay)
 - `claim_proof_status_int`: Status of the claim proof (0 = success, other values indicate different states)
 
+### Rewards Endpoint Fields (Service Aggregated)
+- `service_id`: The blockchain service ID
+- `chain`: The chain identifier
+- `total_claims`: Total number of claims aggregated across the time period
+- `total_rewards_upokt`: Total rewards in upokt aggregated across the time period
+- `total_relays`: Total number of relays aggregated across the time period
+- `total_claimed_compute_units`: Total claimed compute units aggregated across the time period
+- `total_estimated_compute_units`: Total estimated compute units aggregated across the time period
+- `avg_efficiency_percent`: Weighted average efficiency percentage (calculated from totals, not average of averages)
+- `avg_reward_per_relay`: Average reward per relay (calculated as total_rewards_upokt / total_relays)
+- `max_reward_per_claim`: Maximum reward per claim in the time period
+- `min_reward_per_claim`: Minimum reward per claim in the time period
+
 ### Relationship Tracking
 These endpoints enable tracking of:
 1. **Rewards**: Track how much each supplier earns from claims
@@ -350,11 +406,14 @@ These endpoints enable tracking of:
 
 ## Use Cases
 
-1. **Reward Dashboards**: Use `/claims/rewards` for hourly reward trends
-2. **Supplier Analytics**: Use `/suppliers/:address/claims/performance` for supplier-specific metrics
-3. **Application Monitoring**: Use `/applications/:address/claims/usage` to track application activity
-4. **Performance Analysis**: Use `compute_unit_efficiency` to monitor system efficiency
-5. **Financial Tracking**: Use `total_rewards_upokt` and `reward_per_relay` for financial metrics
+1. **Service Performance Rankings**: Use `/claims/rewards` with `days` parameter to get top services by total rewards (e.g., `days=30` for last 30 days)
+2. **Service Analytics**: Use `/claims/rewards` to compare reward performance across different services, aggregated over time periods
+3. **Owner-Filtered Service Analysis**: Use `/claims/rewards` with `owner_address` to see which services generated the most rewards for suppliers owned by a specific owner
+4. **Supplier-Filtered Service Analysis**: Use `/claims/rewards` with `supplier_address` or `supplier_addresses` to see which services generated the most rewards for specific suppliers, while still getting service-level aggregation
+5. **Supplier Analytics**: Use `/suppliers/:address/claims/performance` for supplier-specific metrics
+6. **Application Monitoring**: Use `/applications/:address/claims/usage` to track application activity
+7. **Performance Analysis**: Use `compute_unit_efficiency` to monitor system efficiency
+8. **Financial Tracking**: Use `total_rewards_upokt` and `avg_reward_per_relay` for financial metrics
 
 ---
 

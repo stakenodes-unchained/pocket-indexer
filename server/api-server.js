@@ -1158,6 +1158,137 @@ app.get('/api/v1/suppliers/search', cacheMiddleware(300), async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// Supplier Performance endpoints
+
+// GET /api/v1/suppliers/performance
+// Query: owner_address, supplier_address (single or comma-separated), chain, service_id, start_date, end_date, group_by(day|hour|total), page, limit
+app.get('/api/v1/suppliers/performance', cacheMiddleware(300), async (req, res) => {
+  try {
+    const { owner_address, supplier_address, chain, service_id, start_date, end_date, group_by = 'day', page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    const result = await performanceService.getSupplierPerformance({
+      owner_address,
+      supplier_address,
+      chain,
+      service_id,
+      start_date,
+      end_date,
+      group_by,
+      page,
+      limit
+    }, client);
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching supplier performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/v1/suppliers/performance
+// Body: { owner_address, supplier_address (string or array), chain, service_id, start_date, end_date, group_by, page, limit }
+// Recommended for multiple supplier addresses to avoid URL length limits
+app.post('/api/v1/suppliers/performance', cacheMiddleware(300), async (req, res) => {
+  try {
+    const { owner_address, supplier_address, chain, service_id, start_date, end_date, group_by = 'day', page = 1, limit = 100 } = req.body;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    const result = await performanceService.getSupplierPerformance({
+      owner_address,
+      supplier_address,
+      chain,
+      service_id,
+      start_date,
+      end_date,
+      group_by,
+      page,
+      limit
+    }, client);
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching supplier performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/v1/suppliers/:operator_address/performance
+app.get('/api/v1/suppliers/:operator_address/performance', cacheMiddleware(300), async (req, res) => {
+  try {
+    const { operator_address } = req.params;
+    const { chain, service_id, start_date, end_date, group_by = 'day', page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    // Get performance data
+    const result = await performanceService.getSupplierPerformance({
+      supplier_address: operator_address,
+      chain,
+      service_id,
+      start_date,
+      end_date,
+      group_by,
+      page,
+      limit
+    }, client);
+
+    // Get supplier metadata
+    let supplier = null;
+    try {
+      const supplierRes = await client.query(
+        `SELECT address, chain, owner_address, staked_amount, status, last_seen 
+         FROM suppliers 
+         WHERE address = $1 AND ($2::text IS NULL OR chain = $2::text)
+         ORDER BY chain
+         LIMIT 1`,
+        [operator_address, chain || null]
+      );
+      if (supplierRes.rows.length > 0) {
+        supplier = supplierRes.rows[0];
+      }
+    } catch (err) {
+      console.warn('Error fetching supplier metadata:', err.message);
+    }
+
+    res.json({
+      data: result.data,
+      supplier,
+      meta: result.meta
+    });
+  } catch (error) {
+    console.error('Error fetching supplier performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/v1/suppliers/owners
+// Query: chain, service_id, start_date, end_date, page, limit
+app.get('/api/v1/suppliers/owners', cacheMiddleware(300), async (req, res) => {
+  try {
+    const { chain, service_id, start_date, end_date, page = 1, limit = 100 } = req.query;
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    const result = await performanceService.getSupplierOwnerPerformance({
+      chain,
+      service_id,
+      start_date,
+      end_date,
+      page,
+      limit
+    }, client);
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching supplier owner performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 /**
  * GET /api/v1/suppliers
  * 
@@ -1971,6 +2102,171 @@ async function getRewardAnalytics(params, client) {
   return result;
 }
 
+// Get claim reward analytics aggregated by service (across time period)
+// Similar to getRewardAnalytics but uses claims table and supports owner_address filtering
+async function getClaimRewardAnalytics(params, client) {
+  const { owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, days, page = 1, limit = 100 } = params;
+  
+  const conditions = [];
+  const values = [];
+  let idx = 1;
+  
+  // Handle time range: either use days parameter or start_date/end_date
+  if (days) {
+    const daysNum = parseInt(days, 10);
+    if (daysNum > 0) {
+      // Use parameterized query for safety
+      conditions.push(`hour_bucket >= NOW() - INTERVAL '1 day' * $${idx++}::integer`);
+      values.push(daysNum);
+    }
+  } else {
+    if (start_date) {
+      conditions.push(`hour_bucket >= $${idx++}::timestamp`);
+      values.push(start_date);
+    }
+    if (end_date) {
+      conditions.push(`hour_bucket <= $${idx++}::timestamp`);
+      values.push(end_date);
+    }
+  }
+  
+  if (chain) {
+    conditions.push(`cr.chain = $${idx++}`);
+    values.push(chain);
+  }
+  
+  // Handle supplier_address filtering - can be owner_address or operator_address
+  // Join with suppliers table to support owner_address filtering
+  let needsSupplierJoin = false;
+  if (owner_address) {
+    needsSupplierJoin = true;
+    conditions.push(`s.owner_address = $${idx++}`);
+    values.push(owner_address);
+  }
+  
+  // Handle single supplier_address or array of supplier_addresses
+  // These are used for filtering but we still aggregate by service
+  if (supplier_addresses && Array.isArray(supplier_addresses) && supplier_addresses.length > 0) {
+    needsSupplierJoin = true;
+    if (supplier_addresses.length === 1) {
+      // Single address - check if it's owner or operator
+      conditions.push(`(s.owner_address = $${idx}::text OR cr.supplier_operator_address = $${idx}::text)`);
+      values.push(supplier_addresses[0]);
+      idx++;
+    } else {
+      // Multiple addresses - use ANY(array) which is more efficient for large arrays
+      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cr.supplier_operator_address = ANY($${idx}::text[]))`);
+      values.push(supplier_addresses);
+      idx++;
+    }
+  } else if (supplier_address) {
+    needsSupplierJoin = true;
+    // Check if it's owner or operator address
+    conditions.push(`(s.owner_address = $${idx}::text OR cr.supplier_operator_address = $${idx}::text)`);
+    values.push(supplier_address);
+    idx++;
+  }
+  
+  if (application_address) {
+    conditions.push(`cr.application_address = $${idx++}`);
+    values.push(application_address);
+  }
+  if (service_id) {
+    conditions.push(`cr.service_id = $${idx++}`);
+    values.push(service_id);
+  }
+  
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const pageNum = parseInt(page, 10);
+  const limitNum = parseInt(limit, 10);
+  const offset = (pageNum - 1) * limitNum;
+  
+  // Build join clause if needed
+  const joinClause = needsSupplierJoin 
+    ? `LEFT JOIN suppliers s ON s.address = cr.supplier_operator_address AND s.chain = cr.chain`
+    : '';
+  
+  // Aggregate by service_id and chain, summing across all hours in the time period
+  // This gives us total rewards per service, not per hour or per supplier
+  const aggregationSql = `
+    SELECT 
+      cr.service_id,
+      cr.chain,
+      SUM(cr.claim_count) as total_claims,
+      SUM(cr.total_rewards_upokt) as total_rewards_upokt,
+      SUM(cr.total_relays) as total_relays,
+      SUM(cr.total_claimed_compute_units) as total_claimed_compute_units,
+      SUM(cr.total_estimated_compute_units) as total_estimated_compute_units,
+      -- Calculate weighted average efficiency: total_claimed / total_estimated * 100
+      CASE 
+        WHEN SUM(cr.total_estimated_compute_units) > 0 THEN
+          ROUND((SUM(cr.total_claimed_compute_units)::NUMERIC / SUM(cr.total_estimated_compute_units)::NUMERIC) * 100, 2)
+        ELSE 0
+      END as avg_efficiency_percent,
+      -- Calculate average reward per relay: total_rewards / total_relays
+      CASE 
+        WHEN SUM(cr.total_relays) > 0 THEN
+          ROUND(SUM(cr.total_rewards_upokt)::NUMERIC / SUM(cr.total_relays)::NUMERIC, 2)
+        ELSE 0
+      END as avg_reward_per_relay,
+      MAX(cr.max_reward_per_claim) as max_reward_per_claim,
+      MIN(cr.min_reward_per_claim) as min_reward_per_claim
+    FROM claim_rewards cr
+    ${joinClause}
+    ${where}
+    GROUP BY cr.service_id, cr.chain
+  `;
+  
+  // Get total count of unique services
+  const countSql = `
+    SELECT COUNT(DISTINCT (cr.service_id, cr.chain)) AS total 
+    FROM claim_rewards cr
+    ${joinClause}
+    ${where}
+  `;
+  
+  let countRes;
+  try {
+    countRes = await client.query(countSql, values);
+  } catch (error) {
+    console.error('Error in claim reward analytics count query:', error);
+    console.error('Count SQL:', countSql);
+    console.error('Count values:', values);
+    throw error;
+  }
+  
+  const total = parseInt(countRes.rows[0]?.total || 0, 10);
+  
+  // Get paginated results - aggregated by service, sorted by total rewards
+  const listSql = `
+    ${aggregationSql}
+    ORDER BY total_rewards_upokt DESC
+    LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
+  `;
+  
+  let listRes;
+  try {
+    listRes = await client.query(listSql, [...values, limitNum, offset]);
+  } catch (error) {
+    console.error('Error in claim reward analytics list query:', error);
+    console.error('List SQL:', listSql);
+    console.error('List values:', [...values, limitNum, offset]);
+    throw error;
+  }
+  
+  const result = {
+    data: listRes.rows || [],
+    meta: {
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum)
+    }
+  };
+  
+  return result;
+}
+
 // Get reward analytics aggregated by service (across time period)
 app.get('/api/v1/proof-submissions/rewards', async (req, res) => {
   try {
@@ -2570,38 +2866,54 @@ async function getClaimRewardAnalytics(params, client) {
   };
 }
 
-// Get claim reward analytics aggregated view (hourly)
-app.get('/api/v1/claims/rewards', async (req, res) => {
+// Get claim reward analytics aggregated by service (across time period)
+// Similar to proof-submissions/rewards but uses claims table and supports owner_address filtering
+app.get('/api/v1/claims/rewards', cacheMiddleware(300), async (req, res) => {
   try {
-    const { supplier_address, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.query;
+    const { owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, days, page = 1, limit = 100 } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
     const result = await getClaimRewardAnalytics({
+      owner_address,
       supplier_address,
+      supplier_addresses: supplier_addresses ? (Array.isArray(supplier_addresses) ? supplier_addresses : supplier_addresses.split(',').map(a => a.trim())) : undefined,
       application_address,
       service_id,
       chain,
       start_date,
       end_date,
+      days,
       page,
       limit
     }, client);
     
     res.json(result);
   } catch (error) {
-    console.error('Error fetching claim rewards:', error);
+    console.error('Error fetching claim reward analytics:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/v1/claims/rewards', async (req, res) => {
+// POST endpoint for claim reward analytics with support for multiple supplier addresses and owner_address
+app.post('/api/v1/claims/rewards', postCacheMiddleware(120), async (req, res) => {
   try {
-    const { supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = req.body;
+    const { owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, days, page = 1, limit = 100 } = req.body;
+    
+    // Validate input
+    if (supplier_addresses && !Array.isArray(supplier_addresses)) {
+      return res.status(400).json({ error: 'supplier_addresses must be an array' });
+    }
+    
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     
+    if (!client) {
+      return res.status(500).json({ error: 'Database connection failed' });
+    }
+    
     const result = await getClaimRewardAnalytics({
+      owner_address,
       supplier_address,
       supplier_addresses,
       application_address,
@@ -2609,14 +2921,17 @@ app.post('/api/v1/claims/rewards', async (req, res) => {
       chain,
       start_date,
       end_date,
+      days,
       page,
       limit
     }, client);
     
     res.json(result);
   } catch (error) {
-    console.error('Error fetching claim rewards:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Error fetching claim reward analytics:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message || 'Internal server error' });
+    }
   }
 });
 
