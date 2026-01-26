@@ -2742,8 +2742,10 @@ async function getClaims(params, client) {
   }
   
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  // Use INNER JOIN when filtering by supplier fields to ensure supplier exists
+  // Use LEFT JOIN only when we're not filtering by supplier fields
   const joinClause = needsSupplierJoin 
-    ? `LEFT JOIN suppliers s ON s.address = c.supplier_operator_address AND s.chain = c.chain`
+    ? `INNER JOIN suppliers s ON s.address = c.supplier_operator_address AND s.chain = c.chain`
     : '';
   
   const pageNum = parseInt(page, 10);
@@ -3089,8 +3091,10 @@ async function getClaimsSummary(params, client) {
   }
   
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  // Use INNER JOIN when filtering by supplier fields to ensure supplier exists
+  // Use LEFT JOIN only when we're not filtering by supplier fields
   const joinClause = needsSupplierJoin 
-    ? `LEFT JOIN suppliers s ON s.address = c.supplier_operator_address AND s.chain = c.chain`
+    ? `INNER JOIN suppliers s ON s.address = c.supplier_operator_address AND s.chain = c.chain`
     : '';
   
   const summarySql = `SELECT 
