@@ -15,9 +15,11 @@ Retrieve claims with optional filters.
 
 **GET Query Parameters:**
 - `chain` (string, optional): Filter by chain identifier (e.g., "pocket-mainnet", "pocket-testnet")
-- `supplier_address` (string, optional): Filter by supplier operator address (can be comma-separated)
+- `owner_address` (string, optional): Filter by supplier owner address
+- `supplier_address` (string, optional): Filter by supplier operator address or owner address (can be comma-separated)
 - `application_address` (string, optional): Filter by application address
 - `service_id` (string, optional): Filter by service ID (e.g., "iotex", "avax", "blast")
+- `status` (string, optional, default: "staked"): Filter by supplier status - "staked", "unstaked", "unstake_requested", or "all"
 - `start_date` (datetime, optional): Filter claims from this date onwards
 - `end_date` (datetime, optional): Filter claims up to this date
 - `page` (integer, default: 1): Page number for pagination
@@ -68,6 +70,12 @@ Same parameters as GET, but in JSON body format.
 # GET - Get claims for a specific supplier
 curl "http://localhost:3006/api/v1/claims?supplier_address=pokt1q9nzr2fa33yy0vux5gpv6qxk79umfcvwxrv2qj&service_id=eth&page=1&limit=50"
 
+# GET - Get claims filtered by owner address
+curl "http://localhost:3006/api/v1/claims?owner_address=pokt1abc123&status=staked&page=1&limit=50"
+
+# GET - Get claims filtered by status
+curl "http://localhost:3006/api/v1/claims?status=staked&service_id=eth&page=1&limit=50"
+
 # POST - Get claims with multiple filters
 curl -X POST "http://localhost:3006/api/v1/claims" \
   -H "Content-Type: application/json" \
@@ -75,6 +83,17 @@ curl -X POST "http://localhost:3006/api/v1/claims" \
     "supplier_address": "pokt1q9nzr2fa33yy0vux5gpv6qxk79umfcvwxrv2qj",
     "service_id": "eth",
     "start_date": "2025-09-13T00:00:00Z",
+    "page": 1,
+    "limit": 50
+  }'
+
+# POST - Get claims filtered by owner address and status
+curl -X POST "http://localhost:3006/api/v1/claims" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "owner_address": "pokt1abc123",
+    "status": "staked",
+    "service_id": "eth",
     "page": 1,
     "limit": 50
   }'
@@ -97,10 +116,11 @@ Retrieve reward and performance metrics aggregated by service across a time peri
 **GET Query Parameters:**
 - `chain` (string, optional): Filter by chain identifier
 - `owner_address` (string, optional): Filter by supplier owner address
-- `supplier_address` (string, optional): Filter by supplier operator address (used for filtering, but aggregation is still by service)
-- `supplier_addresses` (string, optional): Comma-separated supplier operator addresses (for GET requests)
+- `supplier_address` (string, optional): Filter by supplier operator address or owner address (used for filtering, but aggregation is still by service)
+- `supplier_addresses` (string, optional): Comma-separated supplier operator addresses or owner addresses (for GET requests)
 - `application_address` (string, optional): Filter by application address
 - `service_id` (string, optional): Filter by specific service ID
+- `status` (string, optional, default: "staked"): Filter by supplier status - "staked", "unstaked", "unstake_requested", or "all"
 - `days` (integer, optional): Get rewards for the last X days (e.g., `days=7` for last 7 days)
 - `start_date` (datetime, optional): Filter from this date (used if `days` is not provided)
 - `end_date` (datetime, optional): Filter to this date (used if `days` is not provided)
@@ -110,10 +130,11 @@ Retrieve reward and performance metrics aggregated by service across a time peri
 **POST Request Body:**
 - `chain` (string, optional): Filter by chain identifier
 - `owner_address` (string, optional): Filter by supplier owner address
-- `supplier_address` (string, optional): Filter by a single supplier operator address
-- `supplier_addresses` (array of strings, optional): Filter by multiple supplier operator addresses
+- `supplier_address` (string, optional): Filter by a single supplier operator address or owner address
+- `supplier_addresses` (array of strings, optional): Filter by multiple supplier operator addresses or owner addresses
 - `application_address` (string, optional): Filter by application address
 - `service_id` (string, optional): Filter by specific service ID
+- `status` (string, optional, default: "staked"): Filter by supplier status - "staked", "unstaked", "unstake_requested", or "all"
 - `days` (integer, optional): Get rewards for the last X days (e.g., `days=30` for last 30 days)
 - `start_date` (datetime, optional): Filter from this date (used if `days` is not provided)
 - `end_date` (datetime, optional): Filter to this date (used if `days` is not provided)
@@ -123,8 +144,10 @@ Retrieve reward and performance metrics aggregated by service across a time peri
 **Note:** 
 - When using POST, you can provide either `supplier_address` (single) or `supplier_addresses` (array). If both are provided, `supplier_addresses` takes precedence.
 - If `days` is provided, `start_date` and `end_date` are ignored.
-- Supplier filters (owner_address, supplier_address) are applied to the data but results are still aggregated by service (not by supplier).
+- Supplier filters (owner_address, supplier_address, status) are applied to the data but results are still aggregated by service (not by supplier).
 - The `owner_address` parameter filters claims from suppliers owned by that address.
+- The `status` parameter filters claims by supplier status. Use "all" to include claims from suppliers with any status.
+- The `supplier_address` parameter can match either operator addresses or owner addresses.
 
 **Response Example:**
 ```json
@@ -180,6 +203,12 @@ curl "http://localhost:3006/api/v1/claims/rewards?owner_address=pokt1abc123&days
 # GET - Get rewards filtered by supplier operator address
 curl "http://localhost:3006/api/v1/claims/rewards?supplier_address=pokt1q9nzr2fa33yy0vux5gpv6qxk79umfcvwxrv2qj&days=7"
 
+# GET - Get rewards filtered by supplier status
+curl "http://localhost:3006/api/v1/claims/rewards?status=staked&days=7"
+
+# GET - Get rewards filtered by owner address and status
+curl "http://localhost:3006/api/v1/claims/rewards?owner_address=pokt1abc123&status=staked&days=30"
+
 # POST - Get rewards for multiple supplier addresses
 curl -X POST "http://localhost:3006/api/v1/claims/rewards" \
   -H "Content-Type: application/json" \
@@ -197,6 +226,23 @@ curl -X POST "http://localhost:3006/api/v1/claims/rewards" \
   -H "Content-Type: application/json" \
   -d '{
     "owner_address": "pokt1abc123",
+    "days": 30
+  }'
+
+# POST - Get rewards filtered by status
+curl -X POST "http://localhost:3006/api/v1/claims/rewards" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "status": "staked",
+    "days": 30
+  }'
+
+# POST - Get rewards filtered by owner address and status
+curl -X POST "http://localhost:3006/api/v1/claims/rewards" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "owner_address": "pokt1abc123",
+    "status": "staked",
     "days": 30
   }'
 ```
@@ -309,22 +355,29 @@ Get aggregated summary statistics for claims.
 
 **GET Query Parameters:**
 - `chain` (string, optional): Filter by chain identifier
+- `owner_address` (string, optional): Filter by supplier owner address
 - `start_date` (datetime, optional): Filter from this date
 - `end_date` (datetime, optional): Filter to this date
-- `supplier_address` (string, optional): Filter by supplier (can be comma-separated)
+- `supplier_address` (string, optional): Filter by supplier operator address or owner address (can be comma-separated)
 - `application_address` (string, optional): Filter by application
 - `service_id` (string, optional): Filter by service
+- `status` (string, optional, default: "staked"): Filter by supplier status - "staked", "unstaked", "unstake_requested", or "all"
 
 **POST Request Body:**
 - `chain` (string, optional): Filter by chain identifier
+- `owner_address` (string, optional): Filter by supplier owner address
 - `start_date` (datetime, optional): Filter from this date
 - `end_date` (datetime, optional): Filter to this date
-- `supplier_address` (string or array, optional): Filter by supplier(s) - can be single string, comma-separated string, or array
-- `supplier_addresses` (array of strings, optional): Filter by multiple supplier operator addresses
+- `supplier_address` (string or array, optional): Filter by supplier(s) - can be single string, comma-separated string, or array (matches operator or owner addresses)
+- `supplier_addresses` (array of strings, optional): Filter by multiple supplier operator addresses or owner addresses
 - `application_address` (string, optional): Filter by application
 - `service_id` (string, optional): Filter by service
+- `status` (string, optional, default: "staked"): Filter by supplier status - "staked", "unstaked", "unstake_requested", or "all"
 
-**Note:** When using POST, you can provide either `supplier_address` (single, comma-separated, or array) or `supplier_addresses` (array). If both are provided, `supplier_addresses` takes precedence.
+**Note:** 
+- When using POST, you can provide either `supplier_address` (single, comma-separated, or array) or `supplier_addresses` (array). If both are provided, `supplier_addresses` takes precedence.
+- The `supplier_address` parameter can match either operator addresses or owner addresses.
+- The `status` parameter filters claims by supplier status. Use "all" to include claims from suppliers with any status.
 
 **Response Example:**
 ```json
@@ -351,6 +404,9 @@ Get aggregated summary statistics for claims.
 # GET - Get summary for a specific service
 curl "http://localhost:3006/api/v1/claims/summary?service_id=eth"
 
+# GET - Get summary filtered by owner address and status
+curl "http://localhost:3006/api/v1/claims/summary?owner_address=pokt1abc123&status=staked"
+
 # POST - Get summary for multiple supplier addresses
 curl -X POST "http://localhost:3006/api/v1/claims/summary" \
   -H "Content-Type: application/json" \
@@ -360,6 +416,14 @@ curl -X POST "http://localhost:3006/api/v1/claims/summary" \
       "pokt1xqaeh4zg6tnqzz0elzt4ka2yua2p29wa660yhj"
     ],
     "service_id": "eth"
+  }'
+
+# POST - Get summary filtered by owner address and status
+curl -X POST "http://localhost:3006/api/v1/claims/summary" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "owner_address": "pokt1abc123",
+    "status": "staked"
   }'
 ```
 
