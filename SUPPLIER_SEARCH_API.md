@@ -18,10 +18,15 @@ http://localhost:3006/api/v1
 
 **GET** `/api/v1/suppliers/search`
 
-Search for suppliers and services based on a query string. The search matches:
-- Supplier owner address (pokt1...)
-- Supplier operator address (poktvaloper1...)
-- Service JSON-RPC URL from `supplier_service_configs.endpoints` (partial or full match)
+Search for suppliers based on a query string. The search supports two modes:
+
+1. **Address Search**: If the query starts with `pokt1` or `poktvaloper1`, searches for:
+   - Supplier owner address (pokt1...)
+   - Supplier operator address (poktvaloper1...)
+
+2. **Service URL Search**: Otherwise, searches for:
+   - Service JSON-RPC URL from `supplier_service_configs.endpoints` (partial or full match)
+   - Returns all suppliers that have service URLs containing the search query
 
 #### Query Parameters
 
@@ -35,47 +40,40 @@ Search for suppliers and services based on a query string. The search matches:
 
 ```typescript
 interface SupplierServiceSearchResponse {
-  suppliers: SupplierSearchResult[];
-  services: ServiceSearchResult[];
-}
-
-interface SupplierSearchResult {
-  type: 'supplier';
-  owner_address?: string;              // pokt1... address (owner address)
-  supplier_operator_address: string;  // poktvaloper1... address (supplier operator address)
-  chain: string;                      // Chain identifier
-  status?: string;                    // Supplier status (e.g., 'staked', 'unstaked')
-  staked_amount?: string;             // Staked amount as string
-}
-
-interface ServiceSearchResult {
-  type: 'service';
-  service_id: string;                 // Service ID
-  service_url: string;                // Full JSON-RPC URL that matched
-  owner_addresses: string[];          // Array of owner addresses for suppliers using this service
-  supplier_operator_addresses: string[]; // Array of all supplier operator addresses using this service
-  supplier_count: number;             // Number of suppliers using this service
+  owner_addresses: string[];              // Unique owner addresses (pokt1...) for suppliers matching the search
+  supplier_operator_addresses: string[]; // Unique supplier operator addresses (poktvaloper1...) matching the search
 }
 ```
 
+**Response Format:**
+- `owner_addresses`: Array of unique owner addresses for suppliers that have service URLs containing the search query. Allows selecting an owner to view all operators for that owner.
+- `supplier_operator_addresses`: Array of unique supplier operator addresses that have service URLs containing the search query. Allows filtering between specific suppliers.
+
 #### Search Logic
 
-1. **Supplier Search**:
-   - Searches supplier owner address (pokt1...) - exact or partial match (ILIKE)
-   - Searches supplier operator address (poktvaloper1...) - exact or partial match
-   - Results ordered by relevance: exact address matches first, then partial matches
-   - Returns the supplier's owner address and operator address
+1. **Address Search** (when query starts with `pokt1` or `poktvaloper1`):
+   - Searches suppliers table for owner_address or operator_address (address field)
+   - Uses case-insensitive partial matching (ILIKE) and exact matching
+   - Returns unique owner addresses and unique supplier operator addresses that match
+   - Supports both exact and partial address matches
 
-2. **Service Search**:
+2. **Service URL Search** (when query is not an address):
    - Searches in service JSON-RPC URLs stored in `supplier_service_configs.endpoints` array
-   - Uses case-insensitive partial matching (ILIKE)
-   - For each matching service endpoint, finds all suppliers using that service
-   - Returns all supplier operator addresses and owner addresses that use the matched service
-   - Results ordered by supplier count (descending), then by service ID
+   - Uses case-insensitive partial matching (ILIKE) - matches URLs containing the search query
+   - Finds all suppliers that have at least one service endpoint matching the search
+   - Returns unique owner addresses and unique supplier operator addresses for all matching suppliers
 
-3. **Performance**:
+3. **Use Cases**:
+   - **Search by owner address**: Query with `pokt1...` to find all suppliers owned by that address
+   - **Search by operator address**: Query with `poktvaloper1...` to find specific suppliers
+   - **Search by service URL**: Query with domain/URL (e.g., `stakenodes.org`) to find all suppliers using that service
+   - **Select owner_address**: Use the `owner_addresses` array to select an owner and view all operators for that owner
+   - **Filter by supplier**: Use the `supplier_operator_addresses` array to filter between specific suppliers
+
+4. **Performance**:
    - Uses PostgreSQL GIN indexes for fast array searches (from migration 023)
-   - Parallel query execution for suppliers and services
+   - Indexes on owner_address and address for fast address lookups
+   - Optimized queries with CTEs for efficient processing
    - Cached with 300s TTL for improved performance
 
 #### Example Request
@@ -88,31 +86,14 @@ GET /api/v1/suppliers/search?q=pokt1abc123&chain=pocket-mainnet&limit=10
 
 ```json
 {
-  "suppliers": [
-    {
-      "type": "supplier",
-      "owner_address": "pokt1abc123def456ghi789jkl012mno345pqr678stu901vwx234yz",
-      "supplier_operator_address": "poktvaloper1abc123def456ghi789jkl012mno345pqr678stu901vwx234yz",
-      "chain": "pocket-mainnet",
-      "status": "staked",
-      "staked_amount": "15000000000"
-    }
+  "owner_addresses": [
+    "pokt1abc123def456ghi789jkl012mno345pqr678stu901vwx234yz",
+    "pokt1def456ghi789jkl012mno345pqr678stu901vwx234yzabc123"
   ],
-  "services": [
-    {
-      "type": "service",
-      "service_id": "ethereum-mainnet",
-      "service_url": "https://eth-mainnet.gateway.pokt.network/v1/lb/ethereum-mainnet",
-      "owner_addresses": [
-        "pokt1abc123def456ghi789jkl012mno345pqr678stu901vwx234yz",
-        "pokt1def456ghi789jkl012mno345pqr678stu901vwx234yzabc123"
-      ],
-      "supplier_operator_addresses": [
-        "poktvaloper1abc123def456ghi789jkl012mno345pqr678stu901vwx234yz",
-        "poktvaloper1def456ghi789jkl012mno345pqr678stu901vwx234yzabc123"
-      ],
-      "supplier_count": 2
-    }
+  "supplier_operator_addresses": [
+    "poktvaloper1abc123def456ghi789jkl012mno345pqr678stu901vwx234yz",
+    "poktvaloper1def456ghi789jkl012mno345pqr678stu901vwx234yzabc123",
+    "poktvaloper1ghi789jkl012mno345pqr678stu901vwx234yzabc123def456"
   ]
 }
 ```
@@ -142,38 +123,68 @@ GET /api/v1/suppliers/search?q=pokt1abc123&chain=pocket-mainnet&limit=10
 Find all suppliers owned by a specific address:
 
 ```bash
-GET /api/v1/suppliers/search?q=pokt1abc123def456ghi789jkl012mno345pqr678stu901vwx234yz
+GET /api/v1/suppliers/search?q=pokt1abc123def456ghi789jkl012mno345pqr678stu901vwx234yz&chain=pocket-mainnet
 ```
 
-Returns all suppliers where `owner_address` matches the query.
+Returns unique owner addresses and supplier operator addresses for suppliers where the owner_address matches.
 
-### 2. Search by Service URL
+### 2. Search by Operator Address
 
-Find all suppliers using a specific service endpoint:
+Find a specific supplier by operator address:
 
 ```bash
-GET /api/v1/suppliers/search?q=https://eth-mainnet.gateway.pokt.network
+GET /api/v1/suppliers/search?q=poktvaloper1abc123def456ghi789jkl012mno345pqr678stu901vwx234yz
 ```
 
-Returns all suppliers that have this URL in their `supplier_service_configs.endpoints` array.
+Returns the owner address and operator address for the matching supplier.
 
-### 3. Search by Partial Owner Address
+### 3. Search by Partial Address
 
-Find suppliers by partial owner address match:
+Find suppliers by partial address match:
 
 ```bash
 GET /api/v1/suppliers/search?q=pokt1abc123
 ```
 
-Returns all suppliers where `owner_address` contains the query string.
+Returns all suppliers where owner_address or operator_address contains the query.
 
-### 4. Filter by Chain
+### 4. Search by Service URL Domain
+
+Find all suppliers and owners that use services with a specific domain:
+
+```bash
+GET /api/v1/suppliers/search?q=stakenodes.org&chain=pocket-mainnet
+```
+
+Returns unique owner addresses and supplier operator addresses for all suppliers that have service URLs containing "stakenodes.org".
+
+### 5. Search by Service URL Path
+
+Find suppliers by service URL path:
+
+```bash
+GET /api/v1/suppliers/search?q=/v1/lb/ethereum-mainnet
+```
+
+Returns all suppliers that have this path in their service endpoints.
+
+### 6. Filter by Chain
 
 Limit search to a specific chain:
 
 ```bash
-GET /api/v1/suppliers/search?q=ethereum&chain=pocket-mainnet
+GET /api/v1/suppliers/search?q=gateway.pokt.network&chain=pocket-mainnet
 ```
+
+### 7. Using the Results
+
+**Select Owner Address:**
+- Use `owner_addresses` array to get all unique owners
+- Select an owner to view all operators for that owner in other endpoints
+
+**Filter by Supplier:**
+- Use `supplier_operator_addresses` array to get all unique suppliers
+- Use these addresses to filter performance data or other queries
 
 ---
 
@@ -214,27 +225,9 @@ The following indexes are used for optimal query performance (from migration 023
 
 ```typescript
 // Search API Types
-interface SupplierSearchResult {
-  type: 'supplier';
-  owner_address?: string;
-  supplier_operator_address: string;
-  chain: string;
-  status?: string;
-  staked_amount?: string;
-}
-
-interface ServiceSearchResult {
-  type: 'service';
-  service_id: string;
-  service_url: string;
-  owner_addresses: string[];
-  supplier_operator_addresses: string[];
-  supplier_count: number;
-}
-
 interface SupplierSearchResponse {
-  suppliers: SupplierSearchResult[];
-  services: ServiceSearchResult[];
+  owner_addresses: string[];              // Unique owner addresses (pokt1...)
+  supplier_operator_addresses: string[]; // Unique supplier operator addresses (poktvaloper1...)
 }
 ```
 
@@ -304,50 +297,59 @@ export const SupplierSearch: React.FC = () => {
     handleSearch(debouncedQuery);
   }, [debouncedQuery, handleSearch]);
 
+  // Handle owner address selection
+  const handleOwnerSelect = useCallback((ownerAddress: string) => {
+    // Use owner address to filter other queries
+    console.log('Selected owner:', ownerAddress);
+    // Example: Fetch all suppliers for this owner
+  }, []);
+
+  // Handle supplier selection
+  const handleSupplierSelect = useCallback((supplierAddress: string) => {
+    // Use supplier address to filter performance data
+    console.log('Selected supplier:', supplierAddress);
+    // Example: Fetch performance data for this supplier
+  }, []);
+
   return (
     <div className="supplier-search">
       <input
         type="text"
         value={searchQuery}
         onChange={(e) => setSearchQuery(e.target.value)}
-        placeholder="Search by owner address or service URL..."
+        placeholder="Search by service URL (e.g., stakenodes.org)..."
         className="search-input"
       />
 
       {loading && <div>Searching...</div>}
 
-      {searchResults.suppliers.length > 0 && (
+      {searchResults.owner_addresses.length > 0 && (
         <div className="search-results">
-          <h3>Suppliers</h3>
-          {searchResults.suppliers.map((supplier, idx) => (
-            <div key={idx} className="result-item">
-              <div className="result-owner">
-                Owner: {supplier.owner_address || 'N/A'}
-              </div>
-              <div className="result-operator">
-                Operator: {supplier.supplier_operator_address}
-              </div>
-              <div className="result-status">
-                Status: {supplier.status || 'unknown'}
-              </div>
+          <h3>Owner Addresses ({searchResults.owner_addresses.length})</h3>
+          {searchResults.owner_addresses.map((ownerAddress, idx) => (
+            <div 
+              key={idx} 
+              className="result-item"
+              onClick={() => handleOwnerSelect(ownerAddress)}
+            >
+              <div className="result-owner">{ownerAddress}</div>
+              <div className="result-hint">Click to view all operators for this owner</div>
             </div>
           ))}
         </div>
       )}
 
-      {searchResults.services.length > 0 && (
+      {searchResults.supplier_operator_addresses.length > 0 && (
         <div className="search-results">
-          <h3>Services</h3>
-          {searchResults.services.map((service, idx) => (
-            <div key={idx} className="result-item">
-              <div className="result-service">{service.service_id}</div>
-              <div className="result-url">{service.service_url}</div>
-              <div className="result-count">
-                {service.supplier_count} supplier(s)
-              </div>
-              <div className="result-owners">
-                Owner addresses: {service.owner_addresses.length}
-              </div>
+          <h3>Supplier Operators ({searchResults.supplier_operator_addresses.length})</h3>
+          {searchResults.supplier_operator_addresses.map((supplierAddress, idx) => (
+            <div 
+              key={idx} 
+              className="result-item"
+              onClick={() => handleSupplierSelect(supplierAddress)}
+            >
+              <div className="result-operator">{supplierAddress}</div>
+              <div className="result-hint">Click to filter by this supplier</div>
             </div>
           ))}
         </div>

@@ -137,13 +137,13 @@ async function searchValidatorsAndServices(params, client) {
 }
 
 /**
- * Search for suppliers by owner address and service URLs
+ * Search for suppliers by owner address, operator address, or service URLs
  * @param {Object} params - Search parameters
- * @param {string} params.q - Search query string (owner address or service URL)
+ * @param {string} params.q - Search query string (owner address, operator address, or service URL)
  * @param {string} [params.chain] - Optional chain filter
  * @param {number} [params.limit=20] - Maximum results per category
  * @param {Object} client - PostgreSQL client
- * @returns {Promise<Object>} Search results with suppliers and services
+ * @returns {Promise<Object>} Search results with unique owner addresses and supplier operator addresses
  */
 async function searchSuppliersAndServices(params, client) {
   const { q, chain, limit = 20 } = params;
@@ -154,119 +154,104 @@ async function searchSuppliersAndServices(params, client) {
   
   const searchQuery = q.trim();
   const searchPattern = `%${searchQuery}%`;
-  const limitNum = Math.min(parseInt(limit, 10) || 20, 100); // Cap at 100
-  const values = [searchPattern, searchQuery];
-  let idx = 3;
+  const exactQuery = searchQuery;
   
-  // Build supplier search query - search by owner_address
-  const supplierConditions = [
-    `(s.owner_address ILIKE $1 OR s.owner_address = $2 OR s.address ILIKE $1 OR s.address = $2)`
-  ];
-  if (chain) {
-    supplierConditions.push(`s.chain = $${idx++}`);
-    values.push(chain);
-  }
-  const supplierWhere = `WHERE ${supplierConditions.join(' AND ')}`;
+  // Determine if query looks like an address (pokt1... or poktvaloper1...)
+  const isAddressQuery = searchQuery.startsWith('pokt');
   
-  // Search suppliers by owner_address or operator_address (address field)
-  // Use subquery to handle DISTINCT with ORDER BY properly
-  const supplierSql = `
-    SELECT 
-      owner_address,
-      supplier_operator_address,
-      chain,
-      status,
-      staked_amount
-    FROM (
+  const values = [];
+  let idx = 1;
+  
+  if (isAddressQuery) {
+    // Search by owner address or operator address
+    const supplierConditions = [
+      `(s.owner_address ILIKE $${idx} OR s.owner_address = $${idx + 1} OR s.address ILIKE $${idx} OR s.address = $${idx + 1})`
+    ];
+    values.push(searchPattern, exactQuery);
+    idx += 2;
+    
+    if (chain) {
+      supplierConditions.push(`s.chain = $${idx++}`);
+      values.push(chain);
+    }
+    const supplierWhere = `WHERE ${supplierConditions.join(' AND ')}`;
+    
+    // Find suppliers matching the address query
+    const searchSql = `
       SELECT DISTINCT
         s.owner_address,
-        s.address AS supplier_operator_address,
-        s.chain,
-        s.status,
-        s.staked_amount
+        s.address AS supplier_operator_address
       FROM suppliers s
       ${supplierWhere}
-    ) AS distinct_suppliers
-    ORDER BY 
-      CASE 
-        WHEN owner_address = $2 OR supplier_operator_address = $2 THEN 1
-        WHEN owner_address ILIKE $1 THEN 2
-        ELSE 3
-      END,
-      owner_address NULLS LAST
-    LIMIT $${idx}::integer
-  `;
-  values.push(limitNum);
-  
-  // Build service search query - search in supplier_service_configs.endpoints
-  const serviceConditions = [];
-  const serviceValues = [searchPattern];
-  let serviceIdx = 2;
-  
-  if (chain) {
-    serviceConditions.push(`ssc.chain = $${serviceIdx++}`);
-    serviceValues.push(chain);
+    `;
+    
+    const result = await client.query(searchSql, values);
+    
+    const ownerAddresses = [];
+    const supplierAddresses = [];
+    
+    result.rows.forEach(row => {
+      if (row.owner_address) {
+        ownerAddresses.push(row.owner_address);
+      }
+      if (row.supplier_operator_address) {
+        supplierAddresses.push(row.supplier_operator_address);
+      }
+    });
+    
+    return {
+      owner_addresses: [...new Set(ownerAddresses)],
+      supplier_operator_addresses: [...new Set(supplierAddresses)]
+    };
+  } else {
+    // Search by service URL
+    const serviceConditions = [];
+    values.push(searchPattern);
+    idx = 2;
+    
+    if (chain) {
+      serviceConditions.push(`ssc.chain = $${idx++}`);
+      values.push(chain);
+    }
+    const serviceWhere = serviceConditions.length ? `WHERE ${serviceConditions.join(' AND ')}` : '';
+    
+    // Find all suppliers that have service URLs matching the search query
+    // Return unique owner addresses and unique supplier operator addresses
+    const searchSql = `
+      WITH matching_endpoints AS (
+        SELECT DISTINCT
+          ssc.supplier_address,
+          ssc.chain,
+          endpoint AS service_url
+        FROM supplier_service_configs ssc,
+        LATERAL unnest(ssc.endpoints) AS endpoint
+        ${serviceWhere}
+        ${serviceWhere ? 'AND' : 'WHERE'} endpoint ILIKE $1
+      ),
+      supplier_info AS (
+        SELECT DISTINCT
+          me.supplier_address,
+          me.chain,
+          s.owner_address
+        FROM matching_endpoints me
+        LEFT JOIN suppliers s ON s.address = me.supplier_address AND s.chain = me.chain
+      )
+      SELECT 
+        array_agg(DISTINCT si.owner_address) FILTER (WHERE si.owner_address IS NOT NULL) AS owner_addresses,
+        array_agg(DISTINCT si.supplier_address) AS supplier_operator_addresses
+      FROM supplier_info si
+    `;
+    
+    // Execute query
+    const result = await client.query(searchSql, values);
+    
+    const row = result.rows[0] || {};
+    
+    return {
+      owner_addresses: row.owner_addresses || [],
+      supplier_operator_addresses: row.supplier_operator_addresses || []
+    };
   }
-  const serviceWhere = serviceConditions.length ? `WHERE ${serviceConditions.join(' AND ')}` : '';
-  
-  // Find services matching the URL and get all suppliers using them
-  const serviceSql = `
-    WITH matching_endpoints AS (
-      SELECT DISTINCT
-        ssc.service_id,
-        ssc.chain,
-        ssc.supplier_address,
-        endpoint AS service_url
-      FROM supplier_service_configs ssc,
-      LATERAL unnest(ssc.endpoints) AS endpoint
-      ${serviceWhere}
-      ${serviceWhere ? 'AND' : 'WHERE'} endpoint ILIKE $1
-    )
-    SELECT 
-      me.service_id,
-      me.chain,
-      me.service_url,
-      array_agg(DISTINCT s.owner_address) FILTER (WHERE s.owner_address IS NOT NULL) AS owner_addresses,
-      array_agg(DISTINCT me.supplier_address) AS supplier_operator_addresses,
-      COUNT(DISTINCT me.supplier_address) AS supplier_count
-    FROM matching_endpoints me
-    LEFT JOIN suppliers s ON s.address = me.supplier_address AND s.chain = me.chain
-    GROUP BY me.service_id, me.chain, me.service_url
-    ORDER BY supplier_count DESC, me.service_id
-    LIMIT $${serviceIdx}::integer
-  `;
-  serviceValues.push(limitNum);
-  
-  // Execute both queries in parallel
-  const [supplierRes, serviceRes] = await Promise.all([
-    client.query(supplierSql, values),
-    client.query(serviceSql, serviceValues)
-  ]);
-  
-  // Format supplier results
-  const suppliers = supplierRes.rows.map(row => ({
-    type: 'supplier',
-    owner_address: row.owner_address || undefined,
-    supplier_operator_address: row.supplier_operator_address,
-    chain: row.chain,
-    status: row.status || undefined,
-    staked_amount: row.staked_amount ? String(row.staked_amount) : undefined
-  }));
-  
-  // Format service results
-  const services = serviceRes.rows.map(row => ({
-    type: 'service',
-    service_id: row.service_id,
-    service_url: row.service_url,
-    owner_addresses: row.owner_addresses || [],
-    supplier_operator_addresses: row.supplier_operator_addresses || [],
-    supplier_count: parseInt(row.supplier_count || '0', 10)
-  }));
-  
-  return {
-    suppliers,
-    services
-  };
 }
 
 /**
