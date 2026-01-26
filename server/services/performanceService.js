@@ -137,6 +137,130 @@ async function searchValidatorsAndServices(params, client) {
 }
 
 /**
+ * Search for suppliers by owner address and service URLs
+ * @param {Object} params - Search parameters
+ * @param {string} params.q - Search query string (owner address or service URL)
+ * @param {string} [params.chain] - Optional chain filter
+ * @param {number} [params.limit=20] - Maximum results per category
+ * @param {Object} client - PostgreSQL client
+ * @returns {Promise<Object>} Search results with suppliers and services
+ */
+async function searchSuppliersAndServices(params, client) {
+  const { q, chain, limit = 20 } = params;
+  
+  if (!q || q.trim().length === 0) {
+    throw new Error("Query parameter 'q' is required");
+  }
+  
+  const searchQuery = q.trim();
+  const searchPattern = `%${searchQuery}%`;
+  const limitNum = Math.min(parseInt(limit, 10) || 20, 100); // Cap at 100
+  const values = [searchPattern, searchQuery];
+  let idx = 3;
+  
+  // Build supplier search query - search by owner_address
+  const supplierConditions = [
+    `(s.owner_address ILIKE $1 OR s.owner_address = $2 OR s.address ILIKE $1 OR s.address = $2)`
+  ];
+  if (chain) {
+    supplierConditions.push(`s.chain = $${idx++}`);
+    values.push(chain);
+  }
+  const supplierWhere = `WHERE ${supplierConditions.join(' AND ')}`;
+  
+  // Search suppliers by owner_address or operator_address (address field)
+  const supplierSql = `
+    SELECT DISTINCT
+      s.owner_address,
+      s.address AS supplier_operator_address,
+      s.chain,
+      s.status,
+      s.staked_amount
+    FROM suppliers s
+    ${supplierWhere}
+    ORDER BY 
+      CASE 
+        WHEN s.owner_address = $2 OR s.address = $2 THEN 1
+        WHEN s.owner_address ILIKE $1 THEN 2
+        ELSE 3
+      END,
+      s.owner_address NULLS LAST
+    LIMIT $${idx}::integer
+  `;
+  values.push(limitNum);
+  
+  // Build service search query - search in supplier_service_configs.endpoints
+  const serviceConditions = [];
+  const serviceValues = [searchPattern];
+  let serviceIdx = 2;
+  
+  if (chain) {
+    serviceConditions.push(`ssc.chain = $${serviceIdx++}`);
+    serviceValues.push(chain);
+  }
+  const serviceWhere = serviceConditions.length ? `WHERE ${serviceConditions.join(' AND ')}` : '';
+  
+  // Find services matching the URL and get all suppliers using them
+  const serviceSql = `
+    WITH matching_endpoints AS (
+      SELECT DISTINCT
+        ssc.service_id,
+        ssc.chain,
+        ssc.supplier_address,
+        endpoint AS service_url
+      FROM supplier_service_configs ssc,
+      LATERAL unnest(ssc.endpoints) AS endpoint
+      ${serviceWhere}
+      ${serviceWhere ? 'AND' : 'WHERE'} endpoint ILIKE $1
+    )
+    SELECT 
+      me.service_id,
+      me.chain,
+      me.service_url,
+      array_agg(DISTINCT s.owner_address) FILTER (WHERE s.owner_address IS NOT NULL) AS owner_addresses,
+      array_agg(DISTINCT me.supplier_address) AS supplier_operator_addresses,
+      COUNT(DISTINCT me.supplier_address) AS supplier_count
+    FROM matching_endpoints me
+    LEFT JOIN suppliers s ON s.address = me.supplier_address AND s.chain = me.chain
+    GROUP BY me.service_id, me.chain, me.service_url
+    ORDER BY supplier_count DESC, me.service_id
+    LIMIT $${serviceIdx}::integer
+  `;
+  serviceValues.push(limitNum);
+  
+  // Execute both queries in parallel
+  const [supplierRes, serviceRes] = await Promise.all([
+    client.query(supplierSql, values),
+    client.query(serviceSql, serviceValues)
+  ]);
+  
+  // Format supplier results
+  const suppliers = supplierRes.rows.map(row => ({
+    type: 'supplier',
+    owner_address: row.owner_address || undefined,
+    supplier_operator_address: row.supplier_operator_address,
+    chain: row.chain,
+    status: row.status || undefined,
+    staked_amount: row.staked_amount ? String(row.staked_amount) : undefined
+  }));
+  
+  // Format service results
+  const services = serviceRes.rows.map(row => ({
+    type: 'service',
+    service_id: row.service_id,
+    service_url: row.service_url,
+    owner_addresses: row.owner_addresses || [],
+    supplier_operator_addresses: row.supplier_operator_addresses || [],
+    supplier_count: parseInt(row.supplier_count || '0', 10)
+  }));
+  
+  return {
+    suppliers,
+    services
+  };
+}
+
+/**
  * Get validator performance data
  * @param {Object} params - Performance query parameters
  * @param {string} [params.domain] - Filter by website domain
@@ -799,6 +923,7 @@ async function getTopServicesByPerformance(params, client) {
 
 module.exports = {
   searchValidatorsAndServices,
+  searchSuppliersAndServices,
   getValidatorPerformance,
   getTopServicesByComputeUnits,
   getTopServicesByPerformance
