@@ -75,12 +75,18 @@ class AuthService {
     try {
       await client.query('BEGIN');
 
-      // Create account without password, mark as verified, set type to api_only
+      // Get API Consumer role ID
+      const roleResult = await client.query(
+        `SELECT id FROM roles WHERE slug = 'api-consumer' LIMIT 1`
+      );
+      const apiConsumerRoleId = roleResult.rows[0]?.id || 5;
+
+      // Create account without password, mark as verified, set type to api_only, assign API Consumer role
       const accountResult = await client.query(
-        `INSERT INTO api_accounts (email, password_hash, name, organization, status, account_type, email_verified, email_verified_at)
-         VALUES ($1, NULL, $2, $3, 'active', 'api_only', true, NOW())
-         RETURNING id, email, name, organization, status, account_type, email_verified, created_at`,
-        [email, name, organization]
+        `INSERT INTO api_accounts (email, password_hash, name, organization, role_id, status, account_type, email_verified, email_verified_at)
+         VALUES ($1, NULL, $2, $3, $4, 'active', 'api_only', true, NOW())
+         RETURNING id, email, name, organization, role_id, status, account_type, email_verified, created_at`,
+        [email, name, organization, apiConsumerRoleId]
       );
 
       const account = accountResult.rows[0];
@@ -142,16 +148,22 @@ class AuthService {
     try {
       await client.query('BEGIN');
 
+      // Get API Consumer role ID
+      const roleResult = await client.query(
+        `SELECT id FROM roles WHERE slug = 'api-consumer' LIMIT 1`
+      );
+      const apiConsumerRoleId = roleResult.rows[0]?.id || 5;
+
       // Hash password
       const passwordHash = await bcrypt.hash(password, 10);
 
-      // Create account with password, unverified, set type to full
+      // Create account with password, unverified, set type to full, assign API Consumer role
       // Do NOT generate token yet - token will be sent after email verification
       const accountResult = await client.query(
-        `INSERT INTO api_accounts (email, password_hash, name, organization, status, account_type, email_verified)
-         VALUES ($1, $2, $3, $4, 'active', 'full', false)
-         RETURNING id, email, name, organization, status, account_type, email_verified, created_at`,
-        [email, passwordHash, name, organization]
+        `INSERT INTO api_accounts (email, password_hash, name, organization, role_id, status, account_type, email_verified)
+         VALUES ($1, $2, $3, $4, $5, 'active', 'full', false)
+         RETURNING id, email, name, organization, role_id, status, account_type, email_verified, created_at`,
+        [email, passwordHash, name, organization, apiConsumerRoleId]
       );
 
       const account = accountResult.rows[0];

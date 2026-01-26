@@ -100,6 +100,7 @@ services:
       - EMAIL_FROM_ADDRESS=${EMAIL_FROM_ADDRESS}
       - EMAIL_VERIFICATION_CODE_EXPIRY=${EMAIL_VERIFICATION_CODE_EXPIRY:-900}
       - EMAIL_VERIFICATION_REQUIRED=${EMAIL_VERIFICATION_REQUIRED:-true}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:5173}
     depends_on:
       redis:
         condition: service_healthy

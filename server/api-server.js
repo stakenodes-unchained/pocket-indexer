@@ -14,6 +14,8 @@ const dockerService = require('./services/dockerService');
 const redis = require('./config/redis');
 const authService = require('./services/authService');
 const authenticateToken = require('./middleware/auth');
+const { apiLogger } = require('./middleware/apiLogger');
+const AnalyticsAggregationService = require('./services/analyticsAggregationService');
 
 // Load environment variables
 dotenv.config();
@@ -23,6 +25,7 @@ const NUM_WORKERS = Math.min(1, Math.min(parseInt(process.env.CLUSTER_WORKERS ||
 
 // Initialize reward analytics refresh service (only in first worker to avoid duplicate refreshes)
 let rewardAnalyticsRefreshService = null;
+let analyticsAggregationService = null;
 
 // Simple Redis cache middleware for GET requests
 const cacheMiddleware = (ttl = 60) => {
@@ -158,11 +161,23 @@ app.use((err, req, res, next) => {
 // MUST come BEFORE caching to ensure auth is always checked
 app.use(authenticateToken);
 
+// API Logger middleware - logs all requests to database for analytics
+// Comes AFTER auth so we can log user_id
+app.use(apiLogger());
+
 // Add caching middleware for GET requests (60 second TTL by default)
 // Comes AFTER auth so cache keys include authentication context
-app.use(cacheMiddleware(60));
+// Skip cache for admin routes to ensure real-time data
+app.use((req, res, next) => {
+  // Skip cache for admin routes
+  if (req.path.startsWith('/api/admin')) {
+    return next();
+  }
+  // Apply cache middleware for other routes
+  return cacheMiddleware(60)(req, res, next);
+});
 
-// Request logging middleware
+// Request logging middleware (console output)
 app.use((req, res, next) => {
   const start = Date.now();
   const timestamp = new Date().toISOString();
@@ -250,19 +265,39 @@ app.post('/api/v1/auth/register', async (req, res) => {
     } else {
       // ===== QUICK REGISTRATION (email-only) =====
       // Requires: email only (name/org optional)
-      // Flow: Create account → Return token immediately (no verification)
+      // Flow: Create account → Return token immediately → Send token via email
 
       const result = await authService.registerQuick(email, name, organization);
 
-      return res.status(201).json({
-        data: {
-          account: result.account,
-          token: result.token,
-        },
-        message: 'Account created successfully. You can start using the API immediately with your token.',
-        requiresVerification: false,
-        accountType: 'api_only',
-      });
+      // Send API token via email
+      try {
+        const emailService = require('./services/emailService');
+        await emailService.sendApiTokenEmail(result.account.email, result.token.token, result.account.name);
+
+        return res.status(201).json({
+          data: {
+            account: result.account,
+            token: result.token,
+          },
+          message: 'Account created successfully. Your API token has been sent to your email. You can start using the API immediately.',
+          requiresVerification: false,
+          accountType: 'api_only',
+          tokenSentViaEmail: true,
+        });
+      } catch (emailError) {
+        console.error('Failed to send API token email:', emailError);
+        // Still return success with the token even if email fails
+        return res.status(201).json({
+          data: {
+            account: result.account,
+            token: result.token,
+          },
+          message: 'Account created successfully. You can start using the API immediately with your token. Note: Failed to send token via email.',
+          requiresVerification: false,
+          accountType: 'api_only',
+          emailSendFailed: true,
+        });
+      }
     }
   } catch (error) {
     console.error('Registration error:', error);
@@ -4216,6 +4251,18 @@ app.get('/api/v1/logs/containers/:containerId/history', async (req, res) => {
   }
 });
 
+// ============================================================================
+// ADMIN API - User Management System
+// ============================================================================
+
+const adminRoutes = require('./routes/admin');
+const { checkPermissions } = require('./middleware/rbac');
+
+// Mount admin routes with RBAC middleware
+// Admin routes require JWT authentication (handled by authenticateToken middleware)
+// AND role-based permissions (handled by checkPermissions middleware)
+app.use('/api/admin', checkPermissions(), adminRoutes);
+
 // Start the server and initialize the worker pool
 const startServer = async () => {
   try {
@@ -4243,6 +4290,15 @@ const startServer = async () => {
       console.log('✅ Reward analytics refresh service started');
     } else if (cluster.worker && cluster.worker.id !== 1) {
       console.log('⏭️  Skipping reward analytics refresh service (running on worker 1 only)');
+    }
+
+    // Initialize analytics aggregation service (only in first worker)
+    if ((!cluster.worker || cluster.worker.id === 1) && !analyticsAggregationService) {
+      analyticsAggregationService = new AnalyticsAggregationService();
+      analyticsAggregationService.start();
+      console.log('✅ Analytics aggregation service started');
+    } else if (cluster.worker && cluster.worker.id !== 1) {
+      console.log('⏭️  Skipping analytics aggregation service (running on worker 1 only)');
     }
     
     // Create HTTP server (needed for WebSocket upgrade)
@@ -4439,12 +4495,16 @@ const startServer = async () => {
       if (rewardAnalyticsRefreshService) {
         await rewardAnalyticsRefreshService.stop();
       }
+      // Stop analytics aggregation service gracefully
+      if (analyticsAggregationService) {
+        analyticsAggregationService.stop();
+      }
       // Close database pool gracefully
       await transactionService.pgPool.end();
       console.log('👋 Worker shutdown complete');
       process.exit(0);
     });
-    
+
     process.on('SIGTERM', async () => {
       console.log('='.repeat(80));
       console.log(`🛑 Worker ${cluster.worker.id} SHUTTING DOWN (SIGTERM)`);
@@ -4454,6 +4514,10 @@ const startServer = async () => {
       // Stop refresh service gracefully
       if (rewardAnalyticsRefreshService) {
         await rewardAnalyticsRefreshService.stop();
+      }
+      // Stop analytics aggregation service gracefully
+      if (analyticsAggregationService) {
+        analyticsAggregationService.stop();
       }
       // Close database pool gracefully
       await transactionService.pgPool.end();

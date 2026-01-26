@@ -20,6 +20,8 @@ const ENDPOINT_ACCESS = {
     { method: "POST", path: "/api/v1/auth/logout" },
     { method: "POST", path: "/api/v1/auth/verify-email" },
     { method: "POST", path: "/api/v1/auth/resend-verification" },
+    { method: "POST", path: "/api/v1/auth/forgot-password" },
+    { method: "POST", path: "/api/v1/auth/reset-password" },
   ],
 
   // JWT_AUTH endpoints - Require valid JWT access token (for user-facing features)
@@ -30,7 +32,29 @@ const ENDPOINT_ACCESS = {
     { method: "DELETE", path: "/api/v1/auth/tokens/:token_id" },
     { method: "POST", path: "/api/v1/auth/tokens/:token_id/regenerate" },
     { method: "GET", path: "/api/v1/auth/verification-status" },
+    { method: "PUT", path: "/api/v1/auth/password" },
     { method: "POST", path: "/api/v1/auth/logout-all" },
+    // Admin endpoints - User Management (requires JWT + RBAC)
+    { method: "GET", path: "/api/admin/users" },
+    { method: "POST", path: "/api/admin/users" },
+    { method: "GET", path: "/api/admin/users/:id" },
+    { method: "PUT", path: "/api/admin/users/:id" },
+    { method: "DELETE", path: "/api/admin/users/:id" },
+    { method: "PATCH", path: "/api/admin/users/:id/status" },
+    { method: "POST", path: "/api/admin/users/:id/reset-password" },
+    { method: "GET", path: "/api/admin/users/:id/activity" },
+    { method: "GET", path: "/api/admin/users/:id/analytics" },
+    // Admin endpoints - Role Management
+    { method: "GET", path: "/api/admin/roles" },
+    { method: "POST", path: "/api/admin/roles" },
+    { method: "GET", path: "/api/admin/roles/:id" },
+    { method: "PUT", path: "/api/admin/roles/:id" },
+    { method: "DELETE", path: "/api/admin/roles/:id" },
+    { method: "POST", path: "/api/admin/roles/:id/modules" },
+    { method: "DELETE", path: "/api/admin/roles/:id/modules/:moduleId" },
+    { method: "PUT", path: "/api/admin/roles/:id/modules/:moduleId" },
+    // Admin endpoints - Module Management
+    { method: "GET", path: "/api/admin/modules" },
   ],
 
   // TOKEN endpoints - Require valid API token
