@@ -1130,6 +1130,30 @@ app.get('/api/v1/applications/:address', async (req, res) => {
   }
 });
 
+
+// Supplier and Service Search endpoint
+// GET /api/v1/suppliers/search
+// Query: q (required), chain (optional), limit (optional, default 20)
+// Searches suppliers by owner_address and services by service_url (from supplier_service_configs.endpoints)
+app.get('/api/v1/suppliers/search', cacheMiddleware(300), async (req, res) => {
+  try {
+    const { q, chain, limit = 20 } = req.query;
+    
+    if (!q || q.trim().length === 0) {
+      return res.status(400).json({ error: "Query parameter 'q' is required" });
+    }
+    
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+    
+    const result = await performanceService.searchSuppliersAndServices({ q, chain, limit }, client);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Error in supplier search:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 /**
  * GET /api/v1/suppliers
  * 
@@ -2872,29 +2896,6 @@ app.get('/api/v1/validators/search', cacheMiddleware(300), async (req, res) => {
   }
 });
 
-// Supplier and Service Search endpoint
-// GET /api/v1/suppliers/search
-// Query: q (required), chain (optional), limit (optional, default 20)
-// Searches suppliers by owner_address and services by service_url (from supplier_service_configs.endpoints)
-app.get('/api/v1/suppliers/search', cacheMiddleware(300), async (req, res) => {
-  try {
-    const { q, chain, limit = 20 } = req.query;
-    
-    if (!q || q.trim().length === 0) {
-      return res.status(400).json({ error: "Query parameter 'q' is required" });
-    }
-    
-    await transactionService.connectDB();
-    const client = transactionService.pgClient;
-    
-    const result = await performanceService.searchSuppliersAndServices({ q, chain, limit }, client);
-    
-    res.json(result);
-  } catch (error) {
-    console.error('Error in supplier search:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // Validators performance endpoints
 
