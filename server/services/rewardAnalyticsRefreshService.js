@@ -100,6 +100,9 @@ class RewardAnalyticsRefreshService {
    * Start the scheduled refresh service
    */
   start() {
+
+    return; 
+    // TODO: Uncomment this when we have a way to refresh the materialized view
     if (this.timer) {
       console.log('RewardAnalyticsRefreshService: Already started');
       return;
