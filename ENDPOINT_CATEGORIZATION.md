@@ -11,10 +11,10 @@ This document lists all API endpoints for categorization. Please mark each endpo
 
 | Method | Endpoint | Current Status | Category | Notes |
 |--------|----------|----------------|----------|-------|
-| GET | `/api/v1/network-growth` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>⬜ PUBLIC | Legacy combined endpoint |
-| GET | `/api/v1/network-growth/performance` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>⬜ PUBLIC | Performance metrics |
-| GET | `/api/v1/network-growth/entities` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>⬜ PUBLIC | Entity growth metrics |
-| GET | `/api/v1/network-growth/summary` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>⬜ PUBLIC | Summary statistics |
+| GET | `/api/v1/network-growth` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Legacy combined endpoint |
+| GET | `/api/v1/network-growth/performance` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Performance metrics |
+| GET | `/api/v1/network-growth/entities` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Entity growth metrics |
+| GET | `/api/v1/network-growth/summary` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Summary statistics |
 
 ---
 
@@ -22,7 +22,7 @@ This document lists all API endpoints for categorization. Please mark each endpo
 
 | Method | Endpoint | Current Status | Category | Notes |
 |--------|----------|----------------|----------|-------|
-| GET | `/api/v1/transactions` | Public | ⬜ INTERNAL<br> TOKEN<br>✅ PUBLIC | List transactions with filters |
+| GET | `/api/v1/transactions` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | List transactions with filters |
 | POST | `/api/v1/transactions` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | List transactions (POST variant) |
 | GET | `/api/v1/transactions/count` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>⬜ PUBLIC | Transaction count |
 | GET | `/api/v1/transactions/stats` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Transaction statistics |
@@ -66,8 +66,12 @@ This document lists all API endpoints for categorization. Please mark each endpo
 |--------|----------|----------------|----------|-------|
 | GET | `/api/v1/suppliers` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | List suppliers |
 | GET | `/api/v1/suppliers/:address` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Get supplier by address |
-| GET | `/api/v1/suppliers/:address/performance` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Supplier performance metrics |
-| GET | `/api/v1/suppliers/:address/claims/performance` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Supplier claims performance |
+| GET | `/api/v1/suppliers/:address/performance` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Supplier performance metrics (legacy, proof-submissions-based) |
+| GET | `/api/v1/suppliers/:address/claims/performance` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Supplier claims performance (claims-based) |
+| GET | `/api/v1/suppliers/search` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Search suppliers by owner/operator and service URL |
+| GET | `/api/v1/suppliers/performance` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Supplier performance list (claims-based) |
+| POST | `/api/v1/suppliers/performance` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Supplier performance (POST, multi-supplier) |
+| GET | `/api/v1/suppliers/owners` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Supplier owner leaderboard (claims-based) |
 
 ---
 
@@ -76,7 +80,7 @@ This document lists all API endpoints for categorization. Please mark each endpo
 | Method | Endpoint | Current Status | Category | Notes |
 |--------|----------|----------------|----------|-------|
 | GET | `/api/v1/gateways` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | List gateways |
-| GET | `/api/v1/gateways/:address` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Get gateway by address |
+| GET | `/api/v1/gateways/:address` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Get gateway by address |
 
 ---
 
@@ -84,7 +88,7 @@ This document lists all API endpoints for categorization. Please mark each endpo
 
 | Method | Endpoint | Current Status | Category | Notes |
 |--------|----------|----------------|----------|-------|
-| GET | `/api/v1/delegations` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | List delegations |
+| GET | `/api/v1/delegations` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | List delegations |
 
 ---
 
@@ -92,7 +96,7 @@ This document lists all API endpoints for categorization. Please mark each endpo
 
 | Method | Endpoint | Current Status | Category | Notes |
 |--------|----------|----------------|----------|-------|
-| GET | `/api/v1/staking` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Staking information |
+| GET | `/api/v1/staking` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Staking information |
 
 ---
 
@@ -100,9 +104,9 @@ This document lists all API endpoints for categorization. Please mark each endpo
 
 | Method | Endpoint | Current Status | Category | Notes |
 |--------|----------|----------------|----------|-------|
-| GET | `/api/v1/proof-submissions` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | List proof submissions |
+| GET | `/api/v1/proof-submissions` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | List proof submissions |
 | POST | `/api/v1/proof-submissions` | Public | ✅ INTERNAL<br>⬜ TOKEN<br>⬜ PUBLIC | List proof submissions (POST) |
-| GET | `/api/v1/proof-submissions/rewards` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Reward analytics |
+| GET | `/api/v1/proof-submissions/rewards` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Reward analytics |
 | POST | `/api/v1/proof-submissions/rewards` | Public | ✅ INTERNAL<br>⬜ TOKEN<br>⬜ PUBLIC | Reward analytics (POST) |
 | GET | `/api/v1/proof-submissions/rewards/refresh/status` | Public | ✅ INTERNAL<br>⬜ TOKEN<br>⬜ PUBLIC | Refresh service status |
 | POST | `/api/v1/proof-submissions/rewards/refresh` | Public | ✅ INTERNAL<br>⬜ TOKEN<br>⬜ PUBLIC | Manually trigger refresh |
@@ -115,12 +119,12 @@ This document lists all API endpoints for categorization. Please mark each endpo
 
 | Method | Endpoint | Current Status | Category | Notes |
 |--------|----------|----------------|----------|-------|
-| GET | `/api/v1/claims` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | List claims |
-| POST | `/api/v1/claims` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | List claims (POST) |
-| GET | `/api/v1/claims/rewards` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Claims rewards |
-| POST | `/api/v1/claims/rewards` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Claims rewards (POST) |
-| GET | `/api/v1/claims/summary` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Claims summary |
-| POST | `/api/v1/claims/summary` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Claims summary (POST) |
+| GET | `/api/v1/claims` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | List claims |
+| POST | `/api/v1/claims` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | List claims (POST) |
+| GET | `/api/v1/claims/rewards` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Claims rewards |
+| POST | `/api/v1/claims/rewards` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Claims rewards (POST) |
+| GET | `/api/v1/claims/summary` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Claims summary |
+| POST | `/api/v1/claims/summary` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Claims summary (POST) |
 
 ---
 
@@ -198,16 +202,26 @@ This document lists all API endpoints for categorization. Please mark each endpo
 
 ---
 
-## Authentication Endpoints (New - To Be Created)
+## Authentication Endpoints
 
 | Method | Endpoint | Current Status | Category | Notes |
 |--------|----------|----------------|----------|-------|
-| POST | `/api/v1/auth/register` | New | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | User registration |
-| GET | `/api/v1/auth/account` | New | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Get account info |
-| GET | `/api/v1/auth/tokens` | New | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | List API tokens |
-| POST | `/api/v1/auth/tokens` | New | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Create new token |
-| DELETE | `/api/v1/auth/tokens/:token_id` | New | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Revoke token |
-| POST | `/api/v1/auth/tokens/:token_id/regenerate` | New | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Regenerate token |
+| POST | `/api/v1/auth/register` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | User registration (quick + full) |
+| POST | `/api/v1/auth/login` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Login with email/password, returns JWT |
+| POST | `/api/v1/auth/refresh` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Refresh access token with refresh token |
+| POST | `/api/v1/auth/logout` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Logout and revoke refresh token |
+| POST | `/api/v1/auth/verify-email` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Verify email with token |
+| POST | `/api/v1/auth/resend-verification` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Resend verification link |
+| POST | `/api/v1/auth/forgot-password` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Request password reset link |
+| POST | `/api/v1/auth/reset-password` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Reset password with token |
+| GET | `/api/v1/auth/account` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Get account info (JWT_AUTH) |
+| GET | `/api/v1/auth/tokens` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | List API tokens (JWT_AUTH) |
+| POST | `/api/v1/auth/tokens` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Create new token (JWT_AUTH) |
+| DELETE | `/api/v1/auth/tokens/:token_id` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Revoke token (JWT_AUTH) |
+| POST | `/api/v1/auth/tokens/:token_id/regenerate` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Regenerate token (JWT_AUTH) |
+| POST | `/api/v1/auth/logout-all` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Logout from all devices (JWT_AUTH) |
+| PUT | `/api/v1/auth/password` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Change password (JWT_AUTH) |
+| GET | `/api/v1/auth/verification-status` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Get email verification status (JWT_AUTH) |
 
 ---
 
