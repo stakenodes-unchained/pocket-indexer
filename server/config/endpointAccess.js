@@ -55,6 +55,10 @@ const ENDPOINT_ACCESS = {
     { method: "PUT", path: "/api/admin/roles/:id/modules/:moduleId" },
     // Admin endpoints - Module Management
     { method: "GET", path: "/api/admin/modules" },
+    { method: "POST", path: "/api/admin/modules" },
+    { method: "GET", path: "/api/admin/modules/:id" },
+    { method: "PUT", path: "/api/admin/modules/:id" },
+    { method: "DELETE", path: "/api/admin/modules/:id" },
   ],
 
   // TOKEN endpoints - Require valid API token

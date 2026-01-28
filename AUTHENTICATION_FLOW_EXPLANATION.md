@@ -142,7 +142,7 @@ User receives token (shown once)
 Request token retrieval via email
     ↓
 System sends email with:
-  - Temporary access link (expires in 1 hour)
+  - Temporary access link (expires in 15 minutes)
   - OR list of token prefixes
     ↓
 User clicks link or checks email
@@ -163,7 +163,7 @@ Access account: view tokens, create new tokens
 
 3. **Email Link** (temporary access)
    - User clicks link from email
-   - Gets temporary session token (expires in 1 hour)
+   - Gets temporary session token (expires in 15 minutes)
    - Can access account endpoints
 
 4. **GET** `/api/v1/auth/tokens` (requires token or temporary session)
@@ -299,7 +299,7 @@ The schema supports both:
 ### Passwordless
 - Require email verification
 - Rate limit token retrieval requests
-- Temporary access tokens expire quickly (1 hour)
+- Temporary access tokens expire quickly (15 minutes)
 - Never reveal if email exists in system
 
 ### Both
