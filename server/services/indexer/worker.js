@@ -30,6 +30,7 @@ const {
 } = require('./entityParser.v2');
 const { processBlockEvents, processTransactionEvents } = require('./eventProcessor');
 const { enqueueBlockResults } = require('./blockResultsQueue');
+const configLoader = require('../configLoader');
 
 const { rpcName, rpcUrl, batchSize, processType, blockResultsRpcUrl, concurrency } = workerData;
 
@@ -424,7 +425,7 @@ async function syncHistoricalBlocks() {
 
 function startContinuousGapFilling() {
   const { getNextGapToFill, getLastProcessedHeight } = require('./db');
-  const gapCheckInterval = parseInt(process.env.GAP_CHECK_INTERVAL_MS || '30000', 10); // Default 30s
+  const gapCheckInterval = configLoader.get('GAP_CHECK_INTERVAL_MS', 30000); // Default 30s
 
   // Use a flag to ensure this only sets up the interval once
   if (startContinuousGapFilling.intervalSet) {
@@ -467,7 +468,7 @@ async function monitorNewBlocks() {
   log(`Monitoring mode: Starting from current block height ${lastProcessedHeight} on node`);
 
   const { upsertWorkerHeartbeat } = require('./db');
-  const monitorIntervalMs = parseInt(process.env.MONITOR_INTERVAL_MS || '30000', 10);
+  const monitorIntervalMs = configLoader.get('MONITOR_INTERVAL_MS', 30000);
 
   setInterval(async () => {
     try {
@@ -525,7 +526,7 @@ async function run() {
     } = require('./db');
 
     // Set up continuous heartbeat updates (similar to monitor workers)
-    const heartbeatInterval = parseInt(process.env.HISTORICAL_HEARTBEAT_INTERVAL_MS || '30000', 10); // Default 30s
+    const heartbeatInterval = configLoader.get('HISTORICAL_HEARTBEAT_INTERVAL_MS', 30000); // Default 30s
     setInterval(async () => {
       try {
         const currentHeight = parseInt(await getHistoricalCheckpoint(rpcName), 10) || 0;
@@ -549,7 +550,7 @@ async function run() {
     startContinuousGapFilling();
 
     // Run historical sync with periodic restart
-    const restartInterval = parseInt(process.env.HISTORICAL_RESTART_INTERVAL_MS || '300000', 10); // Default 5 minutes
+    const restartInterval = configLoader.get('HISTORICAL_RESTART_INTERVAL_MS', 300000); // Default 5 minutes
 
     const runHistoricalSync = async () => {
       try {

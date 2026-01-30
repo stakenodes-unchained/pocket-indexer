@@ -15,6 +15,7 @@
 const express = require('express');
 const ProofParserService = require('./services/proofParserService');
 const { getRpcEndpoints } = require('./config/rpc');
+const configLoader = require('./services/configLoader');
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -45,11 +46,11 @@ const services = new Map();
 chainsToProcess.forEach(chain => {
   const service = new ProofParserService({
     chain: chain,
-    pollInterval: parseInt(process.env.PROOF_PARSER_POLL_INTERVAL || '10000', 10),
-    batchSize: parseInt(process.env.PROOF_PARSER_BATCH_SIZE || '100', 10),
-    healthCheckInterval: parseInt(process.env.PROOF_PARSER_HEALTH_CHECK_INTERVAL || '5000', 10),
+    pollInterval: configLoader.get('PROOF_PARSER_POLL_INTERVAL', 10000),
+    batchSize: configLoader.get('PROOF_PARSER_BATCH_SIZE', 100),
+    healthCheckInterval: configLoader.get('PROOF_PARSER_HEALTH_CHECK_INTERVAL', 5000),
   });
-  
+
   services.set(chain, service);
 });
 

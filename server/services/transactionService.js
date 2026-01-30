@@ -2,6 +2,7 @@ const redis = require('../config/redis');
 const REDIS_CACHE_TX_DETAIL = (process.env.REDIS_CACHE_TX_DETAIL || 'false') === 'true';
 const { getRpcEndpoints } = require('../config/rpc');
 const { Pool } = require('pg');
+const configLoader = require('./configLoader');
 
 class TransactionService {
   constructor() {
@@ -420,7 +421,7 @@ class TransactionService {
       };
       
       // Cache the result
-      const cacheTTL = parseInt(process.env.HISTORY_CACHE_TTL || 3600, 10); // Default 1 hour
+      const cacheTTL = configLoader.get('HISTORY_CACHE_TTL', 3600); // Default 1 hour
       await redis.set(cacheKey, JSON.stringify(result), 'EX', cacheTTL);
       console.log(`Cached historical data for ${chainName} (${daysNum} days) with TTL of ${cacheTTL} seconds`);
       

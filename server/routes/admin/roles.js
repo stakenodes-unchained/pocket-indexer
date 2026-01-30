@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const userManagementService = require('../../services/userManagementService');
+const { clearAllCache: clearRbacCache } = require('../../middleware/rbac');
 
 /**
  * @route GET /api/admin/roles
@@ -134,6 +135,9 @@ router.delete('/:id', async (req, res) => {
       });
     }
 
+    // Clear RBAC cache so permission changes take effect immediately
+    clearRbacCache();
+
     res.json({
       success: true,
       message: 'Role deleted successfully',
@@ -181,6 +185,9 @@ router.post('/:id/modules', async (req, res) => {
       finalPermissions
     );
 
+    // Clear RBAC cache so permission changes take effect immediately
+    clearRbacCache();
+
     res.json({
       success: true,
       data: result,
@@ -213,6 +220,9 @@ router.delete('/:id/modules/:moduleId', async (req, res) => {
         error: 'Module assignment not found',
       });
     }
+
+    // Clear RBAC cache so permission changes take effect immediately
+    clearRbacCache();
 
     res.json({
       success: true,
@@ -250,6 +260,9 @@ router.put('/:id/modules/:moduleId', async (req, res) => {
       moduleId,
       permissions
     );
+
+    // Clear RBAC cache so permission changes take effect immediately
+    clearRbacCache();
 
     res.json({
       success: true,

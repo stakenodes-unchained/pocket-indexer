@@ -122,11 +122,20 @@ class SystemConfigService {
    */
   async clearCache() {
     try {
+      // Clear systemConfigService cache (sys_config:*)
       const keys = await redis.keys(`${this.CACHE_PREFIX}*`);
       if (keys.length > 0) {
         await redis.del(...keys);
-        console.log(`SystemConfigService: Cleared ${keys.length} cache entries`);
+        console.log(`SystemConfigService: Cleared ${keys.length} sys_config cache entries`);
       }
+
+      // Also clear configLoader cache (config:*)
+      const configLoaderKeys = await redis.keys('config:*');
+      if (configLoaderKeys.length > 0) {
+        await redis.del(...configLoaderKeys);
+        console.log(`SystemConfigService: Cleared ${configLoaderKeys.length} configLoader cache entries`);
+      }
+
       // Clear memory cache
       this.memoryCache.clear();
       this.memoryCacheTimestamp = 0;
@@ -141,13 +150,27 @@ class SystemConfigService {
    */
   async clearCategoryCache(category) {
     try {
+      // Clear systemConfigService category cache
       const keys = await redis.keys(`${this.CACHE_PREFIX}${category}:*`);
       if (keys.length > 0) {
         await redis.del(...keys);
       }
       // Also clear the all-configs cache
       await redis.del(`${this.CACHE_PREFIX}all`);
+      await redis.del(`${this.CACHE_PREFIX}all:true`);
+      await redis.del(`${this.CACHE_PREFIX}all:false`);
       await redis.del(`${this.CACHE_PREFIX}category:${category}`);
+      await redis.del(`${this.CACHE_PREFIX}category:${category}:true`);
+      await redis.del(`${this.CACHE_PREFIX}category:${category}:false`);
+
+      // Also clear configLoader cache for all keys in this category
+      // configLoader uses 'config:' prefix with just the key name
+      const configLoaderKeys = await redis.keys('config:*');
+      if (configLoaderKeys.length > 0) {
+        await redis.del(...configLoaderKeys);
+        console.log(`SystemConfigService: Cleared ${configLoaderKeys.length} configLoader cache entries for category ${category}`);
+      }
+
       // Clear memory cache
       this.memoryCache.clear();
       this.memoryCacheTimestamp = 0;
@@ -672,6 +695,13 @@ class SystemConfigService {
    */
   async publishConfigChange(category, key, value) {
     try {
+      // First, delete the specific key from configLoader's Redis cache
+      // This ensures the old value is immediately invalidated
+      const configLoaderKey = `config:${key}`;
+      await redis.del(configLoaderKey);
+      console.log(`SystemConfigService: Deleted configLoader cache key: ${configLoaderKey}`);
+
+      // Publish the change event so all services can update their in-memory cache
       const message = JSON.stringify({
         type: 'CONFIG_CHANGE',
         category,

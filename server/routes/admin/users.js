@@ -3,6 +3,7 @@ const router = express.Router();
 const userManagementService = require('../../services/userManagementService');
 const { getUserLogs, getUserAnalytics } = require('../../middleware/apiLogger');
 const emailService = require('../../services/emailService');
+const { clearUserCache: clearRbacUserCache } = require('../../middleware/rbac');
 
 /**
  * @route GET /api/admin/users
@@ -156,6 +157,11 @@ router.put('/:id', async (req, res) => {
     };
 
     const user = await userManagementService.updateUser(userId, userData);
+
+    // Clear RBAC cache for this user if role was changed
+    if (role_id) {
+      clearRbacUserCache(userId);
+    }
 
     res.json({
       success: true,

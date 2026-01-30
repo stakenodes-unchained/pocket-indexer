@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const systemConfigService = require('../../services/systemConfigService');
+const configLoader = require('../../services/configLoader');
 
 /**
  * Middleware to check if user is super-admin
@@ -96,6 +97,144 @@ router.get('/category/:category', async (req, res) => {
 });
 
 /**
+ * @route GET /api/admin/config/audit/log
+ * @desc Get configuration audit log
+ * @access Super-Admin only
+ */
+router.get('/audit/log', async (req, res) => {
+  try {
+    const {
+      config_id,
+      category,
+      changed_by,
+      start_date,
+      end_date,
+      limit,
+      offset,
+    } = req.query;
+
+    const filters = {
+      configId: config_id ? parseInt(config_id) : undefined,
+      category,
+      changedBy: changed_by ? parseInt(changed_by) : undefined,
+      startDate: start_date,
+      endDate: end_date,
+      limit: limit ? parseInt(limit) : 50,
+      offset: offset ? parseInt(offset) : 0,
+    };
+
+    const result = await systemConfigService.getAuditLog(filters);
+
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error('Error fetching audit log:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * @route GET /api/admin/config/export/all
+ * @desc Export all configurations (for backup)
+ * @access Super-Admin only
+ */
+router.get('/export/all', async (req, res) => {
+  try {
+    const includeSensitive = req.query.include_sensitive === 'true';
+    const configs = await systemConfigService.exportConfigs(includeSensitive);
+
+    res.json({
+      success: true,
+      data: {
+        exportedAt: new Date().toISOString(),
+        configCount: configs.length,
+        configs,
+      },
+    });
+  } catch (error) {
+    console.error('Error exporting configurations:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * @route POST /api/admin/config/reload
+ * @desc Reload all configurations into cache (clears both systemConfigService and configLoader caches)
+ * @access Super-Admin only
+ */
+router.post('/reload', async (req, res) => {
+  try {
+    // Clear systemConfigService cache
+    await systemConfigService.clearCache();
+    await systemConfigService.loadAllConfigs();
+
+    // Clear and reload configLoader cache
+    await configLoader.clearCache();
+    await configLoader.refresh();
+
+    res.json({
+      success: true,
+      message: 'All configurations reloaded. Both systemConfigService and configLoader caches cleared.',
+    });
+  } catch (error) {
+    console.error('Error reloading configurations:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * @route POST /api/admin/config/import
+ * @desc Import configurations (for restore)
+ * @access Super-Admin only
+ */
+router.post('/import', async (req, res) => {
+  try {
+    const { configs } = req.body;
+
+    if (!configs || !Array.isArray(configs)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Configs array is required',
+      });
+    }
+
+    const requestInfo = {
+      ip: req.ip || req.connection?.remoteAddress,
+      userAgent: req.get('User-Agent'),
+    };
+
+    const result = await systemConfigService.importConfigs(
+      configs,
+      req.user.accountId,
+      requestInfo
+    );
+
+    res.json({
+      success: true,
+      data: result,
+      message: `Import complete. ${result.updated} updated, ${result.skipped} skipped, ${result.errors.length} errors.`,
+    });
+  } catch (error) {
+    console.error('Error importing configurations:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/**
  * @route GET /api/admin/config/:id
  * @desc Get a specific configuration by ID
  * @access Super-Admin only
@@ -170,12 +309,17 @@ router.put('/:id', async (req, res) => {
       reason || null
     );
 
+    // Also clear the specific key from configLoader's cache
+    // The systemConfigService.updateConfig already clears Redis and publishes the change,
+    // but we also need to ensure the local configLoader cache is updated
+    await configLoader.clearKey(config.key);
+
     res.json({
       success: true,
       data: config,
       message: config.requiresRestart
         ? 'Configuration updated. Service restart required for changes to take effect.'
-        : 'Configuration updated successfully.',
+        : 'Configuration updated successfully. Cache cleared.',
     });
   } catch (error) {
     console.error('Error updating configuration:', error);
@@ -224,14 +368,19 @@ router.put('/bulk/update', async (req, res) => {
       reason || 'Bulk update'
     );
 
+    // Clear configLoader cache for all updated keys
+    for (const config of result.results) {
+      await configLoader.clearKey(config.key);
+    }
+
     const requiresRestart = result.results.some(r => r.requiresRestart);
 
     res.json({
       success: true,
       data: result,
       message: requiresRestart
-        ? 'Configurations updated. Some changes require service restart.'
-        : 'Configurations updated successfully.',
+        ? 'Configurations updated. Some changes require service restart. Cache cleared.'
+        : 'Configurations updated successfully. Cache cleared.',
     });
   } catch (error) {
     console.error('Error bulk updating configurations:', error);
@@ -311,139 +460,6 @@ router.post('/category/:category/reset', async (req, res) => {
   } catch (error) {
     console.error('Error resetting category:', error);
     res.status(400).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/**
- * @route GET /api/admin/config/audit
- * @desc Get configuration audit log
- * @access Super-Admin only
- */
-router.get('/audit/log', async (req, res) => {
-  try {
-    const {
-      config_id,
-      category,
-      changed_by,
-      start_date,
-      end_date,
-      limit,
-      offset,
-    } = req.query;
-
-    const filters = {
-      configId: config_id ? parseInt(config_id) : undefined,
-      category,
-      changedBy: changed_by ? parseInt(changed_by) : undefined,
-      startDate: start_date,
-      endDate: end_date,
-      limit: limit ? parseInt(limit) : 50,
-      offset: offset ? parseInt(offset) : 0,
-    };
-
-    const result = await systemConfigService.getAuditLog(filters);
-
-    res.json({
-      success: true,
-      data: result,
-    });
-  } catch (error) {
-    console.error('Error fetching audit log:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/**
- * @route POST /api/admin/config/reload
- * @desc Reload all configurations into cache
- * @access Super-Admin only
- */
-router.post('/reload', async (req, res) => {
-  try {
-    await systemConfigService.clearCache();
-    await systemConfigService.loadAllConfigs();
-
-    res.json({
-      success: true,
-      message: 'Configurations reloaded into cache.',
-    });
-  } catch (error) {
-    console.error('Error reloading configurations:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/**
- * @route GET /api/admin/config/export
- * @desc Export all configurations (for backup)
- * @access Super-Admin only
- */
-router.get('/export/all', async (req, res) => {
-  try {
-    const includeSensitive = req.query.include_sensitive === 'true';
-    const configs = await systemConfigService.exportConfigs(includeSensitive);
-
-    res.json({
-      success: true,
-      data: {
-        exportedAt: new Date().toISOString(),
-        configCount: configs.length,
-        configs,
-      },
-    });
-  } catch (error) {
-    console.error('Error exporting configurations:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/**
- * @route POST /api/admin/config/import
- * @desc Import configurations (for restore)
- * @access Super-Admin only
- */
-router.post('/import', async (req, res) => {
-  try {
-    const { configs } = req.body;
-
-    if (!configs || !Array.isArray(configs)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Configs array is required',
-      });
-    }
-
-    const requestInfo = {
-      ip: req.ip || req.connection?.remoteAddress,
-      userAgent: req.get('User-Agent'),
-    };
-
-    const result = await systemConfigService.importConfigs(
-      configs,
-      req.user.accountId,
-      requestInfo
-    );
-
-    res.json({
-      success: true,
-      data: result,
-      message: `Import complete. ${result.updated} updated, ${result.skipped} skipped, ${result.errors.length} errors.`,
-    });
-  } catch (error) {
-    console.error('Error importing configurations:', error);
-    res.status(500).json({
       success: false,
       error: error.message,
     });
