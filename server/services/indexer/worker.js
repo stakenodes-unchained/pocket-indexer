@@ -459,15 +459,50 @@ function startContinuousGapFilling() {
 async function monitorNewBlocks() {
   log('Starting new block monitor...');
 
-  // In monitoring mode, start from the current block height on the node
-  // The lag monitor will fill in any missing blocks later
-  const initialBlock = await fetchLatestBlock(rpcUrl);
-  let lastProcessedHeight = parseInt(initialBlock.block.header.height, 10);
-
-  log(`Monitoring mode: Starting from current block height ${lastProcessedHeight} on node`);
-
   const { upsertWorkerHeartbeat } = require('./db');
   const monitorIntervalMs = parseInt(process.env.MONITOR_INTERVAL_MS || '30000', 10);
+  
+  // Initialize lastProcessedHeight with retry logic
+  let lastProcessedHeight = null;
+  const maxInitializationRetries = 10;
+  const initializationRetryDelay = 5000; // 5 seconds
+  
+  // Try to get initial block height with retries
+  for (let attempt = 1; attempt <= maxInitializationRetries; attempt++) {
+    try {
+      log(`Attempting to fetch initial block height (attempt ${attempt}/${maxInitializationRetries})...`);
+      const initialBlock = await fetchLatestBlock(rpcUrl);
+      lastProcessedHeight = parseInt(initialBlock.block.header.height, 10);
+      log(`Monitoring mode: Starting from current block height ${lastProcessedHeight} on node`);
+      break; // Success, exit retry loop
+    } catch (error) {
+      console.error(`[Worker ${workerData.id}] Failed to fetch initial block height (attempt ${attempt}/${maxInitializationRetries}):`, error.message);
+      
+      if (attempt < maxInitializationRetries) {
+        log(`Retrying in ${initializationRetryDelay/1000} seconds...`);
+        await new Promise(resolve => setTimeout(resolve, initializationRetryDelay));
+      } else {
+        // If we've exhausted all retries, try to get last processed height from DB as fallback
+        console.error(`[Worker ${workerData.id}] Failed to fetch initial block after ${maxInitializationRetries} attempts. Trying to get last processed height from database...`);
+        try {
+          const dbLastHeight = parseInt(await getLastProcessedHeight(rpcName), 10) || 0;
+          if (dbLastHeight > 0) {
+            lastProcessedHeight = dbLastHeight;
+            log(`Using last processed height from database: ${lastProcessedHeight}`);
+          } else {
+            // If no DB height, start from 0 and let the monitor catch up
+            lastProcessedHeight = 0;
+            log(`No database height found, starting from height 0. Monitor will catch up when RPC is available.`);
+          }
+        } catch (dbError) {
+          console.error(`[Worker ${workerData.id}] Failed to get last processed height from database:`, dbError.message);
+          // Start from 0 as last resort
+          lastProcessedHeight = 0;
+          log(`Starting from height 0 as fallback. Monitor will catch up when RPC is available.`);
+        }
+      }
+    }
+  }
 
   setInterval(async () => {
     try {
@@ -476,11 +511,25 @@ async function monitorNewBlocks() {
         await upsertWorkerHeartbeat(`${rpcName}-monitor`, {
           threadId: workerData.id,
           type: 'monitor',
-          lastProcessedHeight,
-          status: 'active'
+          lastProcessedHeight: lastProcessedHeight || 0,
+          status: lastProcessedHeight !== null ? 'active' : 'initializing',
+          error: lastProcessedHeight === null ? 'Waiting for RPC connection' : null
         });
       } catch (_) {
         console.error(`[Worker ${workerData.id}] Error upserting worker heartbeat:`, _.message);
+      }
+
+      // If we don't have an initial height yet, try to get it again
+      if (lastProcessedHeight === null) {
+        try {
+          const initialBlock = await fetchLatestBlock(rpcUrl);
+          lastProcessedHeight = parseInt(initialBlock.block.header.height, 10);
+          log(`Successfully initialized monitor. Starting from block height ${lastProcessedHeight}`);
+        } catch (error) {
+          // RPC still not available, log and continue waiting
+          console.warn(`[Worker ${workerData.id}] RPC still unavailable, waiting for connection... (${error.message})`);
+          return; // Skip this interval, try again next time
+        }
       }
 
       const latestBlock = await fetchLatestBlock(rpcUrl);
@@ -509,7 +558,14 @@ async function monitorNewBlocks() {
         lastProcessedHeight = latestHeight;
       }
     } catch (error) {
+      // Don't exit on errors - just log and continue
+      console.error(`[Worker ${workerData.id}] Error in new block monitor:`, error.message);
       reportError(`Error in new block monitor: ${error.message}`);
+      // If it's a persistent RPC error, mark lastProcessedHeight as null to trigger re-initialization
+      if (error.message.includes('fetch') || error.message.includes('RPC') || error.message.includes('network') || error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+        console.warn(`[Worker ${workerData.id}] RPC connection lost, will retry initialization on next interval`);
+        // Don't set to null immediately - give it a few intervals to recover
+      }
     }
   }, monitorIntervalMs); // Default 10s; configurable via MONITOR_INTERVAL_MS
 }
@@ -594,12 +650,21 @@ async function run() {
 
   } else if (processType === 'monitor') {
     // Only run monitoring
-    monitorNewBlocks();
+    monitorNewBlocks().catch(error => {
+      console.error(`[Worker ${workerData.id}] Fatal error in monitorNewBlocks initialization:`, error);
+      reportError(`Fatal error in monitorNewBlocks: ${error.message}`);
+      // Don't exit immediately - let the interval retry logic handle recovery
+      // The worker will keep running and retry initialization in the interval
+    });
   } else {
     // Default behavior: run both (for backward compatibility)
     log('Running both historical sync and monitoring (legacy mode)');
     syncHistoricalBlocks().catch(e => reportError(`Historical sync error: ${e.message}`));
-    monitorNewBlocks();
+    monitorNewBlocks().catch(error => {
+      console.error(`[Worker ${workerData.id}] Fatal error in monitorNewBlocks initialization:`, error);
+      reportError(`Fatal error in monitorNewBlocks: ${error.message}`);
+      // Don't exit immediately - let the interval retry logic handle recovery
+    });
   }
 }
 
