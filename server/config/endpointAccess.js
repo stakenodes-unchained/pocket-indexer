@@ -9,6 +9,7 @@ const ENDPOINT_ACCESS = {
   PUBLIC: [
     { method: "GET", path: "/api/v1/transactions" },
     { method: "GET", path: "/api/v1/transactions/count" },
+    { method: "POST", path: "/api/v1/transactions" },
     { method: "GET", path: "/api/v1/blocks" },
     { method: "GET", path: "/api/v1/blocks/:block_id" },
     { method: "GET", path: "/api/v1/gateways" },
@@ -39,6 +40,16 @@ const ENDPOINT_ACCESS = {
     { method: "POST", path: "/api/v1/claims/rewards" },
     { method: "GET", path: "/api/v1/claims/summary" },
     { method: "POST", path: "/api/v1/claims/summary" },
+    { method: "GET", path: "/api/v1/network-growth/summary" },
+    { method: "GET", path: "/api/v1/health/workers" },
+    // Network Growth endpoints
+    { method: "GET", path: "/api/v1/network-growth" },
+    { method: "GET", path: "/api/v1/network-growth/performance" },
+    { method: "GET", path: "/api/v1/network-growth/entities" },
+    { method: "GET", path: "/api/v1/applications" },
+    { method: "GET", path: "/api/v1/applications/:address" },
+    { method: "GET", path: "/api/v1/applications/:address/usage" },
+    { method: "GET", path: "/api/v1/applications/:address/claims/usage" },
   ],
 
   // JWT_AUTH endpoints - Require valid JWT access token (for user-facing features)
@@ -76,20 +87,12 @@ const ENDPOINT_ACCESS = {
 
   // TOKEN endpoints - Require valid API token
   TOKEN: [
-    // Network Growth endpoints (not categorized, defaulting to TOKEN for security)
-    { method: "GET", path: "/api/v1/network-growth" },
-    { method: "GET", path: "/api/v1/network-growth/performance" },
-    { method: "GET", path: "/api/v1/network-growth/entities" },
-    { method: "GET", path: "/api/v1/network-growth/summary" },
     // Transaction endpoints
-    { method: "POST", path: "/api/v1/transactions" },
+
     { method: "GET", path: "/api/v1/transactions/stats" },
     { method: "POST", path: "/api/v1/transactions/stats" },
     { method: "GET", path: "/api/v1/transactions/:transaction_id" },
-    { method: "GET", path: "/api/v1/applications" },
-    { method: "GET", path: "/api/v1/applications/:address" },
-    { method: "GET", path: "/api/v1/applications/:address/usage" },
-    { method: "GET", path: "/api/v1/applications/:address/claims/usage" },
+
     { method: "GET", path: "/api/v1/suppliers" },
     { method: "GET", path: "/api/v1/suppliers/:address" },
     { method: "GET", path: "/api/v1/suppliers/:address/performance" },
@@ -125,7 +128,7 @@ const ENDPOINT_ACCESS = {
     { method: "GET", path: "/api/v1/jobs" },
     { method: "GET", path: "/api/v1/jobs/:id" },
     { method: "POST", path: "/api/v1/jobs/:id/cancel" },
-    { method: "GET", path: "/api/v1/health/workers" },
+
     { method: "GET", path: "/api/v1/health/rpc" },
     { method: "GET", path: "/api/v1/health/block-results-workers" },
     { method: "GET", path: "/api/v1/health/rpc/history" },
