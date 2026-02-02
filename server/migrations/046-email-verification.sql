@@ -31,12 +31,26 @@ SET email_verified = true,
     email_verified_at = created_at
 WHERE email_verified IS NULL OR email_verified = false;
 
--- Add constraint: verification code must be 6 digits if present
-ALTER TABLE api_accounts
-  ADD CONSTRAINT chk_verification_code_format
-  CHECK (email_verification_code IS NULL OR email_verification_code ~ '^[0-9]{6}$');
+-- Add constraint: verification code must be 6 digits if present (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_verification_code_format'
+  ) THEN
+    ALTER TABLE api_accounts
+      ADD CONSTRAINT chk_verification_code_format
+      CHECK (email_verification_code IS NULL OR email_verification_code ~ '^[0-9]{6}$');
+  END IF;
+END $$;
 
--- Add constraint: verification attempts cannot be negative
-ALTER TABLE api_accounts
-  ADD CONSTRAINT chk_verification_attempts_positive
-  CHECK (email_verification_attempts >= 0);
+-- Add constraint: verification attempts cannot be negative (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_verification_attempts_positive'
+  ) THEN
+    ALTER TABLE api_accounts
+      ADD CONSTRAINT chk_verification_attempts_positive
+      CHECK (email_verification_attempts >= 0);
+  END IF;
+END $$;

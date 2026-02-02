@@ -8,9 +8,16 @@
 ALTER TABLE api_accounts
   ADD COLUMN IF NOT EXISTS account_type VARCHAR(20) DEFAULT 'full';
 
--- Set constraint for valid account types
-ALTER TABLE api_accounts
-  ADD CONSTRAINT chk_account_type CHECK (account_type IN ('api_only', 'full'));
+-- Set constraint for valid account types (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_account_type'
+  ) THEN
+    ALTER TABLE api_accounts
+      ADD CONSTRAINT chk_account_type CHECK (account_type IN ('api_only', 'full'));
+  END IF;
+END $$;
 
 -- Set default account_type for existing accounts based on whether they have a password
 UPDATE api_accounts
