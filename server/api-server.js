@@ -13,6 +13,7 @@ const RewardAnalyticsRefreshService = require('./services/rewardAnalyticsRefresh
 const dockerService = require('./services/dockerService');
 const redis = require('./config/redis');
 const authService = require('./services/authService');
+const apiDocsService = require('./services/apiDocsService');
 const authenticateToken = require('./middleware/auth');
 const { rateLimitMiddleware } = require('./middleware/rateLimit');
 const { apiLogger } = require('./middleware/apiLogger');
@@ -2077,6 +2078,44 @@ app.get('/api/v1/suppliers/:address', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ============================================================================
+// API Documentation Endpoints (PUBLIC)
+// ============================================================================
+
+// GET /api/v1/docs - Get API documentation (with optional search via ?q=query)
+app.get('/api/v1/docs', cacheMiddleware(3600), (req, res) => {
+  try {
+    const { q } = req.query;
+
+    // If search query provided, return search results
+    if (q) {
+      if (q.trim().length < 2) {
+        return res.status(400).json({ error: 'Search query must be at least 2 characters' });
+      }
+
+      const results = apiDocsService.searchEndpoints(q.trim());
+      return res.json({
+        data: results,
+        meta: {
+          query: q.trim(),
+          count: results.length
+        }
+      });
+    }
+
+    // Otherwise return full documentation
+    const docs = apiDocsService.getApiDocumentation();
+    res.json({ data: docs });
+  } catch (error) {
+    console.error('Error fetching API documentation:', error);
+    res.status(500).json({ error: 'Failed to fetch API documentation' });
+  }
+});
+
+// ============================================================================
+// Gateway Endpoints
+// ============================================================================
 
 // Gateways list
 app.get('/api/v1/gateways', async (req, res) => {
