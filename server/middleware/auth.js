@@ -29,10 +29,6 @@ const authenticateToken = async (req, res, next) => {
   const method = req.method;
   const path = req.path;
 
-  // Allow access to INTERNAL endpoints if the referrer is valid
-  if(isValidReferrer(req.headers.referer || req.headers.origin || req.headers.referrer)){
-    return next();
-  }
   
   // Get endpoint category
   const category = getEndpointCategory(method, path);
@@ -87,6 +83,11 @@ const authenticateToken = async (req, res, next) => {
 
   // TOKEN endpoints - require API token
   if (category === 'TOKEN') {
+
+    // Allow access to TOKEN endpoints if the request is from pocket.network
+    if((req.headers.referer || req.headers.origin || req.headers.referrer).includes("pocket.network")){
+      return next();
+    }
     // Extract token from Authorization header
     const authHeader = req.headers.authorization;
 
