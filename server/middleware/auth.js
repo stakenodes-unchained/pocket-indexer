@@ -29,6 +29,11 @@ const authenticateToken = async (req, res, next) => {
   const method = req.method;
   const path = req.path;
 
+  // Allow access to INTERNAL endpoints if the referrer is valid
+  if(isValidReferrer(req.headers.referer || req.headers.origin || req.headers.referrer)){
+    return next();
+  }
+  
   // Get endpoint category
   const category = getEndpointCategory(method, path);
 
