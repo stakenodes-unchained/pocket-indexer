@@ -8,6 +8,7 @@ const transactionService = require('./services/transactionService');
 const metricsCollector = require('./services/metricsCollector');
 const validatorService = require('./services/validatorService');
 const supplierEnrichmentService = require('./services/supplierEnrichmentService');
+const configLoader = require('./services/configLoader');
 
 
 // Load environment variables
@@ -35,8 +36,8 @@ app.get('/api/v1/health/workers', async (req, res) => {
       node: process.version,
       argv: process.argv,
       env: {
-        WORKER_CONCURRENCY: process.env.WORKER_CONCURRENCY,
-        HISTORICAL_BATCH_SIZE: process.env.HISTORICAL_BATCH_SIZE,
+        WORKER_CONCURRENCY: configLoader.get('WORKER_CONCURRENCY', 2),
+        HISTORICAL_BATCH_SIZE: configLoader.get('HISTORICAL_BATCH_SIZE', 10),
       }
     };
     const redis = await indexerPool.getRedisStats();
@@ -232,7 +233,7 @@ app.get('/api/v1/health/gaps', async (req, res) => {
 app.get('/api/v1/health/memory', async (req, res) => {
   try {
     const memUsage = process.memoryUsage();
-    const heapSizeMB = parseInt(process.env.NODE_HEAP_SIZE_MB || '32768', 10);
+    const heapSizeMB = configLoader.get('NODE_HEAP_SIZE_MB', 32768);
     
     // Calculate memory breakdown
     const heapUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024);
@@ -246,7 +247,7 @@ app.get('/api/v1/health/memory', async (req, res) => {
     const heapTotalPercent = heapSizeMB > 0 ? Math.round((heapTotalMB / heapSizeMB) * 100) : 0;
     
     // Warning threshold (default 12GB RSS)
-    const warningThresholdGB = parseInt(process.env.MEMORY_WARNING_THRESHOLD_GB || '12', 10);
+    const warningThresholdGB = configLoader.get('MEMORY_WARNING_THRESHOLD_GB', 12);
     const warningThresholdMB = warningThresholdGB * 1024;
     const isWarning = rssMB > warningThresholdMB;
     
@@ -422,7 +423,7 @@ app.post('/api/v1/admin/suppliers/enrich', async (req, res) => {
     supplierEnrichmentService.setExternalPool(transactionService.pgClient);
     
     const chains = chain ? [chain] : transactionService.getAvailableChains();
-    const batchSize = parseInt(process.env.SUPPLIER_ENRICHMENT_BATCH || '200', 10);
+    const batchSize = configLoader.get('SUPPLIER_ENRICHMENT_BATCH', 200);
     
     const results = {};
     
@@ -502,7 +503,7 @@ const startServer = async () => {
     console.log(`🔌 Port: ${PORT}`);
     console.log(`📊 Node Version: ${process.version}`);
     const memUsage = process.memoryUsage();
-    const heapSizeMB = process.env.NODE_HEAP_SIZE_MB || '32768';
+    const heapSizeMB = configLoader.get('NODE_HEAP_SIZE_MB', 32768);
     console.log(`💾 Memory Limits: Heap=${heapSizeMB}MB (via NODE_OPTIONS)`);
     console.log(`💾 Current Memory: Heap=${Math.round(memUsage.heapUsed / 1024 / 1024)}MB, RSS=${Math.round(memUsage.rss / 1024 / 1024)}MB, External=${Math.round(memUsage.external / 1024 / 1024)}MB`);
     console.log('='.repeat(80));
@@ -527,9 +528,9 @@ const startServer = async () => {
     supplierEnrichmentService.setExternalPool(transactionService.pgClient);
     
     // Start supplier enrichment periodic job
-    if (process.env.ENABLE_SUPPLIER_ENRICHMENT === 'true') {
-      const batchSize = parseInt(process.env.SUPPLIER_ENRICHMENT_BATCH || '200', 10);
-      const interval = parseInt(process.env.SUPPLIER_ENRICHMENT_INTERVAL_MS || '3600000', 10);
+    if (configLoader.get('ENABLE_SUPPLIER_ENRICHMENT', false)) {
+      const batchSize = configLoader.get('SUPPLIER_ENRICHMENT_BATCH', 200);
+      const interval = configLoader.get('SUPPLIER_ENRICHMENT_INTERVAL_MS', 3600000);
       
       console.log(`🔄 Starting supplier enrichment job (interval: ${interval}ms, batch: ${batchSize})`);
       
@@ -562,8 +563,8 @@ const startServer = async () => {
     }
     
     // Start validator refresh periodic job
-    if (process.env.ENABLE_VALIDATOR_REFRESH === 'true') {
-      const interval = parseInt(process.env.VALIDATOR_REFRESH_INTERVAL_MS || '21600000', 10);
+    if (configLoader.get('ENABLE_VALIDATOR_REFRESH', true)) {
+      const interval = configLoader.get('VALIDATOR_REFRESH_INTERVAL_MS', 21600000);
       
       console.log(`🔄 Starting validator refresh job (interval: ${interval}ms)`);
       

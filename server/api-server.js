@@ -13,15 +13,19 @@ const RewardAnalyticsRefreshService = require('./services/rewardAnalyticsRefresh
 const dockerService = require('./services/dockerService');
 const redis = require('./config/redis');
 const authService = require('./services/authService');
+const apiDocsService = require('./services/apiDocsService');
 const authenticateToken = require('./middleware/auth');
+const { rateLimitMiddleware } = require('./middleware/rateLimit');
 const { apiLogger } = require('./middleware/apiLogger');
 const AnalyticsAggregationService = require('./services/analyticsAggregationService');
+const configLoader = require('./services/configLoader');
 
 // Load environment variables
 dotenv.config();
 
 const PORT = process.env.PORT || 3006;
-const NUM_WORKERS = Math.min(1, Math.min(parseInt(process.env.CLUSTER_WORKERS || os.cpus().length, 10), 8));
+// Note: CLUSTER_WORKERS requires restart to take effect, read from config with env fallback
+const NUM_WORKERS = Math.min(1, Math.min(configLoader.get('CLUSTER_WORKERS', os.cpus().length), 8));
 
 // Initialize reward analytics refresh service (only in first worker to avoid duplicate refreshes)
 let rewardAnalyticsRefreshService = null;
@@ -160,6 +164,11 @@ app.use((err, req, res, next) => {
 // Authentication middleware - applies to all routes based on endpoint categorization
 // MUST come BEFORE caching to ensure auth is always checked
 app.use(authenticateToken);
+
+// Rate limiting middleware - applies after auth so we have user context
+// Enforces rate limits based on rules configured in database
+// Can be enabled/disabled via system config (rate_limiting.RATE_LIMIT_ENABLED)
+app.use(rateLimitMiddleware());
 
 // API Logger middleware - logs all requests to database for analytics
 // Comes AFTER auth so we can log user_id
@@ -2069,6 +2078,44 @@ app.get('/api/v1/suppliers/:address', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ============================================================================
+// API Documentation Endpoints (PUBLIC)
+// ============================================================================
+
+// GET /api/v1/docs - Get API documentation (with optional search via ?q=query)
+app.get('/api/v1/docs', cacheMiddleware(3600), (req, res) => {
+  try {
+    const { q } = req.query;
+
+    // If search query provided, return search results
+    if (q) {
+      if (q.trim().length < 2) {
+        return res.status(400).json({ error: 'Search query must be at least 2 characters' });
+      }
+
+      const results = apiDocsService.searchEndpoints(q.trim());
+      return res.json({
+        data: results,
+        meta: {
+          query: q.trim(),
+          count: results.length
+        }
+      });
+    }
+
+    // Otherwise return full documentation
+    const docs = apiDocsService.getApiDocumentation();
+    res.json({ data: docs });
+  } catch (error) {
+    console.error('Error fetching API documentation:', error);
+    res.status(500).json({ error: 'Failed to fetch API documentation' });
+  }
+});
+
+// ============================================================================
+// Gateway Endpoints
+// ============================================================================
 
 // Gateways list
 app.get('/api/v1/gateways', async (req, res) => {
@@ -4746,7 +4793,7 @@ const startServer = async () => {
     // In cluster mode, only worker 1 should run the refresh service
     if ((!cluster.worker || cluster.worker.id === 1) && !rewardAnalyticsRefreshService) {
       rewardAnalyticsRefreshService = new RewardAnalyticsRefreshService({
-        refreshIntervalMs: parseInt(process.env.REWARD_ANALYTICS_REFRESH_INTERVAL_MS || '900000', 10) // 15 minutes default
+        refreshIntervalMs: configLoader.get('REWARD_ANALYTICS_REFRESH_INTERVAL_MS', 900000) // 15 minutes default
       });
       rewardAnalyticsRefreshService.start();
       console.log('✅ Reward analytics refresh service started');
