@@ -4,8 +4,9 @@ const { fetchTransactionByHash } = require('./rpc');
 const { extractTransactionDetails, hashTx } = require('./transformer');
 const { classifyTransaction, parseClaims } = require('./entityParser');
 require('dotenv').config();
+const configLoader = require('../configLoader');
 
-const PAGE_SIZE = parseInt(process.env.PAGE_SIZE || '50', 10);
+const PAGE_SIZE = configLoader.get('PAGE_SIZE', 50);
 const REDIS_CACHE_TX_DETAIL = (process.env.REDIS_CACHE_TX_DETAIL || 'false') === 'true';
 const REDIS_TX_TTL_SEC = parseInt(process.env.REDIS_TX_TTL_SEC || '0', 10); // 0 = no TTL
 const REDIS_RECENT_TTL_SEC = parseInt(process.env.REDIS_RECENT_TTL_SEC || '0', 10); // 0 = no TTL
@@ -14,7 +15,7 @@ const REDIS_INDEX_TXS = (process.env.REDIS_INDEX_TXS || 'false') === 'true';
 // PostgreSQL connection pool (shared across worker thread operations)
 // Using pool instead of single client to reduce memory overhead and enable connection reuse
 // Calculate adaptive pool size based on number of workers to prevent connection exhaustion
-const blockResultsWorkerCount = parseInt(process.env.BLOCK_RESULTS_WORKER_COUNT || '2', 10);
+const blockResultsWorkerCount = configLoader.get('BLOCK_RESULTS_WORKER_COUNT', 2);
 const basePoolSize = parseInt(process.env.DB_POOL_SIZE || '10', 10);
 // When multiple block results workers are used, reduce pool size per worker to prevent exhaustion
 // Formula: basePoolSize / (1 + blockResultsWorkerCount / 2) with minimum of 3

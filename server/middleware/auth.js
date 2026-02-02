@@ -68,12 +68,13 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
 
-    // Attach user info to request
+    // Attach user info to request (including role_id from JWT payload)
     req.user = {
       accountId: decoded.accountId,
       email: decoded.email,
       name: decoded.name,
       email_verified: decoded.email_verified,
+      roleId: decoded.roleId,
     };
 
     return next();
@@ -97,10 +98,13 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
 
-    // Attach user info to request
+    // Attach user info to request (including role_id for rate limiting)
     req.user = {
       accountId: tokenData.account_id,
       tokenId: tokenData.id,
+      roleId: tokenData.role_id,
+      email: tokenData.email,
+      name: tokenData.account_name,
     };
 
     // Update token last_used_at (async, don't wait)
@@ -142,6 +146,9 @@ const authenticateToken = async (req, res, next) => {
   req.user = {
     accountId: tokenData.account_id,
     tokenId: tokenData.id,
+    roleId: tokenData.role_id,
+    email: tokenData.email,
+    name: tokenData.account_name,
   };
 
   authService.updateTokenLastUsed(tokenData.id).catch(err => {

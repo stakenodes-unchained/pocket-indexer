@@ -154,7 +154,8 @@ const checkPermissions = (options = {}) => {
       }
 
       const userId = req.user.accountId;
-      const requestPath = req.path;
+      // Use originalUrl to get the full path including the mount point
+      const requestPath = req.originalUrl.split('?')[0]; // Remove query string
       const requestMethod = req.method;
 
       // Get user permissions

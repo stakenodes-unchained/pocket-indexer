@@ -2,6 +2,7 @@ const { Worker } = require('worker_threads');
 const path = require('path');
 const redis = require('../../config/redis');
 const { getRpcEndpoints } = require('../../config/rpc');
+const configLoader = require('../configLoader');
 
 // Worker pool for parallel processing
 class TransactionWorkerPool {
@@ -12,9 +13,9 @@ class TransactionWorkerPool {
     this.blockResultsWorkers = new Map(); // Map<string, Worker[]> - array of workers per RPC
     this.blockResultsWorkerStats = new Map(); // Store stats from block results workers
     this.rpcEndpoints = getRpcEndpoints();
-    this.concurrency = parseInt(process.env.WORKER_CONCURRENCY || '4', 10);
-    this.batchSize = parseInt(process.env.HISTORICAL_BATCH_SIZE || '50', 10);
-    this.blockResultsWorkerCount = parseInt(process.env.BLOCK_RESULTS_WORKER_COUNT || '2', 10); // Default: 1 for backward compatibility
+    this.concurrency = configLoader.get('WORKER_CONCURRENCY', 4);
+    this.batchSize = configLoader.get('HISTORICAL_BATCH_SIZE', 50);
+    this.blockResultsWorkerCount = configLoader.get('BLOCK_RESULTS_WORKER_COUNT', 2);
     this.healthCheckInterval = null;
   }
 
@@ -664,13 +665,13 @@ class TransactionWorkerPool {
       
       // Log memory usage every 5 minutes
       const memUsage = process.memoryUsage();
-      const heapSizeMB = parseInt(process.env.NODE_HEAP_SIZE_MB || '32768', 10);
+      const heapSizeMB = configLoader.get('NODE_HEAP_SIZE_MB', 32768);
       const rssMB = Math.round(memUsage.rss / 1024 / 1024);
       const heapUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024);
       const externalMB = Math.round(memUsage.external / 1024 / 1024);
       const heapUsedPercent = heapSizeMB > 0 ? Math.round((heapUsedMB / heapSizeMB) * 100) : 0;
       
-      const warningThresholdGB = parseInt(process.env.MEMORY_WARNING_THRESHOLD_GB || '12', 10);
+      const warningThresholdGB = configLoader.get('MEMORY_WARNING_THRESHOLD_GB', 12);
       const warningThresholdMB = warningThresholdGB * 1024;
       
       console.log(`[Memory] RSS=${rssMB}MB, Heap=${heapUsedMB}MB/${heapSizeMB}MB (${heapUsedPercent}%), External=${externalMB}MB`);

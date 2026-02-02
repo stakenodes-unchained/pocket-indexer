@@ -41,6 +41,59 @@ class UserManagementService {
   }
 
   /**
+   * Clear all role-related cache entries
+   * Called after any role mutation (create, update, delete, module assignment)
+   */
+  async clearRoleCache() {
+    try {
+      // Clear all cached API responses for /api/admin/roles endpoints
+      const keys = await redis.keys('api:GET:/api/admin/roles*');
+      if (keys.length > 0) {
+        await redis.del(...keys);
+        console.log(`Cleared ${keys.length} role cache entries`);
+      }
+    } catch (err) {
+      console.error('Failed to clear role cache:', err);
+      // Don't throw - cache clearing is not critical
+    }
+  }
+
+  /**
+   * Clear all module-related cache entries
+   * Called after any module mutation (create, update, delete)
+   */
+  async clearModuleCache() {
+    try {
+      // Clear all cached API responses for /api/admin/modules endpoints
+      const keys = await redis.keys('api:GET:/api/admin/modules*');
+      if (keys.length > 0) {
+        await redis.del(...keys);
+        console.log(`Cleared ${keys.length} module cache entries`);
+      }
+    } catch (err) {
+      console.error('Failed to clear module cache:', err);
+      // Don't throw - cache clearing is not critical
+    }
+  }
+
+  /**
+   * Clear all admin-related cache entries
+   * Called when changes affect multiple admin areas
+   */
+  async clearAllAdminCache() {
+    try {
+      const keys = await redis.keys('api:GET:/api/admin/*');
+      if (keys.length > 0) {
+        await redis.del(...keys);
+        console.log(`Cleared ${keys.length} admin cache entries`);
+      }
+    } catch (err) {
+      console.error('Failed to clear admin cache:', err);
+      // Don't throw - cache clearing is not critical
+    }
+  }
+
+  /**
    * Get all users with optional filters
    * @param {Object} filters - { role_id, status, search, limit, offset }
    * @returns {Promise<Array>}
@@ -200,6 +253,8 @@ class UserManagementService {
 
       // Clear user cache after successful creation
       await this.clearUserCache();
+      // Also clear role cache to update user counts
+      await this.clearRoleCache();
 
       return result.rows[0];
     } catch (error) {
@@ -266,6 +321,11 @@ class UserManagementService {
       // Clear user cache after successful update
       await this.clearUserCache();
 
+      // If role was changed, also clear role cache to update user counts
+      if (role_id !== undefined) {
+        await this.clearRoleCache();
+      }
+
       return result.rows[0];
     } catch (error) {
       await client.query('ROLLBACK');
@@ -296,6 +356,8 @@ class UserManagementService {
 
       // Clear user cache after successful deletion
       await this.clearUserCache();
+      // Also clear role cache to update user counts
+      await this.clearRoleCache();
 
       return result.rows.length > 0;
     } catch (error) {
@@ -580,6 +642,9 @@ class UserManagementService {
         [name, slug, description]
       );
 
+      // Clear role cache after successful creation
+      await this.clearRoleCache();
+
       return result.rows[0];
     } finally {
       client.release();
@@ -622,6 +687,9 @@ class UserManagementService {
       );
 
       await client.query('COMMIT');
+
+      // Clear role cache after successful update
+      await this.clearRoleCache();
 
       return result.rows[0];
     } catch (error) {
@@ -673,6 +741,9 @@ class UserManagementService {
 
       await client.query('COMMIT');
 
+      // Clear role cache after successful deletion
+      await this.clearRoleCache();
+
       return result.rows.length > 0;
     } catch (error) {
       await client.query('ROLLBACK');
@@ -701,6 +772,9 @@ class UserManagementService {
         [roleId, moduleId, JSON.stringify(permissions)]
       );
 
+      // Clear role cache after module assignment
+      await this.clearRoleCache();
+
       return result.rows[0];
     } finally {
       client.release();
@@ -720,6 +794,9 @@ class UserManagementService {
         'DELETE FROM role_module_access WHERE role_id = $1 AND module_id = $2 RETURNING id',
         [roleId, moduleId]
       );
+
+      // Clear role cache after module removal
+      await this.clearRoleCache();
 
       return result.rows.length > 0;
     } finally {
@@ -741,6 +818,170 @@ class UserManagementService {
       );
 
       return result.rows;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get module by ID
+   * @param {number} moduleId
+   * @returns {Promise<Object>}
+   */
+  async getModuleById(moduleId) {
+    const client = await this.pgPool.connect();
+    try {
+      const result = await client.query(
+        `SELECT id, name, slug, description, endpoints, is_active, created_at
+        FROM modules
+        WHERE id = $1`,
+        [moduleId]
+      );
+
+      return result.rows.length > 0 ? result.rows[0] : null;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Create new module
+   * @param {Object} moduleData - { name, slug, description, endpoints }
+   * @returns {Promise<Object>}
+   */
+  async createModule(moduleData) {
+    const client = await this.pgPool.connect();
+    try {
+      const { name, slug, description, endpoints } = moduleData;
+
+      const result = await client.query(
+        `INSERT INTO modules (name, slug, description, endpoints, is_active)
+        VALUES ($1, $2, $3, $4, TRUE)
+        RETURNING id, name, slug, description, endpoints, is_active, created_at`,
+        [name, slug, description, JSON.stringify(endpoints || [])]
+      );
+
+      // Clear module cache after successful creation
+      await this.clearModuleCache();
+      // Also clear role cache since roles display modules
+      await this.clearRoleCache();
+
+      return result.rows[0];
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Update module
+   * @param {number} moduleId
+   * @param {Object} moduleData - { name, description, endpoints, is_active }
+   * @returns {Promise<Object>}
+   */
+  async updateModule(moduleId, moduleData) {
+    const client = await this.pgPool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { name, description, endpoints, is_active } = moduleData;
+
+      // Build update query dynamically
+      const updates = [];
+      const params = [];
+      let paramCount = 1;
+
+      if (name !== undefined) {
+        updates.push(`name = $${paramCount++}`);
+        params.push(name);
+      }
+
+      if (description !== undefined) {
+        updates.push(`description = $${paramCount++}`);
+        params.push(description);
+      }
+
+      if (endpoints !== undefined) {
+        updates.push(`endpoints = $${paramCount++}`);
+        params.push(JSON.stringify(endpoints));
+      }
+
+      if (is_active !== undefined) {
+        updates.push(`is_active = $${paramCount++}`);
+        params.push(is_active);
+      }
+
+      if (updates.length === 0) {
+        throw new Error('No fields to update');
+      }
+
+      params.push(moduleId);
+      const query = `
+        UPDATE modules
+        SET ${updates.join(', ')}
+        WHERE id = $${paramCount}
+        RETURNING id, name, slug, description, endpoints, is_active, created_at
+      `;
+
+      const result = await client.query(query, params);
+
+      if (result.rows.length === 0) {
+        throw new Error('Module not found');
+      }
+
+      await client.query('COMMIT');
+
+      // Clear module cache after successful update
+      await this.clearModuleCache();
+      // Also clear role cache since roles display modules
+      await this.clearRoleCache();
+
+      return result.rows[0];
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Delete module
+   * @param {number} moduleId
+   * @returns {Promise<boolean>}
+   */
+  async deleteModule(moduleId) {
+    const client = await this.pgPool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Check if any roles are using this module
+      const rolesResult = await client.query(
+        'SELECT COUNT(*) FROM role_module_access WHERE module_id = $1',
+        [moduleId]
+      );
+
+      if (parseInt(rolesResult.rows[0].count) > 0) {
+        throw new Error('Cannot delete module assigned to roles. Remove from roles first.');
+      }
+
+      const result = await client.query(
+        'DELETE FROM modules WHERE id = $1 RETURNING id',
+        [moduleId]
+      );
+
+      await client.query('COMMIT');
+
+      if (result.rows.length > 0) {
+        // Clear module cache after successful deletion
+        await this.clearModuleCache();
+        // Also clear role cache since roles display modules
+        await this.clearRoleCache();
+      }
+
+      return result.rows.length > 0;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
     } finally {
       client.release();
     }

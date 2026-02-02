@@ -314,7 +314,7 @@ class AuthService {
 
       const result = await client.query(
         `SELECT t.id, t.account_id, t.token_prefix, t.name, t.status, t.expires_at, t.revoked_at,
-                a.id as account_id, a.status as account_status
+                a.id as account_id, a.status as account_status, a.role_id, a.email, a.name as account_name
          FROM api_tokens t
          JOIN api_accounts a ON t.account_id = a.id
          WHERE t.token_hash = $1`,
@@ -353,6 +353,9 @@ class AuthService {
         token_prefix: tokenData.token_prefix,
         name: tokenData.name,
         status: tokenData.status,
+        role_id: tokenData.role_id,
+        email: tokenData.email,
+        account_name: tokenData.account_name,
       };
     } finally {
       client.release();
@@ -1033,9 +1036,9 @@ class AuthService {
   async loginWithJWT(email, password, userAgent = null, ipAddress = null) {
     const client = await this.pgPool.connect();
     try {
-      // Find account by email
+      // Find account by email (including role_id for rate limiting)
       const accountResult = await client.query(
-        `SELECT id, email, password_hash, name, organization, status, email_verified
+        `SELECT id, email, password_hash, name, organization, status, email_verified, role_id
          FROM api_accounts
          WHERE email = $1 AND status = 'active'`,
         [email]
@@ -1066,12 +1069,13 @@ class AuthService {
         [account.id]
       );
 
-      // Generate JWT tokens
+      // Generate JWT tokens (include role_id for rate limiting)
       const payload = {
         accountId: account.id,
         email: account.email,
         name: account.name,
         email_verified: account.email_verified,
+        roleId: account.role_id,
       };
 
       const accessToken = this.generateAccessToken(payload);
@@ -1088,6 +1092,7 @@ class AuthService {
           organization: account.organization,
           status: account.status,
           email_verified: account.email_verified,
+          role_id: account.role_id,
         },
         accessToken,
         refreshToken,
@@ -1110,11 +1115,11 @@ class AuthService {
       throw new Error('Invalid or expired refresh token');
     }
 
-    // Get fresh account data
+    // Get fresh account data (including role_id for rate limiting)
     const client = await this.pgPool.connect();
     try {
       const accountResult = await client.query(
-        `SELECT id, email, name, organization, status, email_verified
+        `SELECT id, email, name, organization, status, email_verified, role_id
          FROM api_accounts
          WHERE id = $1 AND status = 'active'`,
         [sessionData.accountId]
@@ -1126,12 +1131,13 @@ class AuthService {
 
       const account = accountResult.rows[0];
 
-      // Generate new access token
+      // Generate new access token (include role_id for rate limiting)
       const payload = {
         accountId: account.id,
         email: account.email,
         name: account.name,
         email_verified: account.email_verified,
+        roleId: account.role_id,
       };
 
       const newAccessToken = this.generateAccessToken(payload);

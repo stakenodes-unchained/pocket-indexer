@@ -19,22 +19,21 @@ const {
   recoverStaleProcessingItems
 } = require('./blockResultsQueue');
 const { pgPool, connectClients } = require('./db');
+const configLoader = require('../configLoader');
 
 const { rpcName, blockResultsRpcUrl, rpcUrl, id, blockResultsRole } = workerData;
 
-// Configuration
-const POLL_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_POLL_INTERVAL_MS || '500', 10); // 1 second default
-// Reduced default batch size from 10 to 8 to reduce memory usage
-const BATCH_SIZE = parseInt(process.env.BLOCK_RESULTS_BATCH_SIZE || '8', 10); // Batch size for dequeuing
-// Reduced default parallel limit from 5 to 3 to reduce memory usage  
-const PARALLEL_PROCESSING_LIMIT = parseInt(process.env.BLOCK_RESULTS_PARALLEL_LIMIT || '10', 10); // Max parallel block processing
-const RATE_LIMIT_DELAY_MS = parseInt(process.env.BLOCK_RESULTS_RATE_LIMIT_MS || '100', 10); // 100ms between requests
-const STATS_REPORT_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_STATS_INTERVAL_MS || '30000', 10); // 30 seconds default
-const ASYNC_EVENTS = process.env.BLOCK_RESULTS_ASYNC_EVENTS !== 'false'; // Process events asynchronously (default: true)
-const LAG_BLOCKS = parseInt(process.env.BLOCK_RESULTS_LAG_BLOCKS || '5', 10); // Number of blocks to lag behind current height
-const CURRENT_WINDOW_BLOCKS = parseInt(process.env.BLOCK_RESULTS_CURRENT_WINDOW_BLOCKS || '50', 10);
-const LEASE_SCAN_COUNT = parseInt(process.env.BLOCK_RESULTS_LEASE_SCAN_COUNT || '8', 10);
-const HEARTBEAT_LOG_INTERVAL_MS = parseInt(process.env.BLOCK_RESULTS_HEARTBEAT_INTERVAL_MS || '60000', 10); // 60 seconds default
+// Configuration - loaded from database with env fallback
+const POLL_INTERVAL_MS = configLoader.get('BLOCK_RESULTS_POLL_INTERVAL_MS', 500);
+const BATCH_SIZE = configLoader.get('BLOCK_RESULTS_BATCH_SIZE', 8);
+const PARALLEL_PROCESSING_LIMIT = configLoader.get('BLOCK_RESULTS_PARALLEL_LIMIT', 10);
+const RATE_LIMIT_DELAY_MS = configLoader.get('BLOCK_RESULTS_RATE_LIMIT_MS', 100);
+const STATS_REPORT_INTERVAL_MS = configLoader.get('BLOCK_RESULTS_STATS_INTERVAL_MS', 30000);
+const ASYNC_EVENTS = configLoader.get('BLOCK_RESULTS_ASYNC_EVENTS', true);
+const LAG_BLOCKS = configLoader.get('BLOCK_RESULTS_LAG_BLOCKS', 5);
+const CURRENT_WINDOW_BLOCKS = configLoader.get('BLOCK_RESULTS_CURRENT_WINDOW_BLOCKS', 50);
+const LEASE_SCAN_COUNT = configLoader.get('BLOCK_RESULTS_LEASE_SCAN_COUNT', 8);
+const HEARTBEAT_LOG_INTERVAL_MS = configLoader.get('BLOCK_RESULTS_HEARTBEAT_INTERVAL_MS', 60000);
 
 // Stats tracking
 let stats = {

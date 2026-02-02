@@ -1,0 +1,203 @@
+const rateLimitService = require('../services/rateLimitService');
+const systemConfigService = require('../services/systemConfigService');
+
+/**
+ * Rate Limit Middleware
+ * Enforces rate limits based on configured rules in the database
+ * Uses Redis for distributed rate limiting with sliding window algorithm
+ */
+const rateLimitMiddleware = (options = {}) => {
+  const {
+    skip = () => false, // Function to skip rate limiting for certain requests
+    keyGenerator = null, // Custom key generator
+    onRateLimited = null, // Custom handler for rate limited requests
+  } = options;
+
+  return async (req, res, next) => {
+    try {
+      // Check if rate limiting is globally enabled
+      const rateLimitEnabled = await systemConfigService.getConfigValue('rate_limiting', 'RATE_LIMIT_ENABLED');
+      if (rateLimitEnabled === false) {
+        return next();
+      }
+
+      // Skip for certain paths
+      if (req.path.includes('/health') || req.path.includes('/favicon')) {
+        return next();
+      }
+
+      // Allow custom skip logic
+      if (skip(req)) {
+        return next();
+      }
+
+      // Get user info from request (set by auth middleware)
+      const userId = req.user?.accountId || 0;
+      const roleId = req.user?.roleId || null;
+      const endpoint = req.path;
+
+      // Check rate limit
+      const result = await rateLimitService.checkRateLimit(userId, roleId, endpoint);
+
+      // Set rate limit headers
+      if (result.limit !== null) {
+        res.set('X-RateLimit-Limit', result.limit);
+        res.set('X-RateLimit-Remaining', result.remaining);
+        res.set('X-RateLimit-Reset', result.resetAt);
+      }
+
+      if (result.rule) {
+        res.set('X-RateLimit-Policy', `${result.rule.name} (${result.rule.windowSeconds}s window)`);
+      }
+
+      // If not allowed, return 429 Too Many Requests
+      if (!result.allowed) {
+        if (onRateLimited) {
+          return onRateLimited(req, res, result);
+        }
+
+        res.set('Retry-After', result.rule?.windowSeconds || 60);
+
+        return res.status(429).json({
+          success: false,
+          error: 'Too Many Requests',
+          message: `Rate limit exceeded. Please try again in ${result.rule?.windowSeconds || 60} seconds.`,
+          retryAfter: result.rule?.windowSeconds || 60,
+          limit: result.limit,
+          resetAt: result.resetAt,
+        });
+      }
+
+      next();
+    } catch (error) {
+      // Fail open - if rate limiting fails, allow the request
+      console.error('Rate limit middleware error:', error);
+      next();
+    }
+  };
+};
+
+/**
+ * Create a rate limiter for specific endpoints
+ * @param {object} options - Configuration options
+ * @returns {function} Express middleware
+ */
+const createRateLimiter = (options = {}) => {
+  return rateLimitMiddleware(options);
+};
+
+/**
+ * Strict rate limiter that fails closed (denies on error)
+ * Use for sensitive endpoints that must have rate limiting
+ */
+const strictRateLimiter = (options = {}) => {
+  return async (req, res, next) => {
+    try {
+      // Check if rate limiting is globally enabled
+      const rateLimitEnabled = await systemConfigService.getConfigValue('rate_limiting', 'RATE_LIMIT_ENABLED');
+      if (rateLimitEnabled === false) {
+        return next();
+      }
+
+      const userId = req.user?.accountId || 0;
+      const roleId = req.user?.roleId || null;
+      const endpoint = req.path;
+
+      const result = await rateLimitService.checkRateLimit(userId, roleId, endpoint);
+
+      // Set headers
+      if (result.limit !== null) {
+        res.set('X-RateLimit-Limit', result.limit);
+        res.set('X-RateLimit-Remaining', result.remaining);
+        res.set('X-RateLimit-Reset', result.resetAt);
+      }
+
+      if (!result.allowed) {
+        res.set('Retry-After', result.rule?.windowSeconds || 60);
+        return res.status(429).json({
+          success: false,
+          error: 'Too Many Requests',
+          message: `Rate limit exceeded. Please try again later.`,
+          retryAfter: result.rule?.windowSeconds || 60,
+        });
+      }
+
+      next();
+    } catch (error) {
+      // Fail closed - deny request on error
+      console.error('Strict rate limit error:', error);
+      return res.status(503).json({
+        success: false,
+        error: 'Service Temporarily Unavailable',
+        message: 'Rate limiting service is temporarily unavailable.',
+      });
+    }
+  };
+};
+
+/**
+ * IP-based rate limiter (for unauthenticated requests)
+ * Uses IP address instead of user ID for rate limiting
+ */
+const ipRateLimiter = (requestsPerWindow = 100, windowSeconds = 60) => {
+  const redis = require('../config/redis');
+  const COUNTER_PREFIX = 'rl:ip:';
+
+  return async (req, res, next) => {
+    try {
+      // Check if rate limiting is globally enabled
+      const rateLimitEnabled = await systemConfigService.getConfigValue('rate_limiting', 'RATE_LIMIT_ENABLED');
+      if (rateLimitEnabled === false) {
+        return next();
+      }
+
+      // Get client IP
+      const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+      const key = `${COUNTER_PREFIX}${ip}`;
+      const windowMs = windowSeconds * 1000;
+      const now = Date.now();
+      const windowStart = now - windowMs;
+
+      // Use Redis sorted set for sliding window
+      const pipeline = redis.pipeline();
+      pipeline.zremrangebyscore(key, 0, windowStart);
+      pipeline.zcard(key);
+      pipeline.zadd(key, now, `${now}:${Math.random()}`);
+      pipeline.expire(key, windowSeconds + 1);
+
+      const results = await pipeline.exec();
+      const currentCount = results[1][1] || 0;
+
+      const allowed = currentCount < requestsPerWindow;
+      const remaining = Math.max(0, requestsPerWindow - currentCount - 1);
+
+      // Set headers
+      res.set('X-RateLimit-Limit', requestsPerWindow);
+      res.set('X-RateLimit-Remaining', allowed ? remaining : 0);
+      res.set('X-RateLimit-Reset', new Date(now + windowMs).toISOString());
+
+      if (!allowed) {
+        res.set('Retry-After', windowSeconds);
+        return res.status(429).json({
+          success: false,
+          error: 'Too Many Requests',
+          message: `Rate limit exceeded. Please try again in ${windowSeconds} seconds.`,
+          retryAfter: windowSeconds,
+        });
+      }
+
+      next();
+    } catch (error) {
+      // Fail open
+      console.error('IP rate limit error:', error);
+      next();
+    }
+  };
+};
+
+module.exports = {
+  rateLimitMiddleware,
+  createRateLimiter,
+  strictRateLimiter,
+  ipRateLimiter,
+};
