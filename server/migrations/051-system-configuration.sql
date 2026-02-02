@@ -59,24 +59,24 @@ FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- 5. Insert default Worker Configuration
 INSERT INTO system_config (category, key, value, value_type, description, default_value, min_value, max_value, requires_restart) VALUES
-('worker', 'WORKER_CONCURRENCY', '2', 'integer', 'Number of concurrent worker threads', '2', '1', '16', TRUE),
-('worker', 'HISTORICAL_BATCH_SIZE', '10', 'integer', 'Batch size for historical processing', '10', '1', '100', FALSE),
+('worker', 'WORKER_CONCURRENCY', '10', 'integer', 'Number of concurrent worker threads', '2', '1', '16', TRUE),
+('worker', 'HISTORICAL_BATCH_SIZE', '80', 'integer', 'Batch size for historical processing', '10', '1', '100', FALSE),
 ('worker', 'CLUSTER_WORKERS', '4', 'integer', 'Number of cluster workers for API server', '4', '1', '16', TRUE),
 ('worker', 'PAGE_SIZE', '50', 'integer', 'Default pagination size for API responses', '50', '10', '500', FALSE)
 ON CONFLICT (category, key) DO NOTHING;
 
 -- 6. Insert default Block Results Workers Configuration
 INSERT INTO system_config (category, key, value, value_type, description, default_value, min_value, max_value, requires_restart) VALUES
-('block_results', 'BLOCK_RESULTS_WORKER_COUNT', '2', 'integer', 'Number of block result workers', '2', '1', '10', TRUE),
+('block_results', 'BLOCK_RESULTS_WORKER_COUNT', '4', 'integer', 'Number of block result workers', '2', '1', '10', TRUE),
 ('block_results', 'BLOCK_RESULTS_POLL_INTERVAL_MS', '500', 'integer', 'Polling interval in milliseconds', '500', '100', '5000', FALSE),
-('block_results', 'BLOCK_RESULTS_BATCH_SIZE', '8', 'integer', 'Batch size for block results processing', '8', '1', '50', FALSE),
-('block_results', 'BLOCK_RESULTS_PARALLEL_LIMIT', '10', 'integer', 'Maximum parallel operations', '10', '1', '50', FALSE),
+('block_results', 'BLOCK_RESULTS_BATCH_SIZE', '5', 'integer', 'Batch size for block results processing', '8', '1', '50', FALSE),
+('block_results', 'BLOCK_RESULTS_PARALLEL_LIMIT', '3', 'integer', 'Maximum parallel operations', '10', '1', '50', FALSE),
 ('block_results', 'BLOCK_RESULTS_RATE_LIMIT_MS', '100', 'integer', 'Rate limiting interval in milliseconds', '100', '0', '1000', FALSE),
 ('block_results', 'BLOCK_RESULTS_STATS_INTERVAL_MS', '30000', 'integer', 'Stats reporting interval in milliseconds', '30000', '5000', '300000', FALSE),
 ('block_results', 'BLOCK_RESULTS_ASYNC_EVENTS', 'true', 'boolean', 'Enable async event processing', 'true', NULL, NULL, FALSE),
 ('block_results', 'BLOCK_RESULTS_LAG_BLOCKS', '5', 'integer', 'Block lag threshold', '5', '1', '100', FALSE),
-('block_results', 'BLOCK_RESULTS_CURRENT_WINDOW_BLOCKS', '50', 'integer', 'Current window size in blocks', '50', '10', '500', FALSE),
-('block_results', 'BLOCK_RESULTS_LEASE_SCAN_COUNT', '8', 'integer', 'Scan count for leases', '8', '1', '50', FALSE),
+('block_results', 'BLOCK_RESULTS_CURRENT_WINDOW_BLOCKS', '5000', 'integer', 'Current window size in blocks', '50', '10', '500', FALSE),
+('block_results', 'BLOCK_RESULTS_LEASE_SCAN_COUNT', '100', 'integer', 'Scan count for leases', '8', '1', '50', FALSE),
 ('block_results', 'BLOCK_RESULTS_HEARTBEAT_INTERVAL_MS', '60000', 'integer', 'Heartbeat interval in milliseconds', '60000', '10000', '300000', FALSE),
 ('block_results', 'BLOCK_RESULTS_EVENT_CONCURRENCY', '50', 'integer', 'Event concurrency level', '50', '1', '200', FALSE),
 ('block_results', 'BLOCK_RESULTS_TX_LOG_BATCH_SIZE', '50', 'integer', 'Transaction log batch size', '50', '10', '500', FALSE)
@@ -101,7 +101,7 @@ ON CONFLICT (category, key) DO NOTHING;
 
 -- 9. Insert default Performance Tuning Configuration
 INSERT INTO system_config (category, key, value, value_type, description, default_value, min_value, max_value, requires_restart) VALUES
-('performance', 'PROCESSING_DELAY', '100', 'integer', 'Delay between transaction batches to prevent Redis overload (ms)', '100', '0', '5000', FALSE),
+('performance', 'PROCESSING_DELAY', '50', 'integer', 'Delay between transaction batches to prevent Redis overload (ms)', '100', '0', '5000', FALSE),
 ('performance', 'REWARD_ANALYTICS_REFRESH_INTERVAL_MS', '900000', 'integer', 'Reward analytics refresh interval (default 15 minutes)', '900000', '60000', '3600000', FALSE)
 ON CONFLICT (category, key) DO NOTHING;
 
