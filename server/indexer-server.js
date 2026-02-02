@@ -490,6 +490,32 @@ app.post('/api/v1/admin/validators/refresh', async (req, res) => {
   }
 });
 
+// Global error handlers to prevent server crashes
+process.on('uncaughtException', (error) => {
+  console.error('='.repeat(80));
+  console.error('❌ UNCAUGHT EXCEPTION - Server will continue running');
+  console.error(`📅 Time: ${new Date().toISOString()}`);
+  console.error(`💥 Error: ${error.message}`);
+  console.error(`📋 Stack Trace:`);
+  console.error(error.stack);
+  console.error('='.repeat(80));
+  // Don't exit - let the server continue running
+  // The worker pool will handle worker errors separately
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('='.repeat(80));
+  console.error('❌ UNHANDLED PROMISE REJECTION - Server will continue running');
+  console.error(`📅 Time: ${new Date().toISOString()}`);
+  console.error(`💥 Reason:`, reason);
+  if (reason instanceof Error) {
+    console.error(`📋 Stack Trace:`);
+    console.error(reason.stack);
+  }
+  console.error('='.repeat(80));
+  // Don't exit - let the server continue running
+});
+
 // Start the server and initialize the worker pool
 const startServer = async () => {
   try {
@@ -513,9 +539,26 @@ const startServer = async () => {
     await indexerPool.initialize();
     console.log('✅ Worker pool initialized successfully');
     
-    // Start the HTTP server
-    app.listen(PORT, () => {
+    // Start the HTTP server with error handling
+    const server = app.listen(PORT, () => {
       console.log(`🌐 HTTP server running on http://localhost:${PORT}`);
+    });
+    
+    // Handle server errors gracefully
+    server.on('error', (error) => {
+      if (error.code === 'EADDRINUSE') {
+        console.error(`❌ Port ${PORT} is already in use. Please stop the other process or use a different port.`);
+        process.exit(1);
+      } else {
+        console.error(`❌ HTTP server error:`, error);
+        // Don't exit - try to recover
+      }
+    });
+    
+    // Keep server alive even if there are connection errors
+    server.on('clientError', (error, socket) => {
+      console.warn(`⚠️  Client connection error:`, error.message);
+      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
     });
     
     // Start metrics collector

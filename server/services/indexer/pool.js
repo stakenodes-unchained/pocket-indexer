@@ -17,6 +17,10 @@ class TransactionWorkerPool {
     this.batchSize = configLoader.get('HISTORICAL_BATCH_SIZE', 50);
     this.blockResultsWorkerCount = configLoader.get('BLOCK_RESULTS_WORKER_COUNT', 2);
     this.healthCheckInterval = null;
+    // Track restart attempts to prevent rapid restart loops
+    this.monitorWorkerRestartAttempts = new Map(); // Map<rpcName, { count: number, lastRestart: timestamp, isRestarting: boolean }>
+    this.maxRestartAttempts = 10; // Maximum restart attempts before backing off
+    this.restartBackoffMs = 30000; // 30 seconds backoff after max attempts
   }
 
   /**
@@ -562,15 +566,57 @@ class TransactionWorkerPool {
    * Restart a monitor worker that has crashed or exited
    */
   async restartMonitorWorker(rpcName, rpcUrl) {
-    console.log(`Restarting monitor worker for RPC endpoint ${rpcName}...`);
+    // Check if we're already restarting this worker to prevent concurrent restarts
+    const restartInfo = this.monitorWorkerRestartAttempts.get(rpcName) || { count: 0, lastRestart: 0, isRestarting: false };
+    
+    if (restartInfo.isRestarting) {
+      console.warn(`Monitor worker for ${rpcName} restart already in progress, skipping duplicate restart`);
+      return;
+    }
+    
+    // Check if we've exceeded max restart attempts
+    const now = Date.now();
+    const timeSinceLastRestart = now - restartInfo.lastRestart;
+    
+    if (restartInfo.count >= this.maxRestartAttempts) {
+      // If we're in backoff period, don't restart yet
+      if (timeSinceLastRestart < this.restartBackoffMs) {
+        const remainingBackoff = Math.ceil((this.restartBackoffMs - timeSinceLastRestart) / 1000);
+        console.warn(`Monitor worker for ${rpcName} exceeded max restart attempts (${restartInfo.count}). Backing off for ${remainingBackoff} more seconds...`);
+        return;
+      } else {
+        // Reset counter after backoff period
+        restartInfo.count = 0;
+        console.log(`Monitor worker for ${rpcName} backoff period expired, resetting restart counter`);
+      }
+    }
+    
+    // Mark as restarting
+    restartInfo.isRestarting = true;
+    restartInfo.count++;
+    restartInfo.lastRestart = now;
+    this.monitorWorkerRestartAttempts.set(rpcName, restartInfo);
+    
+    console.log(`Restarting monitor worker for RPC endpoint ${rpcName} (attempt ${restartInfo.count}/${this.maxRestartAttempts})...`);
     
     // Remove the old worker reference
     if (this.monitorWorkers.has(rpcName)) {
+      const oldWorker = this.monitorWorkers.get(rpcName);
+      try {
+        // Terminate the old worker if it's still running
+        if (oldWorker && oldWorker.threadId) {
+          oldWorker.terminate().catch(() => {}); // Ignore termination errors
+        }
+      } catch (err) {
+        // Ignore errors when terminating
+      }
       this.monitorWorkers.delete(rpcName);
     }
     
-    // Wait before restarting to avoid rapid restart cycles
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    // Exponential backoff: wait longer as restart attempts increase
+    const baseDelay = 5000; // 5 seconds base delay
+    const exponentialDelay = Math.min(baseDelay * Math.pow(2, Math.min(restartInfo.count - 1, 4)), 60000); // Max 60 seconds
+    await new Promise(resolve => setTimeout(resolve, exponentialDelay));
     
     try {
       const rpc = this.rpcEndpoints.find(e => e.name === rpcName);
@@ -595,20 +641,48 @@ class TransactionWorkerPool {
 
       newWorker.on('error', (err) => {
         console.error(`Monitor worker for ${rpcName} encountered an error:`, err);
-        this.restartMonitorWorker(rpcName, rpcUrl);
+        restartInfo.isRestarting = false;
+        this.monitorWorkerRestartAttempts.set(rpcName, restartInfo);
+        // Use setTimeout to avoid blocking and allow other operations
+        setTimeout(() => this.restartMonitorWorker(rpcName, rpcUrl), 0);
       });
 
       newWorker.on('exit', (code) => {
+        restartInfo.isRestarting = false;
+        this.monitorWorkerRestartAttempts.set(rpcName, restartInfo);
+        
         if (code !== 0) {
           console.error(`Monitor worker for ${rpcName} exited with code ${code}`);
-          this.restartMonitorWorker(rpcName, rpcUrl);
+          // Use setTimeout to avoid blocking and allow other operations
+          setTimeout(() => this.restartMonitorWorker(rpcName, rpcUrl), 0);
+        } else {
+          // Successful exit, reset restart counter
+          restartInfo.count = 0;
+          this.monitorWorkerRestartAttempts.set(rpcName, restartInfo);
         }
       });
 
       this.monitorWorkers.set(rpcName, newWorker);
       console.log(`Restarted monitor worker for RPC endpoint ${rpcName}`);
+      
+      // Reset restart counter after successful restart (worker stays alive for at least 30 seconds)
+      setTimeout(() => {
+        const currentInfo = this.monitorWorkerRestartAttempts.get(rpcName);
+        if (currentInfo && currentInfo.count > 0) {
+          // If worker has been stable, reset counter
+          const timeSinceRestart = Date.now() - currentInfo.lastRestart;
+          if (timeSinceRestart > 30000) { // 30 seconds
+            currentInfo.count = 0;
+            this.monitorWorkerRestartAttempts.set(rpcName, currentInfo);
+            console.log(`Monitor worker for ${rpcName} has been stable, resetting restart counter`);
+          }
+        }
+      }, 30000);
+      
     } catch (error) {
       console.error(`Failed to restart monitor worker for RPC endpoint ${rpcName}:`, error);
+      restartInfo.isRestarting = false;
+      this.monitorWorkerRestartAttempts.set(rpcName, restartInfo);
       // Try again after a longer delay
       setTimeout(() => this.restartMonitorWorker(rpcName, rpcUrl), 10000);
     }
