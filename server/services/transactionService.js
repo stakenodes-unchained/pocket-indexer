@@ -570,18 +570,18 @@ class TransactionService {
         // Primary: Use addresses array column with array overlap operator (&&)
         // This is much faster than JSONB searches and uses the GIN index
         // Handle NULL addresses with COALESCE to empty array
-        if (uniqueAddresses.length === 1) {
-          // Single address: use array containment operator (@>)
-          addressConditions.push(`(COALESCE(t.addresses, ARRAY[]::TEXT[]) @> ARRAY[$${idx}])`);
-          values.push(uniqueAddresses[0]);
-          idx++;
-        } else {
-          // Multiple addresses: use array overlap operator (&&)
-          const placeholders = uniqueAddresses.map((_, i) => `$${idx + i}`).join(', ');
-          addressConditions.push(`(COALESCE(t.addresses, ARRAY[]::TEXT[]) && ARRAY[${placeholders}])`);
-          values.push(...uniqueAddresses);
-          idx += uniqueAddresses.length;
-        }
+        // if (uniqueAddresses.length === 1) {
+        //   // Single address: use array containment operator (@>)
+        //   addressConditions.push(`(COALESCE(t.addresses, ARRAY[]::TEXT[]) @> ARRAY[$${idx}])`);
+        //   values.push(uniqueAddresses[0]);
+        //   idx++;
+        // } else {
+        //   // Multiple addresses: use array overlap operator (&&)
+        //   const placeholders = uniqueAddresses.map((_, i) => `$${idx + i}`).join(', ');
+        //   addressConditions.push(`(COALESCE(t.addresses, ARRAY[]::TEXT[]) && ARRAY[${placeholders}])`);
+        //   values.push(...uniqueAddresses);
+        //   idx += uniqueAddresses.length;
+        // }
         
         // Fallback: Also check sender and recipient columns for backward compatibility
         // This ensures we catch transactions that might not have addresses populated yet
