@@ -4520,18 +4520,18 @@ app.get('/api/v1/services/:service_id', cacheMiddleware(300), async (req, res) =
     let appIdx = 2;
     let appChainClause = '';
     if (chain) {
-      appChainClause = ' AND asc.chain = $2';
+      appChainClause = ' AND app_svc.chain = $2';
       appValues.push(chain);
       appIdx = 3;
     }
 
     const appCountSql = `
       SELECT COUNT(*) AS total
-      FROM application_service_configs asc
+      FROM application_service_configs app_svc
       JOIN applications a
-        ON a.address = asc.application_address
-       AND a.chain = asc.chain
-      WHERE asc.service_id = $1
+        ON a.address = app_svc.application_address
+       AND a.chain = app_svc.chain
+      WHERE app_svc.service_id = $1
         ${appChainClause}
         AND a.status = 'staked'
     `;
@@ -4549,13 +4549,13 @@ app.get('/api/v1/services/:service_id', cacheMiddleware(300), async (req, res) =
         a.delegatee_gateway_addresses,
         a.unstake_session_end_height,
         a.last_seen,
-        asc.endpoints,
-        asc.config_options
-      FROM application_service_configs asc
+        app_svc.endpoints,
+        app_svc.config_options
+      FROM application_service_configs app_svc
       JOIN applications a
-        ON a.address = asc.application_address
-       AND a.chain = asc.chain
-      WHERE asc.service_id = $1
+        ON a.address = app_svc.application_address
+       AND a.chain = app_svc.chain
+      WHERE app_svc.service_id = $1
         ${appChainClause}
         AND a.status = 'staked'
       ORDER BY a.last_seen DESC NULLS LAST
