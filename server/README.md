@@ -151,7 +151,10 @@ Base URL (default): `http://localhost:3006`
     - `address` (string)
     - `page` (int, default 1)
     - `limit` (int, default 25)
-  - Response: `{ data: Supplier[], meta: { page, limit, total, totalPages } }`
+  - Response: `{ data: Supplier[], meta: { page, limit, total, totalPages, totalStakedTokens, unstakingCount24h, totalUnstakingTokens24h } }`
+    - `totalStakedTokens`: Total staked tokens for all suppliers (all time)
+    - `unstakingCount24h`: Number of suppliers currently unstaking (last 24 hours)
+    - `totalUnstakingTokens24h`: Total amount of tokens being unstaked (last 24 hours)
   - Example:
     ```bash
     curl "http://localhost:3006/api/v1/suppliers?chain=pocket-testnet-beta&status=staked"

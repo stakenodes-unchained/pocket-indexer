@@ -1990,9 +1990,9 @@ app.get('/api/v1/suppliers/owners', cacheMiddleware(300), async (req, res) => {
  *   - page: Current page number
  *   - limit: Results per page
  *   - totalPages: Total number of pages
- *   - totalStakedTokens: Total staked tokens for all suppliers (excluding unstaking ones)
- *   - unstakingCount: Number of suppliers currently unstaking
- *   - totalUnstakingTokens: Total amount of tokens being unstaked
+ *   - totalStakedTokens: Total staked tokens for all suppliers (excluding unstaking ones) - all time
+ *   - unstakingCount24h: Number of suppliers currently unstaking (filtered by last 24 hours)
+ *   - totalUnstakingTokens24h: Total amount of tokens being unstaked (filtered by last 24 hours)
  */
 app.get('/api/v1/suppliers', async (req, res) => {
   try {
@@ -2013,10 +2013,13 @@ app.get('/api/v1/suppliers', async (req, res) => {
     const unstakingCondition = where ? 'AND' : 'WHERE';
     const totalStakedSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_staked_tokens 
                             FROM suppliers ${where} ${unstakingCondition} unstake_session_end_height IS NULL`;
+    // Unstaking queries filtered by last 24 hours
+    const whereWith24Hours = where ? `${where} AND last_seen >= NOW() - INTERVAL '24 hours'` : `WHERE last_seen >= NOW() - INTERVAL '24 hours'`;
+    const unstakingCondition24h = whereWith24Hours ? 'AND' : 'WHERE';
     const unstakingCountSql = `SELECT COUNT(*) AS unstaking_count 
-                               FROM suppliers ${where} ${unstakingCondition} unstake_session_end_height IS NOT NULL`;
+                               FROM suppliers ${whereWith24Hours} ${unstakingCondition24h} unstake_session_end_height IS NOT NULL`;
     const totalUnstakingSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_unstaking_tokens 
-                               FROM suppliers ${where} ${unstakingCondition} unstake_session_end_height IS NOT NULL`;
+                               FROM suppliers ${whereWith24Hours} ${unstakingCondition24h} unstake_session_end_height IS NOT NULL`;
     
     // Execute all queries in parallel for better performance
     const [countRes, totalStakedRes, unstakingCountRes, totalUnstakingRes] = await Promise.all([
@@ -2044,8 +2047,8 @@ app.get('/api/v1/suppliers', async (req, res) => {
         limit: limitNum, 
         totalPages: Math.ceil(total / limitNum),
         totalStakedTokens,
-        unstakingCount,
-        totalUnstakingTokens
+        unstakingCount24h: unstakingCount,
+        totalUnstakingTokens24h: totalUnstakingTokens
       } 
     });
   } catch (error) {

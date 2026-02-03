@@ -741,7 +741,7 @@ const API_DOCUMENTATION = {
               method: "GET",
               path: "/api/v1/suppliers",
               name: "Get Suppliers",
-              description: "Retrieve a paginated list of all suppliers registered on the Pocket Network. Suppliers are node operators who stake tokens and provide RPC services to applications. Each supplier entry includes their operator address, staking information, configured services, and current status. Use this for supplier directories and network infrastructure analysis.",
+              description: "Retrieve a paginated list of all suppliers registered on the Pocket Network. Suppliers are node operators who stake tokens and provide RPC services to applications. Each supplier entry includes their operator address, staking information, configured services, and current status. The response includes aggregate statistics: totalStakedTokens (all time), unstakingCount24h (number of suppliers unstaking in the last 24 hours), and totalUnstakingTokens24h (total tokens being unstaked in the last 24 hours). Use this for supplier directories and network infrastructure analysis.",
               parameters: [
                 { name: "chain", type: "string", required: false, description: "Filter suppliers by blockchain chain identifier." },
                 { name: "page", type: "integer", required: false, default: 1, description: "Page number for pagination." },
