@@ -4474,6 +4474,182 @@ app.get('/api/v1/validators/owners', async (req, res) => {
 });
 
 /**
+ * GET /api/v1/services/:service_id
+ *
+ * Retrieve applications and suppliers configured for a given service_id.
+ * Uses `application_service_configs` and `supplier_service_configs` tables,
+ * filtered to applications/suppliers that are currently staked.
+ *
+ * Query Parameters:
+ * - chain (string, optional): Filter by chain identifier (e.g., "pocket-mainnet")
+ * - page (integer, default: 1): Page number for pagination
+ * - limit (integer, default: 25): Number of results per page
+ *
+ * Returns:
+ * - data:
+ *   - service_id: The requested service_id
+ *   - chain: The requested chain (or null for all chains)
+ *   - applications: Array of staked applications that have configs for this service
+ *   - suppliers: Array of staked suppliers that have configs for this service
+ * - meta:
+ *   - page: Current page number
+ *   - limit: Results per page
+ *   - totalApplications: Total number of matching applications
+ *   - totalSuppliers: Total number of matching suppliers
+ *   - applicationsTotalPages: Total pages for applications
+ *   - suppliersTotalPages: Total pages for suppliers
+ */
+app.get('/api/v1/services/:service_id', cacheMiddleware(300), async (req, res) => {
+  try {
+    const { service_id } = req.params;
+    const { chain, page = 1, limit = 25 } = req.query;
+
+    if (!service_id || typeof service_id !== 'string' || service_id.trim().length === 0) {
+      return res.status(400).json({ error: "Parameter 'service_id' is required" });
+    }
+
+    await transactionService.connectDB();
+    const client = transactionService.pgClient;
+
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = parseInt(limit, 10) || 25;
+    const offset = (pageNum - 1) * limitNum;
+
+    // Build application queries (staked applications with configs for this service)
+    const appValues = [service_id];
+    let appIdx = 2;
+    let appChainClause = '';
+    if (chain) {
+      appChainClause = ' AND asc.chain = $2';
+      appValues.push(chain);
+      appIdx = 3;
+    }
+
+    const appCountSql = `
+      SELECT COUNT(*) AS total
+      FROM application_service_configs asc
+      JOIN applications a
+        ON a.address = asc.application_address
+       AND a.chain = asc.chain
+      WHERE asc.service_id = $1
+        ${appChainClause}
+        AND a.status = 'staked'
+    `;
+
+    const appListSql = `
+      SELECT
+        a.address,
+        a.chain,
+        a.staked_amount,
+        a.stake_denom,
+        a.status,
+        a.chains,
+        a.delegated,
+        a.gateway_address,
+        a.delegatee_gateway_addresses,
+        a.unstake_session_end_height,
+        a.last_seen,
+        asc.endpoints,
+        asc.config_options
+      FROM application_service_configs asc
+      JOIN applications a
+        ON a.address = asc.application_address
+       AND a.chain = asc.chain
+      WHERE asc.service_id = $1
+        ${appChainClause}
+        AND a.status = 'staked'
+      ORDER BY a.last_seen DESC NULLS LAST
+      LIMIT $${appIdx} OFFSET $${appIdx + 1}
+    `;
+
+    const appListParams = [...appValues, limitNum, offset];
+
+    // Build supplier queries (staked suppliers with configs for this service)
+    const supValues = [service_id];
+    let supIdx = 2;
+    let supChainClause = '';
+    if (chain) {
+      supChainClause = ' AND ssc.chain = $2';
+      supValues.push(chain);
+      supIdx = 3;
+    }
+
+    const supCountSql = `
+      SELECT COUNT(*) AS total
+      FROM supplier_service_configs ssc
+      JOIN suppliers s
+        ON s.address = ssc.supplier_address
+       AND s.chain = ssc.chain
+      WHERE ssc.service_id = $1
+        ${supChainClause}
+        AND s.status = 'staked'
+    `;
+
+    const supListSql = `
+      SELECT
+        s.address,
+        s.chain,
+        s.staked_amount,
+        s.stake_denom,
+        s.status,
+        s.service_url,
+        s.owner_address,
+        s.last_seen,
+        s.geo,
+        ssc.endpoints,
+        ssc.config_options
+      FROM supplier_service_configs ssc
+      JOIN suppliers s
+        ON s.address = ssc.supplier_address
+       AND s.chain = ssc.chain
+      WHERE ssc.service_id = $1
+        ${supChainClause}
+        AND s.status = 'staked'
+      ORDER BY s.last_seen DESC NULLS LAST
+      LIMIT $${supIdx} OFFSET $${supIdx + 1}
+    `;
+
+    const supListParams = [...supValues, limitNum, offset];
+
+    // Execute all queries in parallel
+    const [
+      appCountRes,
+      appListRes,
+      supCountRes,
+      supListRes,
+    ] = await Promise.all([
+      client.query(appCountSql, appValues),
+      client.query(appListSql, appListParams),
+      client.query(supCountSql, supValues),
+      client.query(supListSql, supListParams),
+    ]);
+
+    const totalApplications = parseInt(appCountRes.rows[0]?.total || '0', 10);
+    const totalSuppliers = parseInt(supCountRes.rows[0]?.total || '0', 10);
+
+    res.json({
+      data: {
+        service_id,
+        chain: chain || null,
+        applications: appListRes.rows,
+        suppliers: supListRes.rows,
+      },
+      meta: {
+        page: pageNum,
+        limit: limitNum,
+        totalApplications,
+        totalSuppliers,
+        applicationsTotalPages: Math.ceil(totalApplications / limitNum) || 0,
+        suppliersTotalPages: Math.ceil(totalSuppliers / limitNum) || 0,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching service consumers:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * GET /api/v1/services/top-by-compute-units
  * 
  * Returns services by total compute units for the specified time period with pagination.

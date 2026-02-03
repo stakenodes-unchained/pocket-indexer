@@ -149,6 +149,7 @@ This document lists all API endpoints for categorization. Please mark each endpo
 | POST | `/api/v1/services/top-by-compute-units` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Top services (POST) |
 | GET | `/api/v1/services/top-by-performance` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | Top services by performance |
 | POST | `/api/v1/services/top-by-performance` | Public | ⬜ INTERNAL<br>✅ TOKEN<br>⬜ PUBLIC | Top services performance (POST) |
+| GET | `/api/v1/services/:service_id` | Public | ⬜ INTERNAL<br>⬜ TOKEN<br>✅ PUBLIC | List staked applications and suppliers for a service |
 
 ---
 

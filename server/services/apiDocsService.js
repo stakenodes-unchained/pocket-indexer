@@ -298,6 +298,64 @@ const API_DOCUMENTATION = {
                   period_end: "2025-01-31T23:59:59Z"
                 }
               }
+            },
+            {
+              method: "GET",
+              path: "/api/v1/services/:service_id",
+              name: "Get Service Consumers (Applications and Suppliers)",
+              description: "Retrieve staked applications and suppliers that are configured for a specific service_id. This endpoint joins application_service_configs and supplier_service_configs with the applications and suppliers tables, returning only entities with status = 'staked'. Use this to build service detail pages, show which applications consume a service, and which suppliers provide it on the network.",
+              parameters: [
+                { name: "service_id", type: "string", required: true, in: "path", description: "The service identifier (e.g., 'eth-mainnet', 'avax-mainnet')." },
+                { name: "chain", type: "string", required: false, description: "Optional chain filter (e.g., 'pocket-mainnet'). When provided, only entities on this chain are returned." },
+                { name: "page", type: "integer", required: false, default: 1, description: "Page number for pagination. Applies to both applications and suppliers lists." },
+                { name: "limit", type: "integer", required: false, default: 25, description: "Number of results per page for applications and suppliers." }
+              ],
+              responseExample: {
+                data: {
+                  service_id: "eth-mainnet",
+                  chain: "pocket-mainnet",
+                  applications: [
+                    {
+                      address: "pokt1app...",
+                      chain: "pocket-mainnet",
+                      staked_amount: "1000000000",
+                      stake_denom: "upokt",
+                      status: "staked",
+                      chains: ["eth-mainnet"],
+                      delegated: false,
+                      gateway_address: null,
+                      delegatee_gateway_addresses: [],
+                      unstake_session_end_height: null,
+                      last_seen: "2025-01-31T23:59:59Z",
+                      endpoints: ["https://eth-mainnet.example.com"],
+                      config_options: {}
+                    }
+                  ],
+                  suppliers: [
+                    {
+                      address: "poktvaloper1supplier...",
+                      chain: "pocket-mainnet",
+                      staked_amount: "5000000000",
+                      stake_denom: "upokt",
+                      status: "staked",
+                      service_url: "https://rpc.example.com",
+                      owner_address: "pokt1owner...",
+                      last_seen: "2025-01-31T23:59:59Z",
+                      geo: "US",
+                      endpoints: ["https://eth-mainnet.example.com"],
+                      config_options: {}
+                    }
+                  ]
+                },
+                meta: {
+                  page: 1,
+                  limit: 25,
+                  totalApplications: 42,
+                  totalSuppliers: 128,
+                  applicationsTotalPages: 2,
+                  suppliersTotalPages: 6
+                }
+              }
             }
           ]
         },
