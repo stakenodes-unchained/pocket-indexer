@@ -281,6 +281,78 @@ Use `/api/v1/services/top-by-performance` to:
 
 ---
 
+### 3. Get Service Consumers (Applications and Suppliers)
+
+**GET** `/api/v1/services/:service_id`
+
+Retrieve staked applications and suppliers that are configured for a given `service_id`, using the `application_service_configs` and `supplier_service_configs` tables.
+
+**Query Parameters:**
+- `service_id` (path, required): The service identifier (e.g., `eth-mainnet`, `avax-mainnet`)
+- `chain` (string, optional): Filter by chain identifier (e.g., `pocket-mainnet`)
+- `page` (integer, optional, default: 1): Page number for pagination
+- `limit` (integer, optional, default: 25): Number of results per page
+
+Only entities with `status = 'staked'` are returned.
+
+**Response Format:**
+
+```json
+{
+  "data": {
+    "service_id": "eth-mainnet",
+    "chain": "pocket-mainnet",
+    "applications": [
+      {
+        "address": "pokt1app...",
+        "chain": "pocket-mainnet",
+        "staked_amount": "1000000000",
+        "stake_denom": "upokt",
+        "status": "staked",
+        "chains": ["eth-mainnet"],
+        "delegated": false,
+        "gateway_address": null,
+        "delegatee_gateway_addresses": [],
+        "unstake_session_end_height": null,
+        "last_seen": "2025-01-31T23:59:59Z",
+        "endpoints": ["https://eth-mainnet.example.com"],
+        "config_options": {}
+      }
+    ],
+    "suppliers": [
+      {
+        "address": "poktvaloper1supplier...",
+        "chain": "pocket-mainnet",
+        "staked_amount": "5000000000",
+        "stake_denom": "upokt",
+        "status": "staked",
+        "service_url": "https://rpc.example.com",
+        "owner_address": "pokt1owner...",
+        "last_seen": "2025-01-31T23:59:59Z",
+        "geo": "US",
+        "endpoints": ["https://eth-mainnet.example.com"],
+        "config_options": {}
+      }
+    ]
+  },
+  "meta": {
+    "page": 1,
+    "limit": 25,
+    "totalApplications": 42,
+    "totalSuppliers": 128,
+    "applicationsTotalPages": 2,
+    "suppliersTotalPages": 6
+  }
+}
+```
+
+**Use Cases:**
+- Build service detail pages showing which applications and suppliers are actively using a service
+- Filter dashboards by `service_id` and `chain` to explore ecosystem composition
+- Power explorer views like “who is serving this chain?” and “which apps consume this service?”
+
+---
+
 ## Notes for Future Maintainers
 
 - Implementation for these endpoints lives in:

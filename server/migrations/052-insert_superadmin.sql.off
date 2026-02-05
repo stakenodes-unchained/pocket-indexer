@@ -1,0 +1,18 @@
+-- INSERT query for superadmin user
+-- Email: admin@pocket-indexer.com
+-- Password: Admin@2026
+
+INSERT INTO api_accounts (email, password_hash, name, organization, status, email_verified, role_id, account_type, created_at, updated_at)
+VALUES (
+  'admin@pocket-indexer.com',
+  '$2b$10$sEavxR6qT3QOiqpS7t9xxOZamekCs7lH9NRpPF1rhtBbuPsBdTGTG',
+  'Super Admin',
+  'Pocket Network',
+  'active',
+  true,
+  (SELECT id FROM roles WHERE slug = 'super-admin'),
+  'full',
+  NOW(),
+  NOW()
+);
+

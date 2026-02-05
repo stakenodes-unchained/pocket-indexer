@@ -567,7 +567,22 @@ class TransactionService {
         // Fallback to sender/recipient columns for backward compatibility
         const addressConditions = [];
         
-        // Primary: Use addresses array column with array overlap operator (&&)
+        
+        
+        // Primary: Also check sender and recipient columns for backward compatibility
+        // This ensures we catch transactions that might not have addresses populated yet
+        if (uniqueAddresses.length === 1) {
+          addressConditions.push(`(t.sender = $${idx} OR t.recipient = $${idx})`);
+          values.push(uniqueAddresses[0]);
+          idx++;
+        } else {
+          const placeholders = uniqueAddresses.map((_, i) => `$${idx + i}`).join(', ');
+          addressConditions.push(`(t.sender IN (${placeholders}) OR t.recipient IN (${placeholders}))`);
+          values.push(...uniqueAddresses, ...uniqueAddresses);
+          idx += uniqueAddresses.length * 2;
+        }
+
+        // Fallback: Use addresses array column with array overlap operator (&&)
         // This is much faster than JSONB searches and uses the GIN index
         // Handle NULL addresses with COALESCE to empty array
         if (uniqueAddresses.length === 1) {
@@ -582,20 +597,6 @@ class TransactionService {
           values.push(...uniqueAddresses);
           idx += uniqueAddresses.length;
         }
-        
-        // Fallback: Also check sender and recipient columns for backward compatibility
-        // This ensures we catch transactions that might not have addresses populated yet
-        if (uniqueAddresses.length === 1) {
-          addressConditions.push(`(t.sender = $${idx} OR t.recipient = $${idx})`);
-          values.push(uniqueAddresses[0]);
-          idx++;
-        } else {
-          const placeholders = uniqueAddresses.map((_, i) => `$${idx + i}`).join(', ');
-          addressConditions.push(`(t.sender IN (${placeholders}) OR t.recipient IN (${placeholders}))`);
-          values.push(...uniqueAddresses, ...uniqueAddresses);
-          idx += uniqueAddresses.length * 2;
-        }
-
         conditions.push(`(${addressConditions.join(' OR ')})`);
       }
 
@@ -644,16 +645,20 @@ class TransactionService {
       let orderByClause;
       let blockHeightSelect;
       
-      // Check if block_height column exists (from migration 026)
-      // Use COALESCE to fallback to JSONB extraction if column is NULL
+      // CRITICAL OPTIMIZATION: Avoid expensive JSONB extraction when possible
+      // Use CASE WHEN instead of COALESCE to avoid evaluating JSONB expression when block_height is NOT NULL
+      // PostgreSQL's COALESCE may still evaluate both sides, but CASE WHEN guarantees short-circuit evaluation
       if (sortField === 'block_height') {
-        // Prefer block_height column, fallback to JSONB extraction
-        orderByClause = `ORDER BY COALESCE(t.block_height, (t.tx_data->'tx_response'->>'height')::bigint) ${sortDirection}`;
-        blockHeightSelect = `COALESCE(t.block_height, (t.tx_data->'tx_response'->>'height')::bigint) as block_height`;
+        // When sorting by block_height, we need to extract from JSONB for NULL values
+        // Use CASE WHEN to avoid JSONB extraction when block_height column has a value
+        orderByClause = `ORDER BY CASE WHEN t.block_height IS NOT NULL THEN t.block_height ELSE (t.tx_data->'tx_response'->>'height')::bigint END ${sortDirection}`;
+        blockHeightSelect = `CASE WHEN t.block_height IS NOT NULL THEN t.block_height ELSE (t.tx_data->'tx_response'->>'height')::bigint END as block_height`;
       } else {
-        // Use table alias and ensure proper index usage
+        // When NOT sorting by block_height, prefer column value and only extract from JSONB for NULL values
+        // This avoids expensive JSONB operations for the majority of rows that have block_height populated
         orderByClause = `ORDER BY t.${sortField} ${sortDirection}`;
-        blockHeightSelect = `COALESCE(t.block_height, (t.tx_data->'tx_response'->>'height')::bigint) as block_height`;
+        // Only extract from JSONB when block_height is NULL - much faster for populated columns
+        blockHeightSelect = `CASE WHEN t.block_height IS NOT NULL THEN t.block_height ELSE (t.tx_data->'tx_response'->>'height')::bigint END as block_height`;
       }
 
       // OPTIMIZATION: For large datasets (10M+ rows), run COUNT and SELECT in parallel
@@ -662,6 +667,7 @@ class TransactionService {
       
       // Build optimized query - use covering index when possible
       // The covering index (chain, timestamp DESC) INCLUDE (id, hash, ...) enables index-only scans
+      // CRITICAL: Only select block_height if we actually need it - but we always need it for API response
       const listSql = `SELECT 
         t.id, 
         t.hash, 
@@ -683,7 +689,9 @@ class TransactionService {
 
       const listParams = [...values, fetchLimit, offset];
 
-      // Run COUNT, SELECT, and failed transactions count in parallel for better performance
+      // OPTIMIZATION: COUNT query can be slow on large filtered datasets
+      // Consider using approximate count for very large result sets, but for now keep exact count
+      // The WHERE clause is shared, so PostgreSQL can reuse query plan
       const countSql = `SELECT COUNT(*) AS total FROM transactions t ${where}`;
       
       // Count failed transactions in the last 24 hours (independent of current filters)

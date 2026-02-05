@@ -15,6 +15,7 @@ const ENDPOINT_ACCESS = {
     { method: "GET", path: "/api/v1/gateways" },
     { method: "GET", path: "/api/v1/services/top-by-compute-units" },
     { method: "GET", path: "/api/v1/services/top-by-performance" },
+    { method: "GET", path: "/api/v1/services/:service_id" },
     // API Documentation endpoint (supports ?q=query for search)
     { method: "GET", path: "/api/v1/docs" },
     { method: "POST", path: "/api/v1/auth/register" },
