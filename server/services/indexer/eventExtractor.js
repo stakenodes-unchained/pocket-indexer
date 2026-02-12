@@ -43,6 +43,7 @@ function extractEventsFromBlock(blockData, blockResultsData = null, chain = null
     txsResults = blockData.txs_results;
   }
   
+  // Use for...of to allow async/await and avoid synchronous array iteration locks
   for (let txIndex = 0; txIndex < txsResults.length; txIndex++) {
     const txResult = txsResults[txIndex];
     // Transaction hash might not be in block_results, try to get it from blockData if available
@@ -117,6 +118,7 @@ function extractEventsFromBlock(blockData, blockResultsData = null, chain = null
     console.log(`[EventExtractor] Block ${blockHeight}: Found ${txsResults.length} transactions with ${totalTxEvents} total transaction events`);
   }
   
+  // Build block events array - no need for async here as it's just pushing to array
   for (let eventIndex = 0; eventIndex < allBlockEvents.length; eventIndex++) {
     const event = allBlockEvents[eventIndex];
     events.push({
