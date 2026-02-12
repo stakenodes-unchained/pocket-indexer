@@ -70,6 +70,8 @@ async function parseEventsInBatches(eventData, blockHeight, chain = null) {
         }
       }
       
+      // Filter out null results from failed parses
+      const batchParsed = batchResults.filter(parsed => parsed !== null);
       const batchFailed = batchSize - batchParsed.length;
       parsedEvents.push(...batchParsed);
       
