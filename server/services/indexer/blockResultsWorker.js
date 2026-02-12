@@ -178,8 +178,8 @@ async function processBlockResultsItem(item) {
     log(`Fetching block_results for height ${height}`);
     const fetchStartTime = Date.now();
     
-    // Fetch block_results
-    const blockResultsData = await fetchBlockResultsByHeight(height, blockResultsRpcUrl);
+    // Fetch block_results (let so we can clear for GC after processing)
+    let blockResultsData = await fetchBlockResultsByHeight(height, blockResultsRpcUrl);
     
     const fetchTime = Date.now() - fetchStartTime;
     
