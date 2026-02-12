@@ -85,7 +85,8 @@ const authenticateToken = async (req, res, next) => {
   if (category === 'TOKEN') {
 
     // Allow access to TOKEN endpoints if the request is from pocket.network
-    if((req.headers.referer || req.headers.origin || req.headers.referrer).includes("pocket.network")){
+    const refHeader = req.headers.referer || req.headers.origin || req.headers.referrer || '';
+    if (typeof refHeader === 'string' && refHeader.includes('pocket.network')) {
       return next();
     }
     // Extract token from Authorization header
