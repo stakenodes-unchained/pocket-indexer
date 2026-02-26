@@ -1064,10 +1064,17 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
           bd.day,
           SUM(pe.num_relays) AS relays,
           SUM(pe.num_claimed_compute_units) AS claimed_compute_units,
-          SUM(pe.num_estimated_compute_units) AS estimated_compute_units
+          SUM(pe.num_estimated_compute_units) AS estimated_compute_units,
+          COALESCE(SUM(
+            CASE
+              WHEN pe.num_claimed_compute_units > 0
+                THEN pe.num_relays * (pe.num_estimated_compute_units::numeric / pe.num_claimed_compute_units::numeric)
+              ELSE pe.num_relays
+            END
+          ), 0)                                   AS estimated_relays
         FROM proof_events pe
         INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
-        WHERE pe.event_type = 'created'
+        WHERE pe.event_type IN ('created', 'submitted')
           AND ($1::text IS NULL OR pe.chain = $1)
         GROUP BY bd.day
       )
@@ -1075,7 +1082,8 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
         d.day,
         COALESCE(p.relays, 0) AS relays,
         COALESCE(p.claimed_compute_units, 0) AS claimed_compute_units,
-        COALESCE(p.estimated_compute_units, 0) AS estimated_compute_units
+        COALESCE(p.estimated_compute_units, 0) AS estimated_compute_units,
+        COALESCE(p.estimated_relays, 0)        AS estimated_relays
       FROM days d
       LEFT JOIN proof_events_agg p USING(day)
       ORDER BY d.day ASC;
