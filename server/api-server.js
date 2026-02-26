@@ -1071,7 +1071,7 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
                 THEN pe.num_relays * (pe.num_estimated_compute_units::numeric / pe.num_claimed_compute_units::numeric)
               ELSE pe.num_relays
             END
-          ), 0)                                   AS estimated_relays
+          ), 0) AS estimated_relays
         FROM proof_events pe
         INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
         WHERE pe.event_type IN ('created', 'submitted')
@@ -1094,7 +1094,8 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
       day: row.day,
       relays: Number(row.relays || 0),
       claimed_compute_units: Number(row.claimed_compute_units || 0),
-      estimated_compute_units: Number(row.estimated_compute_units || 0)
+      estimated_compute_units: Number(row.estimated_compute_units || 0),
+      estimated_relays: Number(row.estimated_relays || 0)
     }));
 
     res.json({ data: { window_days: windowDays, timeline } });
