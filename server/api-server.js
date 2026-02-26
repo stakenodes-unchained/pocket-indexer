@@ -1299,10 +1299,17 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
       SELECT
         COALESCE(SUM(pe.num_relays), 0) AS relays,
         COALESCE(SUM(pe.num_claimed_compute_units), 0) AS claimed_compute_units,
-        COALESCE(SUM(pe.num_estimated_compute_units), 0) AS estimated_compute_units
+        COALESCE(SUM(pe.num_estimated_compute_units), 0) AS estimated_compute_units,
+        COALESCE(SUM(
+          CASE
+            WHEN pe.num_claimed_compute_units > 0
+              THEN pe.num_relays * (pe.num_estimated_compute_units::numeric / pe.num_claimed_compute_units::numeric)
+            ELSE pe.num_relays
+          END
+        ), 0) AS estimated_relays
       FROM proof_events pe
       INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
-      WHERE pe.event_type = 'created'
+      WHERE pe.event_type IN ('created', 'submitted')
         AND ($1::text IS NULL OR pe.chain = $1);
     `;
 
@@ -1317,7 +1324,8 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
       services: Number(entities.services || 0),
       relays: Number(perf.relays || 0),
       claimed_compute_units: Number(perf.claimed_compute_units || 0),
-      estimated_compute_units: Number(perf.estimated_compute_units || 0)
+      estimated_compute_units: Number(perf.estimated_compute_units || 0),
+      estimated_relays: Number(perf.estimated_relays || 0)
     }});
   } catch (error) {
     console.error('Error fetching network growth summary:', error);
