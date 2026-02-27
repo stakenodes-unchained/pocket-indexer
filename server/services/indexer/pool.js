@@ -121,7 +121,7 @@ class TransactionWorkerPool {
         if (rpc.blockResultsUrl) {
           const workers = [];
           
-          for (let i = 0; i < this.blockResultsWorkerCount; i++) {
+          for (let i = 0; i < rpc.name == 'pocket-mainnet' ? this.blockResultsWorkerCount * 2 : this.blockResultsWorkerCount; i++) {
             const blockResultsRole = i % 3 === 0 ? 'current' : 'historical';
             const blockResultsWorker = new Worker(path.join(__dirname, 'blockResultsWorker.js'), {
               workerData: {
