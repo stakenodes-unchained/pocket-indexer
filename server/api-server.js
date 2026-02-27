@@ -1074,7 +1074,7 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
           ), 0) AS estimated_relays
         FROM proof_events pe
         INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
-        WHERE pe.event_type IN ('created', 'submitted')
+        WHERE pe.event_type IN ('submitted')
           AND ($1::text IS NULL OR pe.chain = $1)
         GROUP BY bd.day
       )
@@ -1309,7 +1309,7 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
         ), 0) AS estimated_relays
       FROM proof_events pe
       INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
-      WHERE pe.event_type IN ('created', 'submitted')
+      WHERE pe.event_type IN ('submitted')
         AND ($1::text IS NULL OR pe.chain = $1);
     `;
 
