@@ -954,8 +954,8 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
 
     const perfSql = `
       WITH bounds AS (
-        SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date) AS end_day,
-               ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
+        SELECT ((NOW())::date) AS end_day,
+               ((NOW())::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
       ),
       days AS (
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
@@ -965,9 +965,9 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
         SELECT
           height,
           chain,
-          DATE_TRUNC('day', timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day
+          DATE_TRUNC('day', timestamp)::date AS day
         FROM blocks
-        WHERE timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+        WHERE timestamp >= (SELECT start_day FROM bounds)
       ),
       proof_events_agg AS (
         SELECT
@@ -1044,8 +1044,8 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
 
     const perfSql = `
       WITH bounds AS (
-        SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date) AS end_day,
-               ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
+        SELECT ((NOW())::date) AS end_day,
+               ((NOW())::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
       ),
       days AS (
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
@@ -1055,9 +1055,9 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
         SELECT
           height,
           chain,
-          DATE_TRUNC('day', timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day
+          DATE_TRUNC('day', timestamp)::date AS day
         FROM blocks
-        WHERE timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+        WHERE timestamp >= (SELECT start_day FROM bounds)
       ),
       proof_events_agg AS (
         SELECT
