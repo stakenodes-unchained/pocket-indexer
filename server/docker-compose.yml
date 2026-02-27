@@ -20,7 +20,7 @@ services:
       --tcp-keepalive 300 
       --lazyfree-lazy-eviction yes
       --replicaof no one
-    restart: unless-stopped
+    restart: "no"
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
       interval: 10s
@@ -55,7 +55,7 @@ services:
       - "5432:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
-    restart: unless-stopped
+    restart: "no"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -115,7 +115,7 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
     logging:
       driver: "json-file"
       options:
@@ -169,7 +169,7 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 3007 || exit 1"]
       interval: 10s
