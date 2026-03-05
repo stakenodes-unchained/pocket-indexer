@@ -538,6 +538,8 @@ async function monitorNewBlocks() {
 
       if (latestHeight > lastProcessedHeight) {
         log(`New blocks detected. From ${lastProcessedHeight + 1} to ${latestHeight}`);
+        const blocksToProcess = latestHeight - lastProcessedHeight;
+        
         for (let height = lastProcessedHeight + 1; height <= latestHeight; height++) {
           try {
             await processBlock(await fetchBlockByHeight(height, rpcUrl));
@@ -551,6 +553,11 @@ async function monitorNewBlocks() {
                 latestHeight
               });
             } catch (_) { }
+            
+            // Yield to event loop every 5 blocks to prevent CPU soft locks
+            if ((height - lastProcessedHeight) % 5 === 0) {
+              await new Promise(resolve => setImmediate(resolve));
+            }
           } catch (error) {
             console.error(`[Worker ${workerData.id}] Error processing new block ${height}:`, error.message);
             // Continue with next block

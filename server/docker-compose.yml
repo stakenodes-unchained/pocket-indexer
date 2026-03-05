@@ -20,7 +20,7 @@ services:
       --tcp-keepalive 300 
       --lazyfree-lazy-eviction yes
       --replicaof no one
-    restart: unless-stopped
+    restart: "no"
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
       interval: 10s
@@ -38,6 +38,15 @@ services:
   postgres:
     container_name: pocket_indexer_postgres
     image: postgres:15-alpine
+
+    command: >
+      postgres
+      -c checkpoint_timeout=30min
+      -c max_wal_size=128GB
+      -c min_wal_size=32GB
+      -c checkpoint_completion_target=0.9
+      -c wal_compression=on
+      -c synchronous_commit=off
     environment:
       POSTGRES_USER: ${DB_USER:-postgres}
       POSTGRES_PASSWORD: ${DB_PASS:-somestringpassword}
@@ -46,7 +55,7 @@ services:
       - "5432:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
-    restart: unless-stopped
+    restart: "no"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -106,7 +115,7 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
     logging:
       driver: "json-file"
       options:
@@ -137,10 +146,10 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_DB=${REDIS_DB:-0}
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
-      - HISTORICAL_BATCH_SIZE=${HISTORICAL_BATCH_SIZE:-20}  # Reduced from 50 to 20 for memory optimization
-      - BLOCK_RESULTS_BATCH_SIZE=${BLOCK_RESULTS_BATCH_SIZE:-20}  # Reduced from 10 to 5 for memory optimization
-      - BLOCK_RESULTS_PARALLEL_LIMIT=${BLOCK_RESULTS_PARALLEL_LIMIT:-20}  # Reduced from 5 to 3 for memory optimization
-      - DB_POOL_SIZE=${DB_POOL_SIZE:-10}  # Reduced from 20 to 10 for memory optimization
+      - HISTORICAL_BATCH_SIZE=${HISTORICAL_BATCH_SIZE:-5}  # Reduced for memory optimization
+      - BLOCK_RESULTS_BATCH_SIZE=${BLOCK_RESULTS_BATCH_SIZE:-3}  # Reduced for memory optimization
+      - BLOCK_RESULTS_PARALLEL_LIMIT=${BLOCK_RESULTS_PARALLEL_LIMIT:-5}  # Reduced for memory optimization
+      - DB_POOL_SIZE=${DB_POOL_SIZE:-5}  # Reduced for memory optimization
       - DB_POOL_MIN=${DB_POOL_MIN:-2}
       - MEMORY_WARNING_THRESHOLD_GB=${MEMORY_WARNING_THRESHOLD_GB:-12}  # RSS warning threshold in GB
       - NODE_HEAP_SIZE_MB=${NODE_HEAP_SIZE_MB:-32768}  # Node.js heap size limit (32GB default)
@@ -160,7 +169,7 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 3007 || exit 1"]
       interval: 10s

@@ -954,8 +954,8 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
 
     const perfSql = `
       WITH bounds AS (
-        SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date) AS end_day,
-               ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
+        SELECT ((NOW())::date) AS end_day,
+               ((NOW())::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
       ),
       days AS (
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
@@ -965,9 +965,9 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
         SELECT
           height,
           chain,
-          DATE_TRUNC('day', timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day
+          DATE_TRUNC('day', timestamp)::date AS day
         FROM blocks
-        WHERE timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+        WHERE timestamp >= (SELECT start_day FROM bounds)
       ),
       proof_events_agg AS (
         SELECT
@@ -977,7 +977,7 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
           SUM(pe.num_estimated_compute_units) AS estimated_compute_units
         FROM proof_events pe
         INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
-        WHERE pe.event_type = 'created'
+        WHERE pe.event_type IN ('created', 'submitted')
           AND ($1::text IS NULL OR pe.chain = $1)
         GROUP BY bd.day
       )
@@ -1044,8 +1044,8 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
 
     const perfSql = `
       WITH bounds AS (
-        SELECT ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date) AS end_day,
-               ((NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
+        SELECT ((NOW())::date) AS end_day,
+               ((NOW())::date - ($2::int - 1) * INTERVAL '1 day')::date AS start_day
       ),
       days AS (
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
@@ -1055,19 +1055,26 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
         SELECT
           height,
           chain,
-          DATE_TRUNC('day', timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date AS day
+          DATE_TRUNC('day', timestamp)::date AS day
         FROM blocks
-        WHERE timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= (SELECT start_day FROM bounds)
+        WHERE timestamp >= (SELECT start_day FROM bounds)
       ),
       proof_events_agg AS (
         SELECT
           bd.day,
           SUM(pe.num_relays) AS relays,
           SUM(pe.num_claimed_compute_units) AS claimed_compute_units,
-          SUM(pe.num_estimated_compute_units) AS estimated_compute_units
+          SUM(pe.num_estimated_compute_units) AS estimated_compute_units,
+          COALESCE(SUM(
+            CASE
+              WHEN pe.num_claimed_compute_units > 0
+                THEN pe.num_relays * (pe.num_estimated_compute_units::numeric / pe.num_claimed_compute_units::numeric)
+              ELSE pe.num_relays
+            END
+          ), 0) AS estimated_relays
         FROM proof_events pe
         INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
-        WHERE pe.event_type = 'created'
+        WHERE pe.event_type IN ('submitted', 'created')
           AND ($1::text IS NULL OR pe.chain = $1)
         GROUP BY bd.day
       )
@@ -1075,7 +1082,8 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
         d.day,
         COALESCE(p.relays, 0) AS relays,
         COALESCE(p.claimed_compute_units, 0) AS claimed_compute_units,
-        COALESCE(p.estimated_compute_units, 0) AS estimated_compute_units
+        COALESCE(p.estimated_compute_units, 0) AS estimated_compute_units,
+        COALESCE(p.estimated_relays, 0)        AS estimated_relays
       FROM days d
       LEFT JOIN proof_events_agg p USING(day)
       ORDER BY d.day ASC;
@@ -1086,7 +1094,8 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
       day: row.day,
       relays: Number(row.relays || 0),
       claimed_compute_units: Number(row.claimed_compute_units || 0),
-      estimated_compute_units: Number(row.estimated_compute_units || 0)
+      estimated_compute_units: Number(row.estimated_compute_units || 0),
+      estimated_relays: Number(row.estimated_relays || 0)
     }));
 
     res.json({ data: { window_days: windowDays, timeline } });
@@ -1290,10 +1299,17 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
       SELECT
         COALESCE(SUM(pe.num_relays), 0) AS relays,
         COALESCE(SUM(pe.num_claimed_compute_units), 0) AS claimed_compute_units,
-        COALESCE(SUM(pe.num_estimated_compute_units), 0) AS estimated_compute_units
+        COALESCE(SUM(pe.num_estimated_compute_units), 0) AS estimated_compute_units,
+        COALESCE(SUM(
+          CASE
+            WHEN pe.num_claimed_compute_units > 0
+              THEN pe.num_relays * (pe.num_estimated_compute_units::numeric / pe.num_claimed_compute_units::numeric)
+            ELSE pe.num_relays
+          END
+        ), 0) AS estimated_relays
       FROM proof_events pe
       INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
-      WHERE pe.event_type = 'created'
+      WHERE pe.event_type IN ('submitted', 'created')
         AND ($1::text IS NULL OR pe.chain = $1);
     `;
 
@@ -1308,7 +1324,8 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
       services: Number(entities.services || 0),
       relays: Number(perf.relays || 0),
       claimed_compute_units: Number(perf.claimed_compute_units || 0),
-      estimated_compute_units: Number(perf.estimated_compute_units || 0)
+      estimated_compute_units: Number(perf.estimated_compute_units || 0),
+      estimated_relays: Number(perf.estimated_relays || 0)
     }});
   } catch (error) {
     console.error('Error fetching network growth summary:', error);

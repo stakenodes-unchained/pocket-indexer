@@ -27,6 +27,9 @@ async function parseEventsInBatches(eventData, blockHeight, chain = null) {
   
   // Process events in batches
   for (let i = 0; i < totalEvents; i += EVENT_PARSE_BATCH_SIZE) {
+    // Yield to event loop between batches to prevent CPU soft locks
+    await new Promise(resolve => setImmediate(resolve));
+    
     const batch = eventData.slice(i, i + EVENT_PARSE_BATCH_SIZE);
     const batchNum = Math.floor(i / EVENT_PARSE_BATCH_SIZE) + 1;
     const batchStartTime = Date.now();
@@ -40,19 +43,34 @@ async function parseEventsInBatches(eventData, blockHeight, chain = null) {
         `${batchSize} events (${eventsProcessed}/${totalEvents}, ${progressPercent}% complete)`
       );
       
-      // Parse batch in parallel
-      const parsePromises = batch.map(async ({ event, metadata }) => {
-        try {
-          const parsed = parseTypedEvent(event, metadata);
-          return parsed;
-        } catch (error) {
-          console.error(`[EventProcessor] Error parsing event ${event?.type} in block ${blockHeight}:`, error.message);
-          parseFailures += 1;
-          return null;
-        }
-      });
+      // Parse batch in controlled concurrency to avoid CPU locks
+      // Process in smaller chunks within each batch (max 1000 concurrent promises)
+      const CONCURRENT_PARSE_LIMIT = 1000;
+      const batchResults = [];
       
-      const batchResults = await Promise.all(parsePromises);
+      for (let j = 0; j < batch.length; j += CONCURRENT_PARSE_LIMIT) {
+        const chunk = batch.slice(j, j + CONCURRENT_PARSE_LIMIT);
+        const parsePromises = chunk.map(async ({ event, metadata }) => {
+          try {
+            const parsed = parseTypedEvent(event, metadata);
+            return parsed;
+          } catch (error) {
+            console.error(`[EventProcessor] Error parsing event ${event?.type} in block ${blockHeight}:`, error.message);
+            parseFailures += 1;
+            return null;
+          }
+        });
+        
+        const chunkResults = await Promise.all(parsePromises);
+        batchResults.push(...chunkResults);
+        
+        // Yield to event loop after each chunk within batch
+        if (j + CONCURRENT_PARSE_LIMIT < batch.length) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
+      }
+      
+      // Filter out null results from failed parses
       const batchParsed = batchResults.filter(parsed => parsed !== null);
       const batchFailed = batchSize - batchParsed.length;
       parsedEvents.push(...batchParsed);

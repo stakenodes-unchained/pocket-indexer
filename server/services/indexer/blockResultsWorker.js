@@ -24,7 +24,7 @@ const configLoader = require('../configLoader');
 const { rpcName, blockResultsRpcUrl, rpcUrl, id, blockResultsRole } = workerData;
 
 // Configuration - loaded from database with env fallback
-const POLL_INTERVAL_MS = configLoader.get('BLOCK_RESULTS_POLL_INTERVAL_MS', 500);
+const POLL_INTERVAL_MS = configLoader.get('BLOCK_RESULTS_POLL_INTERVAL_MS', 1000);
 const BATCH_SIZE = configLoader.get('BLOCK_RESULTS_BATCH_SIZE', 8);
 const PARALLEL_PROCESSING_LIMIT = configLoader.get('BLOCK_RESULTS_PARALLEL_LIMIT', 10);
 const RATE_LIMIT_DELAY_MS = configLoader.get('BLOCK_RESULTS_RATE_LIMIT_MS', 100);
@@ -178,45 +178,28 @@ async function processBlockResultsItem(item) {
     log(`Fetching block_results for height ${height}`);
     const fetchStartTime = Date.now();
     
-    // Fetch block_results
-    const blockResultsData = await fetchBlockResultsByHeight(height, blockResultsRpcUrl);
+    // Fetch block_results (let so we can clear for GC after processing)
+    let blockResultsData = await fetchBlockResultsByHeight(height, blockResultsRpcUrl);
     
     const fetchTime = Date.now() - fetchStartTime;
     
     // Calculate response size for monitoring large responses
-    // Use a safe method that doesn't stringify the entire object (which can exceed string length limits)
+    // Use estimation instead of stringify to avoid memory issues
     let responseSizeMB = '0.00';
     try {
-      // Try to calculate size, but catch errors for very large objects
-      const responseSize = JSON.stringify(blockResultsData).length;
-      responseSizeMB = (responseSize / 1024 / 1024).toFixed(2);
-    } catch (error) {
-      // For very large objects, estimate size based on structure
-      // This is a rough estimate but avoids the string length limit error
-      // Catch all string length related errors (RangeError with "Invalid string length" message)
-      const isStringLengthError = error instanceof RangeError || 
-        (error.message && (
-          error.message.includes('Invalid string length') ||
-          error.message.includes('Cannot create a string longer than') ||
-          error.message.includes('0x1fffffe8') ||
-          error.message.includes('string length')
-        ));
+      const result = blockResultsData?.result;
+      const txsCount = result?.txs_results?.length || 0;
+      const finalizeBlockEventsCount = result?.finalize_block_events?.length || 0;
       
-      if (isStringLengthError) {
-        const result = blockResultsData?.result;
-        const txsCount = result?.txs_results?.length || 0;
-        const finalizeBlockEventsCount = result?.finalize_block_events?.length || 0;
-        
-        // Estimate: ~50KB per tx, ~1KB per event
-        const estimatedTxSize = txsCount * 50;
-        const estimatedEventSize = finalizeBlockEventsCount;
-        const estimatedSize = (estimatedTxSize + estimatedEventSize) / 1024; // Convert to MB
-        responseSizeMB = estimatedSize.toFixed(2);
-        log(`WARNING: Block ${height} too large to calculate exact size (${error.message || 'Invalid string length'}), estimated: ${responseSizeMB}MB`);
-      } else {
-        // Re-throw if it's not a string length error
-        throw error;
-      }
+      // Estimate size without stringifying the entire object
+      // ~50KB per tx, ~1KB per event (conservative estimates)
+      const estimatedTxSize = txsCount * 50;
+      const estimatedEventSize = finalizeBlockEventsCount;
+      const estimatedSize = (estimatedTxSize + estimatedEventSize) / 1024; // Convert to MB
+      responseSizeMB = estimatedSize.toFixed(2);
+    } catch (error) {
+      log(`WARNING: Could not estimate block ${height} size: ${error.message}`);
+      responseSizeMB = '0.00';
     }
     
     // Count data in response
@@ -392,6 +375,10 @@ async function processBlockResultsItem(item) {
     
     log(`Successfully processed block ${height} in ${processingTime}ms`);
     
+    // Explicitly clear large objects to help GC
+    blockResultsData = null;
+    blockData = null;
+    
     // Send stats immediately after processing to prevent stale status during long operations
     // This ensures the parent process knows the worker is alive even during 3-4 minute block processing
     await reportStats();
@@ -444,26 +431,44 @@ async function processDelayedItems() {
 
 /**
  * Process items with concurrency limit
+ * Memory-optimized version that processes in chunks to avoid accumulating results
  */
 async function processItemsWithConcurrency(items, limit) {
-  const results = [];
-  const executing = [];
+  const allResults = [];
   
-  for (const item of items) {
-    const promise = processBlockResultsItem(item).then(result => {
-      executing.splice(executing.indexOf(promise), 1);
-      return result;
-    });
+  // Process items in chunks to avoid accumulating too many promises/results in memory
+  const chunkSize = Math.max(1, Math.ceil(items.length / 3));
+  
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const executing = [];
+    const chunkResults = [];
     
-    results.push(promise);
-    executing.push(promise);
+    for (const item of chunk) {
+      const promise = processBlockResultsItem(item).then(result => {
+        executing.splice(executing.indexOf(promise), 1);
+        return result;
+      });
+      
+      chunkResults.push(promise);
+      executing.push(promise);
+      
+      if (executing.length >= limit) {
+        await Promise.race(executing);
+      }
+    }
     
-    if (executing.length >= limit) {
-      await Promise.race(executing);
+    // Wait for chunk to complete and add to results
+    const settled = await Promise.allSettled(chunkResults);
+    allResults.push(...settled);
+    
+    // Force garbage collection opportunity between chunks
+    if (global.gc) {
+      global.gc();
     }
   }
   
-  return Promise.allSettled(results);
+  return allResults;
 }
 
 /**

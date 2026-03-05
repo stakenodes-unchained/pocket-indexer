@@ -216,13 +216,26 @@ async function retryRequest(requestFn, operationName, options = {}) {
       }
       
       // For network errors (ECONNREFUSED, ENOTFOUND, etc.), retry
-      if ((error.code === 'ECONNREFUSED' || 
-           error.code === 'ENOTFOUND' || 
-           error.code === 'ECONNRESET' ||
-           error.code === 'ETIMEDOUT' ||
-           error.message.includes('fetch')) && attempt <= maxRetries) {
+      // Also handle aborted/terminated fetches which are common when upstream RPC closes the connection
+      const isNetworkLikeError =
+        error.code === 'ECONNREFUSED' ||
+        error.code === 'ENOTFOUND' ||
+        error.code === 'ECONNRESET' ||
+        error.code === 'ETIMEDOUT' ||
+        // Some fetch implementations surface generic messages like "terminated" or "The operation was aborted"
+        error.name === 'AbortError' ||
+        (typeof error.message === 'string' && (
+          error.message.includes('fetch') ||
+          error.message.includes('terminated') ||
+          error.message.includes('aborted')
+        ));
+
+      if (isNetworkLikeError && attempt <= maxRetries) {
         const networkDelay = retryDelay * Math.pow(2, attempt - 1); // Exponential backoff
-        console.warn(`${operationName}: Network error (${error.code || 'unknown'}), retrying in ${networkDelay/1000} seconds (attempt ${attempt}/${maxRetries})`);
+        console.warn(
+          `${operationName}: Network-like error (${error.code || error.name || 'unknown'}: ${error.message}), ` +
+          `retrying in ${networkDelay/1000} seconds (attempt ${attempt}/${maxRetries})`
+        );
         await new Promise(resolve => setTimeout(resolve, networkDelay));
         continue;
       }
