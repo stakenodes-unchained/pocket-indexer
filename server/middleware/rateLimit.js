@@ -56,13 +56,17 @@ const rateLimitMiddleware = (options = {}) => {
           return onRateLimited(req, res, result);
         }
 
-        res.set('Retry-After', result.rule?.windowSeconds || 60);
+        const retryAfterSeconds = result.resetAt
+          ? Math.max(1, Math.ceil((new Date(result.resetAt).getTime() - Date.now()) / 1000))
+          : (result.rule?.windowSeconds || 60);
+
+        res.set('Retry-After', retryAfterSeconds);
 
         return res.status(429).json({
           success: false,
           error: 'Too Many Requests',
-          message: `Rate limit exceeded. Please try again in ${result.rule?.windowSeconds || 60} seconds.`,
-          retryAfter: result.rule?.windowSeconds || 60,
+          message: `Rate limit exceeded. Please try again in ${retryAfterSeconds} seconds.`,
+          retryAfter: retryAfterSeconds,
           limit: result.limit,
           resetAt: result.resetAt,
         });
@@ -113,12 +117,17 @@ const strictRateLimiter = (options = {}) => {
       }
 
       if (!result.allowed) {
-        res.set('Retry-After', result.rule?.windowSeconds || 60);
+        const retryAfterSeconds = result.resetAt
+          ? Math.max(1, Math.ceil((new Date(result.resetAt).getTime() - Date.now()) / 1000))
+          : (result.rule?.windowSeconds || 60);
+
+        res.set('Retry-After', retryAfterSeconds);
         return res.status(429).json({
           success: false,
           error: 'Too Many Requests',
           message: `Rate limit exceeded. Please try again later.`,
-          retryAfter: result.rule?.windowSeconds || 60,
+          retryAfter: retryAfterSeconds,
+          resetAt: result.resetAt,
         });
       }
 
@@ -164,6 +173,7 @@ const ipRateLimiter = (requestsPerWindow = 100, windowSeconds = 60) => {
       pipeline.zcard(key);
       pipeline.zadd(key, now, `${now}:${Math.random()}`);
       pipeline.expire(key, windowSeconds + 1);
+      pipeline.zrange(key, 0, 0, 'WITHSCORES');
 
       const results = await pipeline.exec();
       const currentCount = results[1][1] || 0;
@@ -171,18 +181,27 @@ const ipRateLimiter = (requestsPerWindow = 100, windowSeconds = 60) => {
       const allowed = currentCount < requestsPerWindow;
       const remaining = Math.max(0, requestsPerWindow - currentCount - 1);
 
+      // Stable resetAt: when the oldest entry in the window expires
+      const oldestEntry = results[4][1];
+      const oldestTimestamp = (oldestEntry && oldestEntry.length >= 2)
+        ? parseFloat(oldestEntry[1])
+        : now;
+      const resetAt = new Date(oldestTimestamp + windowMs).toISOString();
+      const retryAfterSeconds = Math.max(1, Math.ceil((new Date(resetAt).getTime() - Date.now()) / 1000));
+
       // Set headers
       res.set('X-RateLimit-Limit', requestsPerWindow);
       res.set('X-RateLimit-Remaining', allowed ? remaining : 0);
-      res.set('X-RateLimit-Reset', new Date(now + windowMs).toISOString());
+      res.set('X-RateLimit-Reset', resetAt);
 
       if (!allowed) {
-        res.set('Retry-After', windowSeconds);
+        res.set('Retry-After', retryAfterSeconds);
         return res.status(429).json({
           success: false,
           error: 'Too Many Requests',
-          message: `Rate limit exceeded. Please try again in ${windowSeconds} seconds.`,
-          retryAfter: windowSeconds,
+          message: `Rate limit exceeded. Please try again in ${retryAfterSeconds} seconds.`,
+          retryAfter: retryAfterSeconds,
+          resetAt,
         });
       }
 
