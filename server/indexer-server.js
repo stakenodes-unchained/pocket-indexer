@@ -24,7 +24,7 @@ app.use(cors());
 // Health endpoints
 app.get('/api/v1/health/workers', async (req, res) => {
   try {
-    await transactionService.connectDB();
+    // await transactionService.connectDB();
     const client = transactionService.pgClient;
     const heartbeats = await client.query(`SELECT * FROM worker_heartbeats ORDER BY last_seen DESC`);
     const workers = indexerPool.getWorkersStatus();
@@ -113,7 +113,7 @@ app.get('/api/v1/health/workers', async (req, res) => {
 app.get('/api/v1/health/rpc', async (req, res) => {
   try {
     const workers = indexerPool.getWorkersStatus();
-    await transactionService.connectDB();
+    // await transactionService.connectDB();
     const client = transactionService.pgClient;
     
     // Get historical sync checkpoints
@@ -160,7 +160,7 @@ app.get('/api/v1/health/rpc', async (req, res) => {
 // Gap analysis endpoint
 app.get('/api/v1/health/gaps', async (req, res) => {
   try {
-    await transactionService.connectDB();
+    // await transactionService.connectDB();
     const client = transactionService.pgClient;
     
     const chains = transactionService.getAvailableChains();
@@ -351,7 +351,7 @@ app.get('/api/v1/health/block-results-workers', async (req, res) => {
 
 app.get('/api/v1/health/block-results-workers/history', async (req, res) => {
   try {
-    await transactionService.connectDB();
+    // await transactionService.connectDB();
     const client = transactionService.pgClient;
     
     const from = req.query.from ? new Date(req.query.from) : new Date(Date.now() - 3600000); // Default: 1 hour ago
@@ -417,7 +417,7 @@ app.post('/api/v1/admin/suppliers/enrich', async (req, res) => {
     const { chain } = req.query;
     const { operator_addresses } = req.body || {};
     
-    await transactionService.connectDB();
+    // await transactionService.connectDB();
     
     // Set external pool for enrichment service
     supplierEnrichmentService.setExternalPool(transactionService.pgClient);
@@ -459,7 +459,7 @@ app.post('/api/v1/admin/validators/refresh', async (req, res) => {
   try {
     const { chain } = req.query;
     
-    await transactionService.connectDB();
+    // await transactionService.connectDB();
     
     // Set external pool for validator service
     validatorService.setExternalPool(transactionService.pgClient);

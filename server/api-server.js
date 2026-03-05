@@ -860,7 +860,6 @@ app.get('/api/v1/auth/verification-status', async (req, res) => {
 app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
-    await transactionService.connectDB();
     const client = transactionService.pgClient;
 
     const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
@@ -1037,7 +1036,6 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
 app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
-    await transactionService.connectDB();
     const client = transactionService.pgClient;
 
     const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
@@ -1109,7 +1107,6 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
 app.get('/api/v1/network-growth/entities', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
-    await transactionService.connectDB();
     const client = transactionService.pgClient;
 
     const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
@@ -1218,7 +1215,6 @@ app.get('/api/v1/network-growth/entities', cacheMiddleware(1800), async (req, re
 app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
-    await transactionService.connectDB();
     const client = transactionService.pgClient;
 
     const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));

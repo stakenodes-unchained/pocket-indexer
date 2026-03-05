@@ -29,10 +29,15 @@ class TransactionService {
     });
   }
 
+  /**
+   * Get the shared connection pool. Does not open a new connection.
+   * Use pgClient or this method when you need to run queries.
+   */
   async connectDB() {
     return this.pgPool;
   }
 
+  /** Shared pg Pool — reuse for all queries; pool manages connections. */
   get pgClient() {
     return this.pgPool;
   }
@@ -64,7 +69,7 @@ class TransactionService {
     const offset = (pageNum - 1) * limitNum;
     
     try {
-      await this.connectDB();
+      // await this.connectDB();
       
       // Get total count for the chain
       const countResult = await this.pgClient.query(
@@ -142,7 +147,7 @@ class TransactionService {
    */
   async getTransactionById(transactionId, chain) {
     try {
-      await this.connectDB();
+      // await this.connectDB();
       // Optional quick-hit from Redis hash (lightweight) if enabled
       if (REDIS_CACHE_TX_DETAIL) {
         const key = `tx:${chain || ''}:${transactionId}`;
@@ -205,7 +210,7 @@ class TransactionService {
    */
   async getTransactionCount(chain) {
     try {
-      await this.connectDB();
+      // await this.connectDB();
       
       if (chain) {
         // Get the current total count first
@@ -302,7 +307,7 @@ class TransactionService {
    */
   async getChainStats() {
     try {
-      await this.connectDB();
+      // await this.connectDB();
       const chains = this.getAvailableChains();
       const stats = {};
       
@@ -365,7 +370,7 @@ class TransactionService {
     const daysNum = parseInt(days, 10);
     
     try {
-      await this.connectDB();
+      // await this.connectDB();
       
       // Check if we have cached data first
       const cacheKey = `history:${chainName}:${daysNum}`;
@@ -447,7 +452,7 @@ class TransactionService {
     }
     
     try {
-      await this.connectDB();
+      // await this.connectDB();
       
       // Get transaction counts by type
       const statsResult = await this.pgClient.query(
@@ -527,7 +532,7 @@ class TransactionService {
     const sortDirection = sort_order.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
     try {
-      await this.connectDB();
+      // await this.connectDB();
 
       const conditions = [];
       const values = [];
@@ -839,7 +844,7 @@ class TransactionService {
     } = filters;
 
     try {
-      await this.connectDB();
+      // await this.connectDB();
 
       const conditions = [];
       const values = [];
