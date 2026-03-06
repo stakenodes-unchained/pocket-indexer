@@ -100,7 +100,6 @@ async function getFailedBlocks(chain, minHeight, maxHeight) {
       FROM block_results_processed
       WHERE chain = $1 
         AND status = 'failed'
-        AND error_message LIKE '%Cannot create a string longer than%'
     `;
     
     const params = [chain];
