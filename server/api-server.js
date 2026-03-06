@@ -183,7 +183,7 @@ app.use((req, res, next) => {
     return next();
   }
   // Apply cache middleware for other routes
-  return cacheMiddleware(60)(req, res, next);
+  return cacheMiddleware(180)(req, res, next);
 });
 
 // Request logging middleware (console output)
