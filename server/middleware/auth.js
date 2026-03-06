@@ -1,5 +1,5 @@
 const authService = require('../services/authService');
-const { getEndpointCategory, isValidReferrer } = require('../config/endpointAccess');
+const { getEndpointCategory, isValidReferrer, ALLOWED_REFERRER_DOMAINS } = require('../config/endpointAccess');
 
 /**
  * Authentication middleware
@@ -42,12 +42,16 @@ const authenticateToken = async (req, res, next) => {
   if (category === 'INTERNAL') {
     const referer = req.headers.referer || req.headers.origin || req.headers.referrer;
 
-    if (!isValidReferrer(referer)) {
+    // Allow same-host requests (direct browser navigation, server-to-server proxying)
+    const host = req.headers.host || '';
+    const isSameHost = ALLOWED_REFERRER_DOMAINS.some(domain => host.includes(domain));
+
+    if (!isSameHost && !isValidReferrer(referer)) {
       // Return 404 to hide endpoint existence
       return res.status(404).json({ error: 'Not found' });
     }
 
-    // Valid referrer - allow access
+    // Valid referrer or same-host - allow access
     return next();
   }
 

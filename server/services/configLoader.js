@@ -204,9 +204,15 @@ class ConfigLoader {
     try {
       // Create a separate Redis connection for subscriptions
       const Redis = require('ioredis');
+      const redisHost = process.env.REDIS_URL
+        ? new URL(process.env.REDIS_URL).hostname
+        : (process.env.REDIS_HOST || 'localhost');
+      const redisPort = process.env.REDIS_URL
+        ? parseInt(new URL(process.env.REDIS_URL).port || '6379', 10)
+        : (process.env.REDIS_PORT || 6379);
       const subscriber = new Redis({
-        host: process.env.REDIS_HOST || 'localhost',
-        port: process.env.REDIS_PORT || 6379,
+        host: redisHost,
+        port: redisPort,
         password: process.env.REDIS_PASSWORD || undefined,
         db: process.env.REDIS_DB || 0,
       });

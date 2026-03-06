@@ -582,12 +582,21 @@ class RateLimitService {
       // Set expiry
       pipeline.expire(key, rule.window_seconds + 1);
 
+      // Get oldest entry (to compute stable resetAt)
+      pipeline.zrange(key, 0, 0, 'WITHSCORES');
+
       const results = await pipeline.exec();
       const currentCount = results[1][1] || 0;
 
       const allowed = currentCount < rule.requests_limit;
       const remaining = Math.max(0, rule.requests_limit - currentCount - 1);
-      const resetAt = new Date(now + windowMs).toISOString();
+
+      // resetAt = when the oldest entry in the window expires (stable, not moving)
+      const oldestEntry = results[4][1];
+      const oldestTimestamp = (oldestEntry && oldestEntry.length >= 2)
+        ? parseFloat(oldestEntry[1])
+        : now;
+      const resetAt = new Date(oldestTimestamp + windowMs).toISOString();
 
       return {
         allowed,
