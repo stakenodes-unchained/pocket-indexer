@@ -70,7 +70,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     env_file:
-      - .env.api-replica.example
+      - .env.api-replica
     environment:
       PORT: ${PORT:-3006}
       DB_HOST: postgres-replica

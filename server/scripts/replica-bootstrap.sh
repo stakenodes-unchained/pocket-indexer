@@ -13,8 +13,14 @@ REPLICA_SLOT_NAME="${REPLICA_SLOT_NAME:-}"
 mkdir -p "${PGDATA}"
 chmod 700 "${PGDATA}" || true
 
-if [ ! -f "${PGDATA}/PG_VERSION" ]; then
-  echo "[replica-bootstrap] No PGDATA found, cloning from primary..."
+is_valid_pgdata() {
+  [ -f "${PGDATA}/PG_VERSION" ] \
+    && [ -f "${PGDATA}/postgresql.conf" ] \
+    && [ -f "${PGDATA}/global/pg_control" ]
+}
+
+if ! is_valid_pgdata; then
+  echo "[replica-bootstrap] PGDATA missing/incomplete, cloning from primary..."
   rm -rf "${PGDATA:?}/"*
 
   export PGPASSWORD="${PRIMARY_DB_REPL_PASSWORD}"
