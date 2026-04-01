@@ -4,29 +4,67 @@ const { getRpcEndpoints } = require('../config/rpc');
 const { Pool } = require('pg');
 const configLoader = require('./configLoader');
 
+function getPoolConfig(mode = 'read') {
+  const prefix = mode === 'write' ? 'DB_WRITE' : 'DB_READ';
+  return {
+    host: process.env[`${prefix}_HOST`] || process.env.DB_HOST,
+    port: process.env[`${prefix}_PORT`] || process.env.DB_PORT,
+    user: process.env[`${prefix}_USER`] || process.env.DB_USER,
+    password: process.env[`${prefix}_PASS`] || process.env.DB_PASS,
+    database: process.env[`${prefix}_NAME`] || process.env.DB_NAME,
+    max: parseInt(process.env.DB_POOL_SIZE || '10', 10),
+    min: parseInt(process.env.DB_POOL_MIN || '2', 10),
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
+    statement_timeout: 120000,
+  };
+}
+
+function stripLeadingSqlComments(sql) {
+  if (!sql || typeof sql !== 'string') return '';
+  return sql
+    .replace(/^\s*--.*(\r?\n|$)/gm, '')
+    .replace(/^\s*\/\*[\s\S]*?\*\//, '')
+    .trim();
+}
+
+function isWriteQuery(text) {
+  const sql = stripLeadingSqlComments(text).toUpperCase();
+  if (!sql) return false;
+
+  if (/^(INSERT|UPDATE|DELETE|MERGE|UPSERT|CREATE|ALTER|DROP|TRUNCATE|REINDEX|VACUUM|GRANT|REVOKE|ANALYZE|REFRESH|CALL|DO|BEGIN|START|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|LOCK|SET)\b/.test(sql)) {
+    return true;
+  }
+
+  if (sql.startsWith('WITH ')) {
+    return /\b(INSERT|UPDATE|DELETE|MERGE)\b/.test(sql);
+  }
+
+  return false;
+}
+
 class TransactionService {
   constructor() {
     this.rpcEndpoints = getRpcEndpoints();
     
-    // PostgreSQL connection pool for concurrent request handling
-    this.pgPool = new Pool({
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASS,
-      database: process.env.DB_NAME,
-      // Connection pool settings for performance - reduced defaults to save memory
-      max: parseInt(process.env.DB_POOL_SIZE || '10', 10), // Max connections in pool (reduced from 20 to 10)
-      min: parseInt(process.env.DB_POOL_MIN || '2', 10),   // Min connections to maintain
-      idleTimeoutMillis: 30000,  // Close idle clients after 30 seconds
-      connectionTimeoutMillis: 10000, // 10 second connection timeout
-      statement_timeout: 120000, // 120 second query timeout (increased for large datasets, but optimization is preferred)
-    });
+    // Split pools: reads can go to replica, writes always go to primary.
+    this.readPool = new Pool(getPoolConfig('read'));
+    this.writePool = new Pool(getPoolConfig('write'));
     
     // Handle pool errors
-    this.pgPool.on('error', (err) => {
-      console.error('Unexpected error on idle PostgreSQL client', err);
+    this.readPool.on('error', (err) => {
+      console.error('Unexpected error on idle PostgreSQL read client', err);
     });
+    this.writePool.on('error', (err) => {
+      console.error('Unexpected error on idle PostgreSQL write client', err);
+    });
+
+    this.queryRouter = {
+      query: (text, params) => {
+        const targetPool = isWriteQuery(text) ? this.writePool : this.readPool;
+        return targetPool.query(text, params);
+      }
+    };
   }
 
   /**
@@ -34,12 +72,20 @@ class TransactionService {
    * Use pgClient or this method when you need to run queries.
    */
   async connectDB() {
-    return this.pgPool;
+    return this.readPool;
   }
 
   /** Shared pg Pool — reuse for all queries; pool manages connections. */
   get pgClient() {
-    return this.pgPool;
+    return this.queryRouter;
+  }
+
+  get readClient() {
+    return this.readPool;
+  }
+
+  get writeClient() {
+    return this.writePool;
   }
 
   getAvailableChains() {

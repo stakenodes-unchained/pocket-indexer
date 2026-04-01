@@ -1,5 +1,5 @@
-const { Pool } = require('pg');
 const redis = require('../config/redis');
+const { getReadPool } = require('./dbRouter');
 
 /**
  * Configuration Loader Service
@@ -102,21 +102,7 @@ class ConfigLoader {
     if (this.initialized) return;
 
     try {
-      this.pgPool = new Pool({
-        host: process.env.DB_HOST,
-        port: process.env.DB_PORT,
-        user: process.env.DB_USER,
-        password: process.env.DB_PASS,
-        database: process.env.DB_NAME,
-        max: 5,
-        min: 1,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 10000,
-      });
-
-      this.pgPool.on('error', (err) => {
-        console.error('ConfigLoader: Database pool error:', err);
-      });
+      this.pgPool = getReadPool();
 
       // Load all configs into cache
       await this.loadAllConfigs();

@@ -1,4 +1,4 @@
-const { Pool } = require('pg');
+const { getWritePool } = require('./dbRouter');
 
 /**
  * Service to refresh the proof_submission_rewards_mv materialized view
@@ -14,25 +14,7 @@ class RewardAnalyticsRefreshService {
     this.refreshCount = 0;
     this.errorCount = 0;
     
-    // Create a dedicated connection pool for refresh operations
-    // This prevents blocking the main API connection pool
-    this.pgPool = new Pool({
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASS,
-      database: process.env.DB_NAME,
-      max: 2, // Only need 1-2 connections for refresh
-      min: 1,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
-      statement_timeout: 600000, // 10 minute timeout for refresh (may take time on large datasets)
-    });
-    
-    // Handle pool errors
-    this.pgPool.on('error', (err) => {
-      console.error('RewardAnalyticsRefreshService: Unexpected error on idle PostgreSQL client', err);
-    });
+    this.pgPool = getWritePool();
   }
 
   /**

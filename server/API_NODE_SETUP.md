@@ -1,9 +1,15 @@
-# API Node Setup (No Indexer, Read-Only DB)
+# API Node Setup (No Indexer, Replica + Primary Writes)
 
 This node runs the same runtime services as your normal stack except indexer workers:
 - `redis`
 - `postgres-replica` (streaming standby from primary)
 - `api`
+
+The API container uses split DB routing:
+- **Reads** can go to replica (`DB_READ_HOST`)
+- **Writes** go to primary (`DB_WRITE_HOST`)
+
+Fallback variables (`DB_HOST`/`DB_PORT`) still exist for services that are not yet read/write-split.
 
 ## Files
 
@@ -53,6 +59,8 @@ Update at least:
 - `PRIMARY_DB_REPL_PASSWORD`
 - `PRIMARY_DB_SSLMODE` (`prefer`, `require`, or `disable` based on primary setup)
 - `DB_USER` / `DB_PASS` / `DB_NAME`
+- `DB_READ_HOST` / `DB_READ_PORT`
+- `DB_WRITE_HOST` / `DB_WRITE_PORT`
 
 ## 3) Start API Node Stack
 
@@ -79,7 +87,7 @@ FROM pg_stat_replication;
 
 ## Notes
 
-- API writes (auth/admin/job creation, etc.) will fail by design against read-only DB.
+- Write operations should succeed because write traffic is directed to primary DB.
 - To force fresh re-clone: `docker compose -f docker-compose.api-node.yml down -v` then start again.
 
 ## Production Rollout Notes (Large Primary DB)

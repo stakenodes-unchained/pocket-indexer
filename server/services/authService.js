@@ -1,29 +1,13 @@
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
-const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
 const emailService = require('./emailService');
+const { getWritePool } = require('./dbRouter');
 
 class AuthService {
   constructor() {
-    // PostgreSQL connection pool for concurrent request handling
-    this.pgPool = new Pool({
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASS,
-      database: process.env.DB_NAME,
-      max: parseInt(process.env.DB_POOL_SIZE || '10', 10),
-      min: parseInt(process.env.DB_POOL_MIN || '2', 10),
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
-      statement_timeout: 120000,
-    });
-
-    // Handle pool errors
-    this.pgPool.on('error', (err) => {
-      console.error('Unexpected error on idle PostgreSQL client', err);
-    });
+    // Auth mutates sessions/tokens/accounts, so it must always use primary/write pool.
+    this.pgPool = getWritePool();
   }
 
   async connectDB() {
