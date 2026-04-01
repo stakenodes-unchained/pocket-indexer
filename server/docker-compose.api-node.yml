@@ -55,7 +55,7 @@ services:
       - ./scripts/replica-bootstrap.sh:/usr/local/bin/replica-bootstrap.sh:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "if [ -f /tmp/replica_basebackup_in_progress ]; then exit 0; fi; pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-pocket_indexer} -h localhost && psql -U ${DB_USER:-postgres} -d ${DB_NAME:-pocket_indexer} -tAc 'SHOW transaction_read_only;' | tr -d '[:space:]' | grep -Eq '^on$'"]
+      test: ["CMD-SHELL", "if [ -f /tmp/replica_basebackup_in_progress ]; then exit 0; fi; pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -h localhost && psql -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -tAc 'SHOW transaction_read_only;' | tr -d '[:space:]' | grep -Eq '^on$'"]
       interval: 10s
       timeout: 5s
       retries: 10
