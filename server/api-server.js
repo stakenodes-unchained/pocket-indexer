@@ -960,25 +960,20 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
         FROM bounds b
       ),
-      block_days AS (
-        SELECT
-          height,
-          chain,
-          DATE_TRUNC('day', timestamp)::date AS day
-        FROM blocks
-        WHERE timestamp >= (SELECT start_day FROM bounds)
-      ),
       proof_events_agg AS (
         SELECT
-          bd.day,
+          (DATE_TRUNC('day', b.timestamp)::date) AS day,
           SUM(pe.num_relays) AS relays,
           SUM(pe.num_claimed_compute_units) AS claimed_compute_units,
           SUM(pe.num_estimated_compute_units) AS estimated_compute_units
         FROM proof_events pe
-        INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
+        INNER JOIN blocks b ON pe.block_height = b.height AND pe.chain = b.chain
+        CROSS JOIN bounds bo
         WHERE pe.event_type IN ('created', 'submitted')
           AND ($1::text IS NULL OR pe.chain = $1)
-        GROUP BY bd.day
+          AND b.timestamp >= bo.start_day::timestamp
+          AND b.timestamp < (bo.end_day + INTERVAL '1 day')::timestamp
+        GROUP BY (DATE_TRUNC('day', b.timestamp)::date)
       )
       SELECT
         d.day,
@@ -1049,17 +1044,9 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
         FROM bounds b
       ),
-      block_days AS (
-        SELECT
-          height,
-          chain,
-          DATE_TRUNC('day', timestamp)::date AS day
-        FROM blocks
-        WHERE timestamp >= (SELECT start_day FROM bounds)
-      ),
       proof_events_agg AS (
         SELECT
-          bd.day,
+          (DATE_TRUNC('day', b.timestamp)::date) AS day,
           SUM(pe.num_relays) AS relays,
           SUM(pe.num_claimed_compute_units) AS claimed_compute_units,
           SUM(pe.num_estimated_compute_units) AS estimated_compute_units,
@@ -1071,10 +1058,13 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
             END
           ), 0) AS estimated_relays
         FROM proof_events pe
-        INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
+        INNER JOIN blocks b ON pe.block_height = b.height AND pe.chain = b.chain
+        CROSS JOIN bounds bo
         WHERE pe.event_type IN ('submitted', 'created')
           AND ($1::text IS NULL OR pe.chain = $1)
-        GROUP BY bd.day
+          AND b.timestamp >= bo.start_day::timestamp
+          AND b.timestamp < (bo.end_day + INTERVAL '1 day')::timestamp
+        GROUP BY (DATE_TRUNC('day', b.timestamp)::date)
       )
       SELECT
         d.day,
@@ -1285,13 +1275,6 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
     const entities = entitiesRes.rows[0] || {};
 
     const perfSql = `
-      WITH block_days AS (
-        SELECT
-          height,
-          chain
-        FROM blocks
-        WHERE timestamp >= NOW() - make_interval(days => $2::int)
-      )
       SELECT
         COALESCE(SUM(pe.num_relays), 0) AS relays,
         COALESCE(SUM(pe.num_claimed_compute_units), 0) AS claimed_compute_units,
@@ -1304,9 +1287,10 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
           END
         ), 0) AS estimated_relays
       FROM proof_events pe
-      INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
+      INNER JOIN blocks b ON pe.block_height = b.height AND pe.chain = b.chain
       WHERE pe.event_type IN ('submitted', 'created')
-        AND ($1::text IS NULL OR pe.chain = $1);
+        AND ($1::text IS NULL OR pe.chain = $1)
+        AND b.timestamp >= NOW() - make_interval(days => $2::int);
     `;
 
     const perfRes = await client.query(perfSql, [chain || null, windowDays]);
