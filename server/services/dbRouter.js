@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const { registerPoolIdleErrorHandler } = require('./pgPoolIdleError');
 
 function poolConfig(prefix) {
   return {
@@ -18,13 +19,8 @@ function poolConfig(prefix) {
 const readPool = new Pool(poolConfig('DB_READ'));
 const writePool = new Pool(poolConfig('DB_WRITE'));
 
-readPool.on('error', (err) => {
-  console.error('Unexpected error on idle PostgreSQL read client', err);
-});
-
-writePool.on('error', (err) => {
-  console.error('Unexpected error on idle PostgreSQL write client', err);
-});
+registerPoolIdleErrorHandler(readPool, 'read');
+registerPoolIdleErrorHandler(writePool, 'write');
 
 async function getReadClient() {
   return readPool.connect();

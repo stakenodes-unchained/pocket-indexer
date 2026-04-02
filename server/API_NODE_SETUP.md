@@ -90,6 +90,21 @@ FROM pg_stat_replication;
 - Write operations should succeed because write traffic is directed to primary DB.
 - To force fresh re-clone: `docker compose -f docker-compose.api-node.yml down -v` then start again.
 
+### Hot standby: `conflict with recovery` / SQLSTATE `40001`
+
+On a replica, long-running `SELECT` queries can be cancelled when WAL replay needs to remove old row versions those queries might still read. The client then sees `terminating connection due to conflict with recovery` (often `40001`).
+
+The API node replica is started with:
+
+- `hot_standby_feedback = on` — replica tells the primary its oldest xmin so vacuum does not remove rows still needed for standby reads (can increase primary bloat if queries are very long; monitor).
+- `max_standby_streaming_delay = -1` — do not cancel standby queries for streaming-delay conflicts (wait for queries to finish; monitor replica lag).
+
+These are set in `scripts/replica-bootstrap.sh` (new clones) and in the server `postgres` command line (applies on every start).
+
+**Existing replica volumes** created before this change: restart the `postgres-replica` container so the new `-c` flags apply, or add the same settings manually in `postgresql.auto.conf` on the replica data directory and restart PostgreSQL.
+
+If you still see cancellations, shorten heavy read queries or lower `statement_timeout` for the read pool.
+
 ## Production Rollout Notes (Large Primary DB)
 
 For large primaries (for example ~1TB) where primary and API node are on different servers:

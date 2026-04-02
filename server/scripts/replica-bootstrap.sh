@@ -46,6 +46,9 @@ if ! is_valid_pgdata; then
     fi
     echo "hot_standby = on"
     echo "default_transaction_read_only = on"
+    # Reduce hot-standby query cancellations: long SELECTs vs WAL replay (see API_NODE_SETUP.md)
+    echo "hot_standby_feedback = on"
+    echo "max_standby_streaming_delay = -1"
   } >> "${PGDATA}/postgresql.auto.conf"
 
   touch "${PGDATA}/standby.signal"
@@ -58,6 +61,8 @@ POSTGRES_ARGS=(
   -D "${PGDATA}"
   -c hot_standby=on
   -c default_transaction_read_only=on
+  -c hot_standby_feedback=on
+  -c max_standby_streaming_delay=-1
 )
 
 # Official postgres image starts as root and drops privileges in entrypoint.

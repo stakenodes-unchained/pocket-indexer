@@ -3,6 +3,7 @@ const REDIS_CACHE_TX_DETAIL = (process.env.REDIS_CACHE_TX_DETAIL || 'false') ===
 const { getRpcEndpoints } = require('../config/rpc');
 const { Pool } = require('pg');
 const configLoader = require('./configLoader');
+const { registerPoolIdleErrorHandler } = require('./pgPoolIdleError');
 
 function getPoolConfig(mode = 'read') {
   const prefix = mode === 'write' ? 'DB_WRITE' : 'DB_READ';
@@ -51,13 +52,8 @@ class TransactionService {
     this.readPool = new Pool(getPoolConfig('read'));
     this.writePool = new Pool(getPoolConfig('write'));
     
-    // Handle pool errors
-    this.readPool.on('error', (err) => {
-      console.error('Unexpected error on idle PostgreSQL read client', err);
-    });
-    this.writePool.on('error', (err) => {
-      console.error('Unexpected error on idle PostgreSQL write client', err);
-    });
+    registerPoolIdleErrorHandler(this.readPool, 'read');
+    registerPoolIdleErrorHandler(this.writePool, 'write');
 
     this.queryRouter = {
       query: (text, params) => {
