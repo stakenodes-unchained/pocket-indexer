@@ -36,6 +36,7 @@ services:
   postgres-replica:
     container_name: pocket_indexer_postgres_replica
     image: postgres:15-alpine
+    shm_size: 512mb
     environment:
       POSTGRES_DB: ${DB_NAME:-pocket_indexer}
       POSTGRES_USER: ${DB_USER:-postgres}

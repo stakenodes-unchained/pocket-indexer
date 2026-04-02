@@ -38,6 +38,8 @@ services:
   postgres:
     container_name: pocket_indexer_postgres
     image: postgres:15-alpine
+    # Default Docker /dev/shm is 64MB; Postgres parallel workers + hash ops need more.
+    shm_size: 512mb
 
     command: >
       postgres
