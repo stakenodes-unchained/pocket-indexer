@@ -2830,28 +2830,29 @@ async function getClaimRewardAnalytics(params, client) {
   const conditions = [];
   const values = [];
   let idx = 1;
+  // Same filter as claim_rewards view — aggregate from base table in one pass (avoids hourly rollup + re-aggregate)
+  conditions.push('c.claim_proof_status_int = 0');
   
-  // Handle time range: either use days parameter or start_date/end_date
+  // Handle time range: either use days parameter or start_date/end_date (match view: DATE_TRUNC('hour', timestamp))
   if (days) {
     const daysNum = parseInt(days, 10);
     if (daysNum > 0) {
-      // Use parameterized query for safety
-      conditions.push(`hour_bucket >= NOW() - INTERVAL '1 day' * $${idx++}::integer`);
+      conditions.push(`DATE_TRUNC('hour', c.timestamp) >= NOW() - INTERVAL '1 day' * $${idx++}::integer`);
       values.push(daysNum);
     }
   } else {
     if (start_date) {
-      conditions.push(`hour_bucket >= $${idx++}::timestamp`);
+      conditions.push(`DATE_TRUNC('hour', c.timestamp) >= $${idx++}::timestamp`);
       values.push(start_date);
     }
     if (end_date) {
-      conditions.push(`hour_bucket <= $${idx++}::timestamp`);
+      conditions.push(`DATE_TRUNC('hour', c.timestamp) <= $${idx++}::timestamp`);
       values.push(end_date);
     }
   }
   
   if (chain) {
-    conditions.push(`cr.chain = $${idx++}`);
+    conditions.push(`c.chain = $${idx++}`);
     values.push(chain);
   }
   
@@ -2879,29 +2880,29 @@ async function getClaimRewardAnalytics(params, client) {
     needsSupplierJoin = true;
     if (supplier_addresses.length === 1) {
       // Single address - check if it's owner or operator
-      conditions.push(`(s.owner_address = $${idx}::text OR cr.supplier_operator_address = $${idx}::text)`);
+      conditions.push(`(s.owner_address = $${idx}::text OR c.supplier_operator_address = $${idx}::text)`);
       values.push(supplier_addresses[0]);
       idx++;
     } else {
       // Multiple addresses - use ANY(array) which is more efficient for large arrays
-      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cr.supplier_operator_address = ANY($${idx}::text[]))`);
+      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR c.supplier_operator_address = ANY($${idx}::text[]))`);
       values.push(supplier_addresses);
       idx++;
     }
   } else if (supplier_address) {
     needsSupplierJoin = true;
     // Check if it's owner or operator address
-    conditions.push(`(s.owner_address = $${idx}::text OR cr.supplier_operator_address = $${idx}::text)`);
+    conditions.push(`(s.owner_address = $${idx}::text OR c.supplier_operator_address = $${idx}::text)`);
     values.push(supplier_address);
     idx++;
   }
   
   if (application_address) {
-    conditions.push(`cr.application_address = $${idx++}`);
+    conditions.push(`c.application_address = $${idx++}`);
     values.push(application_address);
   }
   if (service_id) {
-    conditions.push(`cr.service_id = $${idx++}`);
+    conditions.push(`c.service_id = $${idx++}`);
     values.push(service_id);
   }
   
@@ -2910,67 +2911,45 @@ async function getClaimRewardAnalytics(params, client) {
   const limitNum = parseInt(limit, 10);
   const offset = (pageNum - 1) * limitNum;
   
-  // Build join clause if needed
-  const joinClause = needsSupplierJoin 
-    ? `LEFT JOIN suppliers s ON s.address = cr.supplier_operator_address AND s.chain = cr.chain`
+  const joinClause = needsSupplierJoin
+    ? `LEFT JOIN suppliers s ON s.address = c.supplier_operator_address AND s.chain = c.chain`
     : '';
   
-  // Aggregate by service_id and chain, summing across all hours in the time period
-  // This gives us total rewards per service, not per hour or per supplier
-  const aggregationSql = `
-    SELECT 
-      cr.service_id,
-      cr.chain,
-      SUM(cr.claim_count) as total_claims,
-      SUM(cr.total_rewards_upokt) as total_rewards_upokt,
-      SUM(cr.total_relays) as total_relays,
-      SUM(cr.total_claimed_compute_units) as total_claimed_compute_units,
-      SUM(cr.total_estimated_compute_units) as total_estimated_compute_units,
-      -- Calculate weighted average efficiency: total_claimed / total_estimated * 100
-      CASE 
-        WHEN SUM(cr.total_estimated_compute_units) > 0 THEN
-          ROUND((SUM(cr.total_claimed_compute_units)::NUMERIC / SUM(cr.total_estimated_compute_units)::NUMERIC) * 100, 2)
-        ELSE 0
-      END as avg_efficiency_percent,
-      -- Calculate average reward per relay: total_rewards / total_relays
-      CASE 
-        WHEN SUM(cr.total_relays) > 0 THEN
-          ROUND(SUM(cr.total_rewards_upokt)::NUMERIC / SUM(cr.total_relays)::NUMERIC, 2)
-        ELSE 0
-      END as avg_reward_per_relay,
-      MAX(cr.max_reward_per_claim) as max_reward_per_claim,
-      MIN(cr.min_reward_per_claim) as min_reward_per_claim
-    FROM claim_rewards cr
-    ${joinClause}
-    ${where}
-    GROUP BY cr.service_id, cr.chain
-  `;
-  
-  // Get total count of unique services
-  const countSql = `
-    SELECT COUNT(DISTINCT (cr.service_id, cr.chain)) AS total 
-    FROM claim_rewards cr
-    ${joinClause}
-    ${where}
-  `;
-  
-  let countRes;
-  try {
-    countRes = await client.query(countSql, values);
-  } catch (error) {
-    console.error('Error in claim reward analytics count query:', error);
-    console.error('Count SQL:', countSql);
-    console.error('Count values:', values);
-    throw error;
-  }
-  
-  const total = parseInt(countRes.rows[0]?.total || 0, 10);
-  
-  // Get paginated results - aggregated by service, sorted by total rewards
   const listSql = `
-    ${aggregationSql}
-    ORDER BY total_rewards_upokt DESC
-    LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
+    WITH agg AS MATERIALIZED (
+      SELECT
+        c.service_id,
+        c.chain,
+        COUNT(*) AS total_claims,
+        SUM(c.claimed_upokt_amount) AS total_rewards_upokt,
+        SUM(c.num_relays) AS total_relays,
+        SUM(c.num_claimed_compute_units) AS total_claimed_compute_units,
+        SUM(c.num_estimated_compute_units) AS total_estimated_compute_units,
+        CASE
+          WHEN SUM(c.num_estimated_compute_units) > 0 THEN
+            ROUND((SUM(c.num_claimed_compute_units)::NUMERIC / SUM(c.num_estimated_compute_units)::NUMERIC) * 100, 2)
+          ELSE 0
+        END AS avg_efficiency_percent,
+        CASE
+          WHEN SUM(c.num_relays) > 0 THEN
+            ROUND(SUM(c.claimed_upokt_amount)::NUMERIC / SUM(c.num_relays)::NUMERIC, 2)
+          ELSE 0
+        END AS avg_reward_per_relay,
+        MAX(c.claimed_upokt_amount) AS max_reward_per_claim,
+        MIN(c.claimed_upokt_amount) AS min_reward_per_claim
+      FROM claims c
+      ${joinClause}
+      ${where}
+      GROUP BY c.service_id, c.chain
+    ),
+    tot AS (SELECT COUNT(*)::bigint AS n FROM agg)
+    SELECT a.*, t.n::bigint AS _total_count
+    FROM tot t
+    LEFT JOIN LATERAL (
+      SELECT * FROM agg
+      ORDER BY total_rewards_upokt DESC NULLS LAST
+      LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
+    ) a ON TRUE
   `;
   
   let listRes;
@@ -2983,8 +2962,14 @@ async function getClaimRewardAnalytics(params, client) {
     throw error;
   }
   
+  const rows = listRes.rows || [];
+  const total = rows.length ? parseInt(rows[0]._total_count, 10) : 0;
+  const data = rows
+    .filter((r) => r.total_claims != null)
+    .map(({ _total_count, ...rest }) => rest);
+  
   const result = {
-    data: listRes.rows || [],
+    data,
     meta: {
       total,
       page: pageNum,
