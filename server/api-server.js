@@ -35,12 +35,12 @@ let analyticsAggregationService = null;
 const cacheMiddleware = (ttl = 60) => {
   return async (req, res, next) => {
     // Only cache GET requests
-    if (req.method !== 'GET') {
-      return next();
-    }
+    // if (req.method !== 'GET') {
+    //   return next();
+    // }
     
     // Skip cache for endpoints that shouldn't be cached (like health checks)
-    if (req.path.includes('/health') || req.path.includes('/jobs')) {
+    if (req.path.includes('/admin')) {
       return next();
     }
     
@@ -183,7 +183,7 @@ app.use((req, res, next) => {
     return next();
   }
   // Apply cache middleware for other routes
-  return cacheMiddleware(180)(req, res, next);
+  return cacheMiddleware(60)(req, res, next);
 });
 
 // Request logging middleware (console output)
@@ -1369,7 +1369,7 @@ app.get('/api/v1/transactions', async (req, res) => {
   }
 });
 
-app.post('/api/v1/transactions', async (req, res) => {
+app.post('/api/v1/transactions', cacheMiddleware(60), async (req, res) => {
   try {
     const filters = transactionService.extractTransactionFilters(req);
     const transactions = await transactionService.getTransactionsWithFilters(filters);
@@ -1429,7 +1429,7 @@ app.get('/api/v1/transactions/stats', async (req, res) => {
   }
 });
 
-app.post('/api/v1/transactions/stats', async (req, res) => {
+app.post('/api/v1/transactions/stats', cacheMiddleware(60), async (req, res) => {
   try {
     const filters = transactionService.extractStatsFilters(req);
     const stats = await transactionService.getTransactionStats(filters);
