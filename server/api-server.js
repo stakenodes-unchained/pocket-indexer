@@ -31,6 +31,31 @@ const NUM_WORKERS = Math.min(1, Math.min(configLoader.get('CLUSTER_WORKERS', os.
 let rewardAnalyticsRefreshService = null;
 let analyticsAggregationService = null;
 
+// Stable query serialization so ?a=1&b=2 and ?b=2&a=1 share the same cache entry
+function stableQueryKey(query) {
+  if (!query || typeof query !== 'object') return '{}';
+  const keys = Object.keys(query).sort();
+  const sorted = {};
+  for (const k of keys) {
+    const v = query[k];
+    if (v === undefined) continue;
+    sorted[k] = v;
+  }
+  return JSON.stringify(sorted);
+}
+
+// Routes that register their own cacheMiddleware(ttl) — global cache must skip them or TTL
+// is wrong (double-wrap runs two redis.set calls; the last write wins, usually 60s).
+function pathUsesRouteLevelCache(path) {
+  if (path.startsWith('/api/v1/network-growth')) return true;
+  if (path.startsWith('/api/v1/suppliers')) return true;
+  if (path.startsWith('/api/v1/claims/rewards')) return true;
+  if (path === '/api/v1/docs') return true;
+  if (path === '/api/v1/validators/search') return true;
+  if (/^\/api\/v1\/services\/[^/]+$/.test(path)) return true;
+  return false;
+}
+
 // Simple Redis cache middleware for GET requests
 const cacheMiddleware = (ttl = 60) => {
   return async (req, res, next) => {
@@ -48,12 +73,13 @@ const cacheMiddleware = (ttl = 60) => {
       // Create cache key from URL, query params, AND authentication status
       // This ensures authenticated and unauthenticated requests don't share cache
       const accountId = req.user?.accountId || 'public';
-      const cacheKey = `api:${req.method}:${req.path}:${JSON.stringify(req.query)}:user:${accountId}`;
+      const cacheKey = `api:${req.method}:${req.path}:${stableQueryKey(req.query)}:user:${accountId}`;
 
       // Try to get from cache
       const cached = await redis.get(cacheKey);
       if (cached) {
         res.set('X-Cache', 'HIT');
+        console.log('Cache hit for', cacheKey);
         return res.json(JSON.parse(cached));
       }
       
@@ -177,12 +203,15 @@ app.use(apiLogger());
 // Add caching middleware for GET requests (60 second TTL by default)
 // Comes AFTER auth so cache keys include authentication context
 // Skip cache for admin routes to ensure real-time data
+// Skip routes that attach their own cacheMiddleware — otherwise two layers wrap res.json,
+// both SET the same key, and the 60s global TTL usually wins over route TTL (e.g. 1800).
 app.use((req, res, next) => {
-  // Skip cache for admin routes
   if (req.path.startsWith('/api/admin')) {
     return next();
   }
-  // Apply cache middleware for other routes
+  if (pathUsesRouteLevelCache(req.path)) {
+    return next();
+  }
   return cacheMiddleware(60)(req, res, next);
 });
 
