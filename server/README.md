@@ -45,6 +45,19 @@ docker-compose up -d
 docker-compose logs -f
 ```
 
+### Docker (API Node Without Indexer)
+
+For a node that runs `redis + api + read-only postgres replica` (no indexer workers), use:
+
+```bash
+cd server
+cp .env.api-replica.example .env.api-replica
+# Edit .env.api-replica with primary DB replication settings
+docker compose -f docker-compose.api-node.yml --env-file .env.api-replica up -d --build
+```
+
+See `API_NODE_SETUP.md` for full primary/replica configuration.
+
 ### Local (Manual)
 
 ```bash

@@ -121,8 +121,9 @@ async function handleGatewayUnbondingBegin(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     `, [
       'gateway',
       address,
@@ -189,8 +190,9 @@ async function handleGatewayUnbondingEnd(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     `, [
       'gateway',
       address,

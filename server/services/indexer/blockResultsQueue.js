@@ -26,6 +26,7 @@ async function enqueueBlockResults(rpcName, height, options = {}) {
       const isQueued = await redis.sismember(queuedSetKey, height.toString());
       if (isQueued) {
         // Already in queue, skip
+        console.log(`[BlockResultsQueue] Block ${height} already in queue, skipping`);
         return false;
       }
     } catch (error) {
@@ -37,6 +38,7 @@ async function enqueueBlockResults(rpcName, height, options = {}) {
     const isProcessing = await redis.exists(processingKey(height));
     if (isProcessing) {
       // Currently being processed, skip
+      console.log(`[BlockResultsQueue] Block ${height} already being processed, skipping`);
       return false;
     }
     
@@ -44,6 +46,7 @@ async function enqueueBlockResults(rpcName, height, options = {}) {
     const isProcessed = await isBlockProcessed(rpcName, height);
     if (isProcessed) {
       // Already processed, skip
+      console.log(`[BlockResultsQueue] Block ${height} already processed, skipping`);
       return false;
     }
     

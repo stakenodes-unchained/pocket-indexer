@@ -114,8 +114,9 @@ async function handleSupplierUnbondingBegin(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     `, [
       'supplier',
       operatorAddress,
@@ -185,8 +186,9 @@ async function handleSupplierUnbondingEnd(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     `, [
       'supplier',
       operatorAddress,
@@ -254,8 +256,9 @@ async function handleSupplierUnbondingCanceled(event) {
         entity_data,
         block_height,
         transaction_hash,
+        chain,
         created_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     `, [
       'supplier',
       operatorAddress,

@@ -24,7 +24,7 @@ app.use(cors());
 // Health endpoints
 app.get('/api/v1/health/workers', async (req, res) => {
   try {
-    await transactionService.connectDB();
+    // await transactionService.connectDB();
     const client = transactionService.pgClient;
     const heartbeats = await client.query(`SELECT * FROM worker_heartbeats ORDER BY last_seen DESC`);
     const workers = indexerPool.getWorkersStatus();
@@ -38,6 +38,18 @@ app.get('/api/v1/health/workers', async (req, res) => {
       env: {
         WORKER_CONCURRENCY: configLoader.get('WORKER_CONCURRENCY', 2),
         HISTORICAL_BATCH_SIZE: configLoader.get('HISTORICAL_BATCH_SIZE', 10),
+        BLOCK_RESULTS_WORKER_COUNT: configLoader.get('BLOCK_RESULTS_WORKER_COUNT', 2),
+        BLOCK_RESULTS_BATCH_SIZE: configLoader.get('BLOCK_RESULTS_BATCH_SIZE', 8),
+        BLOCK_RESULTS_PARALLEL_LIMIT: configLoader.get('BLOCK_RESULTS_PARALLEL_LIMIT', 10),
+        BLOCK_RESULTS_RATE_LIMIT_MS: configLoader.get('BLOCK_RESULTS_RATE_LIMIT_MS', 100),
+        BLOCK_RESULTS_STATS_INTERVAL_MS: configLoader.get('BLOCK_RESULTS_STATS_INTERVAL_MS', 30000),
+        BLOCK_RESULTS_ASYNC_EVENTS: configLoader.get('BLOCK_RESULTS_ASYNC_EVENTS', true),
+        BLOCK_RESULTS_LAG_BLOCKS: configLoader.get('BLOCK_RESULTS_LAG_BLOCKS', 5),
+        BLOCK_RESULTS_CURRENT_WINDOW_BLOCKS: configLoader.get('BLOCK_RESULTS_CURRENT_WINDOW_BLOCKS', 50),
+        BLOCK_RESULTS_LEASE_SCAN_COUNT: configLoader.get('BLOCK_RESULTS_LEASE_SCAN_COUNT', 8),
+        BLOCK_RESULTS_HEARTBEAT_INTERVAL_MS: configLoader.get('BLOCK_RESULTS_HEARTBEAT_INTERVAL_MS', 60000),
+        BLOCK_RESULTS_EVENT_CONCURRENCY: configLoader.get('BLOCK_RESULTS_EVENT_CONCURRENCY', 50),
+        BLOCK_RESULTS_TX_LOG_BATCH_SIZE: configLoader.get('BLOCK_RESULTS_TX_LOG_BATCH_SIZE', 50),
       }
     };
     const redis = await indexerPool.getRedisStats();
@@ -113,7 +125,7 @@ app.get('/api/v1/health/workers', async (req, res) => {
 app.get('/api/v1/health/rpc', async (req, res) => {
   try {
     const workers = indexerPool.getWorkersStatus();
-    await transactionService.connectDB();
+    // await transactionService.connectDB();
     const client = transactionService.pgClient;
     
     // Get historical sync checkpoints
@@ -160,7 +172,7 @@ app.get('/api/v1/health/rpc', async (req, res) => {
 // Gap analysis endpoint
 app.get('/api/v1/health/gaps', async (req, res) => {
   try {
-    await transactionService.connectDB();
+    // await transactionService.connectDB();
     const client = transactionService.pgClient;
     
     const chains = transactionService.getAvailableChains();
@@ -351,7 +363,7 @@ app.get('/api/v1/health/block-results-workers', async (req, res) => {
 
 app.get('/api/v1/health/block-results-workers/history', async (req, res) => {
   try {
-    await transactionService.connectDB();
+    // await transactionService.connectDB();
     const client = transactionService.pgClient;
     
     const from = req.query.from ? new Date(req.query.from) : new Date(Date.now() - 3600000); // Default: 1 hour ago
@@ -417,7 +429,7 @@ app.post('/api/v1/admin/suppliers/enrich', async (req, res) => {
     const { chain } = req.query;
     const { operator_addresses } = req.body || {};
     
-    await transactionService.connectDB();
+    // await transactionService.connectDB();
     
     // Set external pool for enrichment service
     supplierEnrichmentService.setExternalPool(transactionService.pgClient);
@@ -459,7 +471,7 @@ app.post('/api/v1/admin/validators/refresh', async (req, res) => {
   try {
     const { chain } = req.query;
     
-    await transactionService.connectDB();
+    // await transactionService.connectDB();
     
     // Set external pool for validator service
     validatorService.setExternalPool(transactionService.pgClient);

@@ -1,6 +1,24 @@
 const rateLimitService = require('../services/rateLimitService');
 const systemConfigService = require('../services/systemConfigService');
 
+// Few DB/Redis lookups per process under load (getConfigValue still hits memory/Redis first)
+let rateLimitEnabledCache = { at: 0, value: undefined };
+const RATE_LIMIT_ENABLED_TTL_MS = 5000;
+
+async function isRateLimitingGloballyEnabled() {
+  const now = Date.now();
+  if (now - rateLimitEnabledCache.at < RATE_LIMIT_ENABLED_TTL_MS && rateLimitEnabledCache.value !== undefined) {
+    return rateLimitEnabledCache.value;
+  }
+  const v = await systemConfigService.getConfigValue('rate_limiting', 'RATE_LIMIT_ENABLED');
+  rateLimitEnabledCache = { at: now, value: v };
+  return v;
+}
+
+function resetRateLimitEnabledCache() {
+  rateLimitEnabledCache = { at: 0, value: undefined };
+}
+
 /**
  * Rate Limit Middleware
  * Enforces rate limits based on configured rules in the database
@@ -15,8 +33,7 @@ const rateLimitMiddleware = (options = {}) => {
 
   return async (req, res, next) => {
     try {
-      // Check if rate limiting is globally enabled
-      const rateLimitEnabled = await systemConfigService.getConfigValue('rate_limiting', 'RATE_LIMIT_ENABLED');
+      const rateLimitEnabled = await isRateLimitingGloballyEnabled();
       if (rateLimitEnabled === false) {
         return next();
       }
@@ -97,8 +114,7 @@ const createRateLimiter = (options = {}) => {
 const strictRateLimiter = (options = {}) => {
   return async (req, res, next) => {
     try {
-      // Check if rate limiting is globally enabled
-      const rateLimitEnabled = await systemConfigService.getConfigValue('rate_limiting', 'RATE_LIMIT_ENABLED');
+      const rateLimitEnabled = await isRateLimitingGloballyEnabled();
       if (rateLimitEnabled === false) {
         return next();
       }
@@ -154,8 +170,7 @@ const ipRateLimiter = (requestsPerWindow = 100, windowSeconds = 60) => {
 
   return async (req, res, next) => {
     try {
-      // Check if rate limiting is globally enabled
-      const rateLimitEnabled = await systemConfigService.getConfigValue('rate_limiting', 'RATE_LIMIT_ENABLED');
+      const rateLimitEnabled = await isRateLimitingGloballyEnabled();
       if (rateLimitEnabled === false) {
         return next();
       }
@@ -226,4 +241,5 @@ module.exports = {
   createRateLimiter,
   strictRateLimiter,
   ipRateLimiter,
+  resetRateLimitEnabledCache,
 };

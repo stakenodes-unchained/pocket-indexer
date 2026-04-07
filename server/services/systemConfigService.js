@@ -1,5 +1,5 @@
-const { Pool } = require('pg');
 const redis = require('../config/redis');
+const { getWritePool } = require('./dbRouter');
 
 /**
  * System Configuration Service
@@ -8,22 +8,8 @@ const redis = require('../config/redis');
  */
 class SystemConfigService {
   constructor() {
-    this.pgPool = new Pool({
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASS,
-      database: process.env.DB_NAME,
-      max: parseInt(process.env.DB_POOL_SIZE || '10', 10),
-      min: parseInt(process.env.DB_POOL_MIN || '2', 10),
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
-      statement_timeout: 120000,
-    });
-
-    this.pgPool.on('error', (err) => {
-      console.error('SystemConfigService: Unexpected error on idle PostgreSQL client', err);
-    });
+    // System config supports writes and transactional updates, so use primary/write pool.
+    this.pgPool = getWritePool();
 
     // Redis cache key prefix
     this.CACHE_PREFIX = 'sys_config:';
@@ -139,6 +125,13 @@ class SystemConfigService {
       // Clear memory cache
       this.memoryCache.clear();
       this.memoryCacheTimestamp = 0;
+
+      try {
+        const { resetRateLimitEnabledCache } = require('../middleware/rateLimit');
+        resetRateLimitEnabledCache();
+      } catch (_) {
+        /* optional in test / alternate entrypoints */
+      }
     } catch (err) {
       console.error('SystemConfigService: Failed to clear cache:', err);
     }
@@ -312,17 +305,24 @@ class SystemConfigService {
       }
     }
 
-    const client = await this.pgPool.connect();
+    // Redis before acquiring a DB connection — avoid exhausting the pool when Redis
+    // already has the value (previously every request hit connect() first, then Redis).
+    const cacheKey = `${this.CACHE_PREFIX}${category}:${key}`;
     try {
-      // Try Redis cache
-      const cacheKey = `${this.CACHE_PREFIX}${category}:${key}`;
       const cached = await redis.get(cacheKey);
       if (cached) {
         const parsedCache = JSON.parse(cached);
         this.memoryCache.set(memoryCacheKey, parsedCache.value);
+        this.memoryCacheTimestamp = Date.now();
         return parsedCache.value;
       }
+    } catch (e) {
+      // Redis down — fall through to DB
+      console.error('SystemConfigService getConfigValue Redis read:', e.message);
+    }
 
+    const client = await this.pgPool.connect();
+    try {
       const result = await client.query(
         `SELECT value, value_type FROM system_config
         WHERE category = $1 AND key = $2 AND is_active = TRUE`,

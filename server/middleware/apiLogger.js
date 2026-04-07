@@ -1,17 +1,7 @@
-const { Pool } = require('pg');
+const { getReadPool, getWritePool } = require('../services/dbRouter');
 
-const pgPool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  database: process.env.DB_NAME,
-  max: parseInt(process.env.DB_POOL_SIZE || '10', 10),
-  min: parseInt(process.env.DB_POOL_MIN || '2', 10),
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-  statement_timeout: 120000,
-});
+const readPool = getReadPool();
+const writePool = getWritePool();
 
 /**
  * API Logging Middleware
@@ -134,7 +124,7 @@ const apiLogger = () => {
  * @param {Object} logData - Log data
  */
 async function insertLog(logData) {
-  const client = await pgPool.connect();
+  const client = await writePool.connect();
   try {
     await client.query(
       `INSERT INTO api_logs (
@@ -167,7 +157,7 @@ async function insertLog(logData) {
  */
 async function getUserLogs(userId, options = {}) {
   const { limit = 50, offset = 0 } = options;
-  const client = await pgPool.connect();
+  const client = await readPool.connect();
 
   try {
     const result = await client.query(
@@ -203,7 +193,7 @@ async function getUserLogs(userId, options = {}) {
  * This should be run as a cron job daily
  */
 async function aggregateDailyUsage(date = null) {
-  const client = await pgPool.connect();
+  const client = await writePool.connect();
 
   try {
     await client.query('BEGIN');
@@ -281,7 +271,7 @@ async function aggregateDailyUsage(date = null) {
  */
 async function getUserAnalytics(userId, options = {}) {
   const { start_date, end_date } = options;
-  const client = await pgPool.connect();
+  const client = await readPool.connect();
 
   try {
     let query = `

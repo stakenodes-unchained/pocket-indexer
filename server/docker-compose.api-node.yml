@@ -1,0 +1,110 @@
+services:
+  redis:
+    container_name: pocket_indexer_redis
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6378}:6379"
+    volumes:
+      - redis-data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --maxmemory 2gb
+      --maxmemory-policy volatile-lru
+      --loglevel warning
+      --tcp-keepalive 300
+      --lazyfree-lazy-eviction yes
+      --replicaof no one
+    restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "if [ -n \"${REDIS_PASSWORD:-}\" ]; then redis-cli -a \"${REDIS_PASSWORD}\" ping; else redis-cli ping; fi"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+    networks:
+      - default
+
+  postgres-replica:
+    container_name: pocket_indexer_postgres_replica
+    image: postgres:15-alpine
+    shm_size: 512mb
+    environment:
+      POSTGRES_DB: ${DB_NAME:-pocket_indexer}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASS:-somestringpassword}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      PRIMARY_DB_HOST: ${PRIMARY_DB_HOST}
+      PRIMARY_DB_PORT: ${PRIMARY_DB_PORT:-5432}
+      PRIMARY_DB_REPL_USER: ${PRIMARY_DB_REPL_USER}
+      PRIMARY_DB_REPL_PASSWORD: ${PRIMARY_DB_REPL_PASSWORD}
+      REPLICA_APP_NAME: ${REPLICA_APP_NAME:-pocket_indexer_api_node}
+      REPLICA_SLOT_NAME: ${REPLICA_SLOT_NAME:-}
+    command: ["bash", "/usr/local/bin/replica-bootstrap.sh"]
+    ports:
+      - "${REPLICA_DB_PORT:-5433}:5432"
+    volumes:
+      - pg-replica-data:/var/lib/postgresql/data
+      - ./scripts/replica-bootstrap.sh:/usr/local/bin/replica-bootstrap.sh:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "if [ -f /tmp/replica_basebackup_in_progress ]; then exit 0; fi; pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -h localhost && psql -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -tAc 'SHOW transaction_read_only;' | tr -d '[:space:]' | grep -Eq '^on$'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - default
+
+  api:
+    container_name: pocket_indexer_api
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file:
+      - .env.api-replica
+    environment:
+      PORT: ${PORT:-3006}
+      DB_HOST: ${PRIMARY_DB_HOST}
+      DB_PORT: ${PRIMARY_DB_PORT:-5432}
+      DB_READ_HOST: postgres-replica
+      DB_READ_PORT: 5432
+      DB_WRITE_HOST: ${PRIMARY_DB_HOST}
+      DB_WRITE_PORT: ${PRIMARY_DB_PORT:-5432}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-40}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASS: ${DB_PASS:-somestringpassword}
+      DB_NAME: ${DB_NAME:-pocket_indexer}
+      REDIS_URL: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_DB: ${REDIS_DB:-0}
+      CLUSTER_WORKERS: ${CLUSTER_WORKERS:-1}
+      NODE_ENV: ${NODE_ENV:-production}
+    ports:
+      - "${API_PORT:-3016}:3006"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_started
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+    networks:
+      - default
+
+volumes:
+  pg-replica-data:
+  redis-data:

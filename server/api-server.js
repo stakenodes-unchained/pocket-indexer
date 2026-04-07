@@ -31,16 +31,41 @@ const NUM_WORKERS = Math.min(1, Math.min(configLoader.get('CLUSTER_WORKERS', os.
 let rewardAnalyticsRefreshService = null;
 let analyticsAggregationService = null;
 
+// Stable query serialization so ?a=1&b=2 and ?b=2&a=1 share the same cache entry
+function stableQueryKey(query) {
+  if (!query || typeof query !== 'object') return '{}';
+  const keys = Object.keys(query).sort();
+  const sorted = {};
+  for (const k of keys) {
+    const v = query[k];
+    if (v === undefined) continue;
+    sorted[k] = v;
+  }
+  return JSON.stringify(sorted);
+}
+
+// Routes that register their own cacheMiddleware(ttl) — global cache must skip them or TTL
+// is wrong (double-wrap runs two redis.set calls; the last write wins, usually 60s).
+function pathUsesRouteLevelCache(path) {
+  if (path.startsWith('/api/v1/network-growth')) return true;
+  if (path.startsWith('/api/v1/suppliers')) return true;
+  if (path.startsWith('/api/v1/claims/rewards')) return true;
+  if (path === '/api/v1/docs') return true;
+  if (path === '/api/v1/validators/search') return true;
+  if (/^\/api\/v1\/services\/[^/]+$/.test(path)) return true;
+  return false;
+}
+
 // Simple Redis cache middleware for GET requests
 const cacheMiddleware = (ttl = 60) => {
   return async (req, res, next) => {
     // Only cache GET requests
-    if (req.method !== 'GET') {
-      return next();
-    }
+    // if (req.method !== 'GET') {
+    //   return next();
+    // }
     
     // Skip cache for endpoints that shouldn't be cached (like health checks)
-    if (req.path.includes('/health') || req.path.includes('/jobs')) {
+    if (req.path.includes('/admin')) {
       return next();
     }
     
@@ -48,12 +73,13 @@ const cacheMiddleware = (ttl = 60) => {
       // Create cache key from URL, query params, AND authentication status
       // This ensures authenticated and unauthenticated requests don't share cache
       const accountId = req.user?.accountId || 'public';
-      const cacheKey = `api:${req.method}:${req.path}:${JSON.stringify(req.query)}:user:${accountId}`;
+      const cacheKey = `api:${req.method}:${req.path}:${stableQueryKey(req.query)}:user:${accountId}`;
 
       // Try to get from cache
       const cached = await redis.get(cacheKey);
       if (cached) {
         res.set('X-Cache', 'HIT');
+        console.log('Cache hit for', cacheKey);
         return res.json(JSON.parse(cached));
       }
       
@@ -177,12 +203,15 @@ app.use(apiLogger());
 // Add caching middleware for GET requests (60 second TTL by default)
 // Comes AFTER auth so cache keys include authentication context
 // Skip cache for admin routes to ensure real-time data
+// Skip routes that attach their own cacheMiddleware — otherwise two layers wrap res.json,
+// both SET the same key, and the 60s global TTL usually wins over route TTL (e.g. 1800).
 app.use((req, res, next) => {
-  // Skip cache for admin routes
   if (req.path.startsWith('/api/admin')) {
     return next();
   }
-  // Apply cache middleware for other routes
+  if (pathUsesRouteLevelCache(req.path)) {
+    return next();
+  }
   return cacheMiddleware(60)(req, res, next);
 });
 
@@ -860,7 +889,6 @@ app.get('/api/v1/auth/verification-status', async (req, res) => {
 app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
-    await transactionService.connectDB();
     const client = transactionService.pgClient;
 
     const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
@@ -961,25 +989,20 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
         FROM bounds b
       ),
-      block_days AS (
-        SELECT
-          height,
-          chain,
-          DATE_TRUNC('day', timestamp)::date AS day
-        FROM blocks
-        WHERE timestamp >= (SELECT start_day FROM bounds)
-      ),
       proof_events_agg AS (
         SELECT
-          bd.day,
+          (DATE_TRUNC('day', b.timestamp)::date) AS day,
           SUM(pe.num_relays) AS relays,
           SUM(pe.num_claimed_compute_units) AS claimed_compute_units,
           SUM(pe.num_estimated_compute_units) AS estimated_compute_units
         FROM proof_events pe
-        INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
+        INNER JOIN blocks b ON pe.block_height = b.height AND pe.chain = b.chain
+        CROSS JOIN bounds bo
         WHERE pe.event_type IN ('created', 'submitted')
           AND ($1::text IS NULL OR pe.chain = $1)
-        GROUP BY bd.day
+          AND b.timestamp >= bo.start_day::timestamp
+          AND b.timestamp < (bo.end_day + INTERVAL '1 day')::timestamp
+        GROUP BY (DATE_TRUNC('day', b.timestamp)::date)
       )
       SELECT
         d.day,
@@ -1037,7 +1060,6 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
 app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
-    await transactionService.connectDB();
     const client = transactionService.pgClient;
 
     const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
@@ -1051,17 +1073,9 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
         FROM bounds b
       ),
-      block_days AS (
-        SELECT
-          height,
-          chain,
-          DATE_TRUNC('day', timestamp)::date AS day
-        FROM blocks
-        WHERE timestamp >= (SELECT start_day FROM bounds)
-      ),
       proof_events_agg AS (
         SELECT
-          bd.day,
+          (DATE_TRUNC('day', b.timestamp)::date) AS day,
           SUM(pe.num_relays) AS relays,
           SUM(pe.num_claimed_compute_units) AS claimed_compute_units,
           SUM(pe.num_estimated_compute_units) AS estimated_compute_units,
@@ -1073,10 +1087,13 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
             END
           ), 0) AS estimated_relays
         FROM proof_events pe
-        INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
+        INNER JOIN blocks b ON pe.block_height = b.height AND pe.chain = b.chain
+        CROSS JOIN bounds bo
         WHERE pe.event_type IN ('submitted', 'created')
           AND ($1::text IS NULL OR pe.chain = $1)
-        GROUP BY bd.day
+          AND b.timestamp >= bo.start_day::timestamp
+          AND b.timestamp < (bo.end_day + INTERVAL '1 day')::timestamp
+        GROUP BY (DATE_TRUNC('day', b.timestamp)::date)
       )
       SELECT
         d.day,
@@ -1109,7 +1126,6 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
 app.get('/api/v1/network-growth/entities', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
-    await transactionService.connectDB();
     const client = transactionService.pgClient;
 
     const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
@@ -1218,7 +1234,6 @@ app.get('/api/v1/network-growth/entities', cacheMiddleware(1800), async (req, re
 app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
-    await transactionService.connectDB();
     const client = transactionService.pgClient;
 
     const windowDays = Math.max(1, Math.min(parseInt(window || '7', 10) || 7, 365));
@@ -1289,13 +1304,6 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
     const entities = entitiesRes.rows[0] || {};
 
     const perfSql = `
-      WITH block_days AS (
-        SELECT
-          height,
-          chain
-        FROM blocks
-        WHERE timestamp >= NOW() - make_interval(days => $2::int)
-      )
       SELECT
         COALESCE(SUM(pe.num_relays), 0) AS relays,
         COALESCE(SUM(pe.num_claimed_compute_units), 0) AS claimed_compute_units,
@@ -1308,9 +1316,10 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
           END
         ), 0) AS estimated_relays
       FROM proof_events pe
-      INNER JOIN block_days bd ON pe.block_height = bd.height AND pe.chain = bd.chain
+      INNER JOIN blocks b ON pe.block_height = b.height AND pe.chain = b.chain
       WHERE pe.event_type IN ('submitted', 'created')
-        AND ($1::text IS NULL OR pe.chain = $1);
+        AND ($1::text IS NULL OR pe.chain = $1)
+        AND b.timestamp >= NOW() - make_interval(days => $2::int);
     `;
 
     const perfRes = await client.query(perfSql, [chain || null, windowDays]);
@@ -1373,7 +1382,7 @@ app.get('/api/v1/transactions', async (req, res) => {
   }
 });
 
-app.post('/api/v1/transactions', async (req, res) => {
+app.post('/api/v1/transactions', cacheMiddleware(60), async (req, res) => {
   try {
     const filters = transactionService.extractTransactionFilters(req);
     const transactions = await transactionService.getTransactionsWithFilters(filters);
@@ -1433,7 +1442,7 @@ app.get('/api/v1/transactions/stats', async (req, res) => {
   }
 });
 
-app.post('/api/v1/transactions/stats', async (req, res) => {
+app.post('/api/v1/transactions/stats', cacheMiddleware(60), async (req, res) => {
   try {
     const filters = transactionService.extractStatsFilters(req);
     const stats = await transactionService.getTransactionStats(filters);
@@ -2850,28 +2859,29 @@ async function getClaimRewardAnalytics(params, client) {
   const conditions = [];
   const values = [];
   let idx = 1;
+  // Same filter as claim_rewards view — aggregate from base table in one pass (avoids hourly rollup + re-aggregate)
+  conditions.push('c.claim_proof_status_int = 0');
   
-  // Handle time range: either use days parameter or start_date/end_date
+  // Handle time range: either use days parameter or start_date/end_date (match view: DATE_TRUNC('hour', timestamp))
   if (days) {
     const daysNum = parseInt(days, 10);
     if (daysNum > 0) {
-      // Use parameterized query for safety
-      conditions.push(`hour_bucket >= NOW() - INTERVAL '1 day' * $${idx++}::integer`);
+      conditions.push(`DATE_TRUNC('hour', c.timestamp) >= NOW() - INTERVAL '1 day' * $${idx++}::integer`);
       values.push(daysNum);
     }
   } else {
     if (start_date) {
-      conditions.push(`hour_bucket >= $${idx++}::timestamp`);
+      conditions.push(`DATE_TRUNC('hour', c.timestamp) >= $${idx++}::timestamp`);
       values.push(start_date);
     }
     if (end_date) {
-      conditions.push(`hour_bucket <= $${idx++}::timestamp`);
+      conditions.push(`DATE_TRUNC('hour', c.timestamp) <= $${idx++}::timestamp`);
       values.push(end_date);
     }
   }
   
   if (chain) {
-    conditions.push(`cr.chain = $${idx++}`);
+    conditions.push(`c.chain = $${idx++}`);
     values.push(chain);
   }
   
@@ -2899,29 +2909,29 @@ async function getClaimRewardAnalytics(params, client) {
     needsSupplierJoin = true;
     if (supplier_addresses.length === 1) {
       // Single address - check if it's owner or operator
-      conditions.push(`(s.owner_address = $${idx}::text OR cr.supplier_operator_address = $${idx}::text)`);
+      conditions.push(`(s.owner_address = $${idx}::text OR c.supplier_operator_address = $${idx}::text)`);
       values.push(supplier_addresses[0]);
       idx++;
     } else {
       // Multiple addresses - use ANY(array) which is more efficient for large arrays
-      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cr.supplier_operator_address = ANY($${idx}::text[]))`);
+      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR c.supplier_operator_address = ANY($${idx}::text[]))`);
       values.push(supplier_addresses);
       idx++;
     }
   } else if (supplier_address) {
     needsSupplierJoin = true;
     // Check if it's owner or operator address
-    conditions.push(`(s.owner_address = $${idx}::text OR cr.supplier_operator_address = $${idx}::text)`);
+    conditions.push(`(s.owner_address = $${idx}::text OR c.supplier_operator_address = $${idx}::text)`);
     values.push(supplier_address);
     idx++;
   }
   
   if (application_address) {
-    conditions.push(`cr.application_address = $${idx++}`);
+    conditions.push(`c.application_address = $${idx++}`);
     values.push(application_address);
   }
   if (service_id) {
-    conditions.push(`cr.service_id = $${idx++}`);
+    conditions.push(`c.service_id = $${idx++}`);
     values.push(service_id);
   }
   
@@ -2930,67 +2940,45 @@ async function getClaimRewardAnalytics(params, client) {
   const limitNum = parseInt(limit, 10);
   const offset = (pageNum - 1) * limitNum;
   
-  // Build join clause if needed
-  const joinClause = needsSupplierJoin 
-    ? `LEFT JOIN suppliers s ON s.address = cr.supplier_operator_address AND s.chain = cr.chain`
+  const joinClause = needsSupplierJoin
+    ? `LEFT JOIN suppliers s ON s.address = c.supplier_operator_address AND s.chain = c.chain`
     : '';
   
-  // Aggregate by service_id and chain, summing across all hours in the time period
-  // This gives us total rewards per service, not per hour or per supplier
-  const aggregationSql = `
-    SELECT 
-      cr.service_id,
-      cr.chain,
-      SUM(cr.claim_count) as total_claims,
-      SUM(cr.total_rewards_upokt) as total_rewards_upokt,
-      SUM(cr.total_relays) as total_relays,
-      SUM(cr.total_claimed_compute_units) as total_claimed_compute_units,
-      SUM(cr.total_estimated_compute_units) as total_estimated_compute_units,
-      -- Calculate weighted average efficiency: total_claimed / total_estimated * 100
-      CASE 
-        WHEN SUM(cr.total_estimated_compute_units) > 0 THEN
-          ROUND((SUM(cr.total_claimed_compute_units)::NUMERIC / SUM(cr.total_estimated_compute_units)::NUMERIC) * 100, 2)
-        ELSE 0
-      END as avg_efficiency_percent,
-      -- Calculate average reward per relay: total_rewards / total_relays
-      CASE 
-        WHEN SUM(cr.total_relays) > 0 THEN
-          ROUND(SUM(cr.total_rewards_upokt)::NUMERIC / SUM(cr.total_relays)::NUMERIC, 2)
-        ELSE 0
-      END as avg_reward_per_relay,
-      MAX(cr.max_reward_per_claim) as max_reward_per_claim,
-      MIN(cr.min_reward_per_claim) as min_reward_per_claim
-    FROM claim_rewards cr
-    ${joinClause}
-    ${where}
-    GROUP BY cr.service_id, cr.chain
-  `;
-  
-  // Get total count of unique services
-  const countSql = `
-    SELECT COUNT(DISTINCT (cr.service_id, cr.chain)) AS total 
-    FROM claim_rewards cr
-    ${joinClause}
-    ${where}
-  `;
-  
-  let countRes;
-  try {
-    countRes = await client.query(countSql, values);
-  } catch (error) {
-    console.error('Error in claim reward analytics count query:', error);
-    console.error('Count SQL:', countSql);
-    console.error('Count values:', values);
-    throw error;
-  }
-  
-  const total = parseInt(countRes.rows[0]?.total || 0, 10);
-  
-  // Get paginated results - aggregated by service, sorted by total rewards
   const listSql = `
-    ${aggregationSql}
-    ORDER BY total_rewards_upokt DESC
-    LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
+    WITH agg AS MATERIALIZED (
+      SELECT
+        c.service_id,
+        c.chain,
+        COUNT(*) AS total_claims,
+        SUM(c.claimed_upokt_amount) AS total_rewards_upokt,
+        SUM(c.num_relays) AS total_relays,
+        SUM(c.num_claimed_compute_units) AS total_claimed_compute_units,
+        SUM(c.num_estimated_compute_units) AS total_estimated_compute_units,
+        CASE
+          WHEN SUM(c.num_estimated_compute_units) > 0 THEN
+            ROUND((SUM(c.num_claimed_compute_units)::NUMERIC / SUM(c.num_estimated_compute_units)::NUMERIC) * 100, 2)
+          ELSE 0
+        END AS avg_efficiency_percent,
+        CASE
+          WHEN SUM(c.num_relays) > 0 THEN
+            ROUND(SUM(c.claimed_upokt_amount)::NUMERIC / SUM(c.num_relays)::NUMERIC, 2)
+          ELSE 0
+        END AS avg_reward_per_relay,
+        MAX(c.claimed_upokt_amount) AS max_reward_per_claim,
+        MIN(c.claimed_upokt_amount) AS min_reward_per_claim
+      FROM claims c
+      ${joinClause}
+      ${where}
+      GROUP BY c.service_id, c.chain
+    ),
+    tot AS (SELECT COUNT(*)::bigint AS n FROM agg)
+    SELECT a.*, t.n::bigint AS _total_count
+    FROM tot t
+    LEFT JOIN LATERAL (
+      SELECT * FROM agg
+      ORDER BY total_rewards_upokt DESC NULLS LAST
+      LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
+    ) a ON TRUE
   `;
   
   let listRes;
@@ -3003,8 +2991,14 @@ async function getClaimRewardAnalytics(params, client) {
     throw error;
   }
   
+  const rows = listRes.rows || [];
+  const total = rows.length ? parseInt(rows[0]._total_count, 10) : 0;
+  const data = rows
+    .filter((r) => r.total_claims != null)
+    .map(({ _total_count, ...rest }) => rest);
+  
   const result = {
-    data: listRes.rows || [],
+    data,
     meta: {
       total,
       page: pageNum,
