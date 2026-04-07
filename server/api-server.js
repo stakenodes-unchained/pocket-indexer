@@ -1581,8 +1581,7 @@ app.get('/api/v1/blocks', async (req, res) => {
     
     const blocksPromise = client.query(blocksWithTxSql, [...values, limitNum, offset]);
     
-    // Calculate average block production time and average block size for the chain (if chain is provided)
-    // Run this query in parallel with the other queries for better performance
+    // Rolling 24h averages for block production time and raw size (chain filter only)
     const avgStatsPromise = chain ? (async () => {
       const avgStatsSql = `
         SELECT 
@@ -1590,6 +1589,7 @@ app.get('/api/v1/blocks', async (req, res) => {
           AVG(raw_block_size)::bigint as avg_block_size
         FROM blocks
         WHERE chain = $1
+          AND timestamp >= NOW() - INTERVAL '24 hours'
           AND block_production_time IS NOT NULL
           AND raw_block_size IS NOT NULL
       `;
