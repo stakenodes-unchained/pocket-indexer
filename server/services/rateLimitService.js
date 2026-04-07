@@ -503,9 +503,9 @@ class RateLimitService {
         case 'global':
           return true;
         case 'role':
-          return rule.target_id === roleId;
+          return parseInt(rule.target_id) === parseInt(roleId);
         case 'user':
-          return rule.target_id === userId;
+          return parseInt(rule.target_id) === parseInt(userId);
         case 'endpoint':
           if (!rule.endpoint_pattern) return true;
           return this.matchEndpoint(endpoint, rule.endpoint_pattern);
@@ -554,31 +554,29 @@ class RateLimitService {
 
     try {
       // Use Redis sorted set for sliding window
-      const pipeline = redis.pipeline();
+      // Phase 1: remove old entries, count current, get oldest (read-only check)
+      const readPipeline = redis.pipeline();
+      readPipeline.zremrangebyscore(key, 0, windowStart);
+      readPipeline.zcard(key);
+      readPipeline.zrange(key, 0, 0, 'WITHSCORES');
 
-      // Remove old entries
-      pipeline.zremrangebyscore(key, 0, windowStart);
-
-      // Count current requests
-      pipeline.zcard(key);
-
-      // Add current request
-      pipeline.zadd(key, now, `${now}:${Math.random()}`);
-
-      // Set expiry
-      pipeline.expire(key, rule.window_seconds + 1);
-
-      // Get oldest entry (to compute stable resetAt)
-      pipeline.zrange(key, 0, 0, 'WITHSCORES');
-
-      const results = await pipeline.exec();
-      const currentCount = results[1][1] || 0;
+      const readResults = await readPipeline.exec();
+      const currentCount = readResults[1][1] || 0;
 
       const allowed = currentCount < rule.requests_limit;
       const remaining = Math.max(0, rule.requests_limit - currentCount - 1);
 
+      // Phase 2: only record the request if it is allowed
+      // Blocked requests must NOT be counted — otherwise the window never resets
+      if (allowed) {
+        const writePipeline = redis.pipeline();
+        writePipeline.zadd(key, now, `${now}:${Math.random()}`);
+        writePipeline.expire(key, rule.window_seconds + 1);
+        await writePipeline.exec();
+      }
+
       // resetAt = when the oldest entry in the window expires (stable, not moving)
-      const oldestEntry = results[4][1];
+      const oldestEntry = readResults[2][1];
       const oldestTimestamp = (oldestEntry && oldestEntry.length >= 2)
         ? parseFloat(oldestEntry[1])
         : now;

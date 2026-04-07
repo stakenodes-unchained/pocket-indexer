@@ -183,21 +183,28 @@ const ipRateLimiter = (requestsPerWindow = 100, windowSeconds = 60) => {
       const windowStart = now - windowMs;
 
       // Use Redis sorted set for sliding window
-      const pipeline = redis.pipeline();
-      pipeline.zremrangebyscore(key, 0, windowStart);
-      pipeline.zcard(key);
-      pipeline.zadd(key, now, `${now}:${Math.random()}`);
-      pipeline.expire(key, windowSeconds + 1);
-      pipeline.zrange(key, 0, 0, 'WITHSCORES');
+      // Phase 1: remove old entries, count current, get oldest (read-only check)
+      const readPipeline = redis.pipeline();
+      readPipeline.zremrangebyscore(key, 0, windowStart);
+      readPipeline.zcard(key);
+      readPipeline.zrange(key, 0, 0, 'WITHSCORES');
 
-      const results = await pipeline.exec();
-      const currentCount = results[1][1] || 0;
+      const readResults = await readPipeline.exec();
+      const currentCount = readResults[1][1] || 0;
 
       const allowed = currentCount < requestsPerWindow;
       const remaining = Math.max(0, requestsPerWindow - currentCount - 1);
 
+      // Phase 2: only record the request if it is allowed
+      if (allowed) {
+        const writePipeline = redis.pipeline();
+        writePipeline.zadd(key, now, `${now}:${Math.random()}`);
+        writePipeline.expire(key, windowSeconds + 1);
+        await writePipeline.exec();
+      }
+
       // Stable resetAt: when the oldest entry in the window expires
-      const oldestEntry = results[4][1];
+      const oldestEntry = readResults[2][1];
       const oldestTimestamp = (oldestEntry && oldestEntry.length >= 2)
         ? parseFloat(oldestEntry[1])
         : now;
