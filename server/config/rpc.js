@@ -24,7 +24,7 @@ function parseRpcEndpoints() {
           console.warn(`Invalid RPC endpoint format: ${endpoint}`);
           return null;
         }
-        return { name: name.trim(), url: url.trim(), blockResultsUrl: name.trim() == 'pocket-mainnet' ? 'https://pocket-mainnet-rpc.pn.stakenodes.org' : 'https://pocket-beta-rpc.pn.stakenodes.org' };
+        return { name: name.trim(), url: url.trim(), blockResultsUrl: name.trim() == 'pocket-mainnet' ? 'https://sauron-rpc.infra.pocket.network' : 'https://pocket-beta-rpc.pn.stakenodes.org' };
       })
       .filter(Boolean);
     
