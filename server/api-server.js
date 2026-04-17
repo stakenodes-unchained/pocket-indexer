@@ -1089,7 +1089,7 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
         FROM proof_events pe
         INNER JOIN blocks b ON pe.block_height = b.height AND pe.chain = b.chain
         CROSS JOIN bounds bo
-        WHERE pe.event_type IN ('created')
+        WHERE pe.event_type IN ('submitted')
           AND ($1::text IS NULL OR pe.chain = $1)
           AND b.timestamp >= bo.start_day::timestamp
           AND b.timestamp < (bo.end_day + INTERVAL '1 day')::timestamp
