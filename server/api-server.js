@@ -1056,7 +1056,7 @@ app.get('/api/v1/network-growth', cacheMiddleware(1800), async (req, res) => {
   }
 });
 
-// Daily performance metrics (relays and compute units) from proof_events.
+// Daily performance metrics (relays and compute units) from claim_settlements.
 app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req, res) => {
   try {
     const { chain, window } = req.query;
@@ -1073,9 +1073,9 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
         SELECT generate_series(b.start_day, b.end_day, INTERVAL '1 day')::date AS day
         FROM bounds b
       ),
-      proof_events_agg AS (
+      claim_settlements_agg AS (
         SELECT
-          (DATE_TRUNC('day', b.timestamp)::date) AS day,
+          (DATE_TRUNC('day', pe.created_timestamp)::date) AS day,
           SUM(pe.num_relays) AS relays,
           SUM(pe.num_claimed_compute_units) AS claimed_compute_units,
           SUM(pe.num_estimated_compute_units) AS estimated_compute_units,
@@ -1086,14 +1086,13 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
               ELSE pe.num_relays
             END
           ), 0) AS estimated_relays
-        FROM proof_events pe
-        INNER JOIN blocks b ON pe.block_height = b.height AND pe.chain = b.chain
+        FROM claim_settlements pe
         CROSS JOIN bounds bo
-        WHERE pe.event_type IN ('submitted')
+        WHERE pe.settlement_type IN ('settled')
           AND ($1::text IS NULL OR pe.chain = $1)
-          AND b.timestamp >= bo.start_day::timestamp
-          AND b.timestamp < (bo.end_day + INTERVAL '1 day')::timestamp
-        GROUP BY (DATE_TRUNC('day', b.timestamp)::date)
+          AND pe.created_timestamp >= bo.start_day::timestamp
+          AND pe.created_timestamp < (bo.end_day + INTERVAL '1 day')::timestamp
+        GROUP BY (DATE_TRUNC('day', pe.created_timestamp)::date)
       )
       SELECT
         d.day,
@@ -1102,7 +1101,7 @@ app.get('/api/v1/network-growth/performance', cacheMiddleware(1800), async (req,
         COALESCE(p.estimated_compute_units, 0) AS estimated_compute_units,
         COALESCE(p.estimated_relays, 0)        AS estimated_relays
       FROM days d
-      LEFT JOIN proof_events_agg p USING(day)
+      LEFT JOIN claim_settlements_agg p USING(day)
       ORDER BY d.day ASC;
     `;
 
@@ -1315,11 +1314,10 @@ app.get('/api/v1/network-growth/summary', cacheMiddleware(1800), async (req, res
             ELSE pe.num_relays
           END
         ), 0) AS estimated_relays
-      FROM proof_events pe
-      INNER JOIN blocks b ON pe.block_height = b.height AND pe.chain = b.chain
-      WHERE pe.event_type IN ('created')
+      FROM claim_settlements pe
+      WHERE pe.settlement_type IN ('settled')
         AND ($1::text IS NULL OR pe.chain = $1)
-        AND b.timestamp >= NOW() - make_interval(days => $2::int);
+        AND pe.created_timestamp >= NOW() - make_interval(days => $2::int);
     `;
 
     const perfRes = await client.query(perfSql, [chain || null, windowDays]);
