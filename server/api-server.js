@@ -70,10 +70,21 @@ const cacheMiddleware = (ttl = 60) => {
     }
     
     try {
-      // Create cache key from URL, query params, AND authentication status
-      // This ensures authenticated and unauthenticated requests don't share cache
+      // Create cache key from URL, query params (GET) or body (POST), AND authentication status
+      // This ensures authenticated and unauthenticated requests don't share cache,
+      // and that different filter combinations produce different cache keys.
       const accountId = req.user?.accountId || 'public';
-      const cacheKey = `api:${req.method}:${req.path}:${stableQueryKey(req.query)}:user:${accountId}`;
+      let paramKey;
+      if (req.method === 'POST' && req.body && Object.keys(req.body).length > 0) {
+        const sortedBody = {};
+        for (const k of Object.keys(req.body).sort()) {
+          sortedBody[k] = req.body[k];
+        }
+        paramKey = JSON.stringify(sortedBody);
+      } else {
+        paramKey = stableQueryKey(req.query);
+      }
+      const cacheKey = `api:${req.method}:${req.path}:${paramKey}:user:${accountId}`;
 
       // Try to get from cache
       const cached = await redis.get(cacheKey);
@@ -1749,28 +1760,38 @@ app.get('/api/v1/chains', (req, res) => {
  */
 app.get('/api/v1/applications', async (req, res) => {
   try {
-    const { chain, status, address, page = 1, limit = 25 } = req.query;
+    const { chain, status, address, service_chain, sort_by, sort_order, page = 1, limit = 25 } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     const conditions = [];
     const values = [];
     let idx = 1;
     if (chain) { conditions.push(`chain = $${idx++}`); values.push(chain); }
-    if (status) { conditions.push(`status = $${idx++}`); values.push(status); }
+    if (status) {
+      // 'unstaked' covers both unstake_requested and fully unstaked states
+      if (status === 'unstaked') {
+        conditions.push(`status IN ('unstake_requested', 'unstaked')`);
+      } else {
+        conditions.push(`status = $${idx++}`);
+        values.push(status);
+      }
+    }
     if (address) { conditions.push(`address = $${idx++}`); values.push(address); }
+    // Filter by service chain (apps that serve this chain ID)
+    if (service_chain) { conditions.push(`$${idx++} = ANY(chains)`); values.push(service_chain); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const pageNum = parseInt(page, 10); const limitNum = parseInt(limit, 10); const offset = (pageNum - 1) * limitNum;
-    
+
     // Build aggregate queries for statistics
     const countSql = `SELECT COUNT(*) AS total FROM applications ${where}`;
     const unstakingCondition = where ? 'AND' : 'WHERE';
-    const totalStakedSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_staked_amount 
+    const totalStakedSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_staked_amount
                             FROM applications ${where} ${unstakingCondition} unstake_session_end_height IS NULL`;
-    const unstakingCountSql = `SELECT COUNT(*) AS unstaking_count 
+    const unstakingCountSql = `SELECT COUNT(*) AS unstaking_count
                                FROM applications ${where} ${unstakingCondition} unstake_session_end_height IS NOT NULL`;
-    const totalUnstakingSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_unstaking_tokens 
+    const totalUnstakingSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_unstaking_tokens
                                FROM applications ${where} ${unstakingCondition} unstake_session_end_height IS NOT NULL`;
-    
+
     // Execute all queries in parallel for better performance
     const [countRes, totalStakedRes, unstakingCountRes, totalUnstakingRes] = await Promise.all([
       client.query(countSql, values),
@@ -1778,15 +1799,20 @@ app.get('/api/v1/applications', async (req, res) => {
       client.query(unstakingCountSql, values),
       client.query(totalUnstakingSql, values)
     ]);
-    
+
     const total = parseInt(countRes.rows[0].total, 10);
     const totalStakedAmount = parseFloat(totalStakedRes.rows[0].total_staked_amount || '0');
     const unstakingCount = parseInt(unstakingCountRes.rows[0].unstaking_count || '0', 10);
     const totalUnstakingTokens = parseFloat(totalUnstakingRes.rows[0].total_unstaking_tokens || '0');
-    
+
+    // Build sort clause
+    const sortFieldMap = { stake: 'staked_amount', services: 'COALESCE(array_length(chains, 1), 0)', status: 'status', last_seen: 'last_seen' };
+    const sortField = sortFieldMap[sort_by] || 'last_seen';
+    const sortDir = sort_order === 'asc' ? 'ASC' : 'DESC';
+
     const listSql = `SELECT address, chain, staked_amount, stake_denom, status, chains, delegated, gateway_address, delegatee_gateway_addresses, unstake_session_end_height, last_seen
                      FROM applications ${where}
-                     ORDER BY last_seen DESC NULLS LAST
+                     ORDER BY ${sortField} ${sortDir} NULLS LAST
                      LIMIT $${idx} OFFSET $${idx + 1}`;
     const listRes = await client.query(listSql, [...values, limitNum, offset]);
     res.json({ 
@@ -2020,60 +2046,92 @@ app.get('/api/v1/suppliers/owners', cacheMiddleware(300), async (req, res) => {
  */
 app.get('/api/v1/suppliers', async (req, res) => {
   try {
-    const { chain, status, address, page = 1, limit = 25 } = req.query;
+    const { chain, status, address, sort_by, sort_order, min_services, max_services, page = 1, limit = 25 } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     const conditions = [];
     const values = [];
     let idx = 1;
-    if (chain) { conditions.push(`chain = $${idx++}`); values.push(chain); }
-    if (status) { conditions.push(`status = $${idx++}`); values.push(status); }
-    if (address) { conditions.push(`address = $${idx++}`); values.push(address); }
+
+    if (chain) { conditions.push(`s.chain = $${idx++}`); values.push(chain); }
+    if (status) {
+      // Map UI status values to DB values
+      if (status === 'unstaking') {
+        conditions.push(`s.status = $${idx++}`);
+        values.push('unstake_requested');
+      } else {
+        conditions.push(`s.status = $${idx++}`);
+        values.push(status);
+      }
+    }
+    if (address) { conditions.push(`s.address = $${idx++}`); values.push(address); }
+
+    // Service count filters via correlated subquery
+    const svcCountSubq = `(SELECT COUNT(*) FROM supplier_service_configs sc WHERE sc.supplier_address = s.address AND sc.chain = s.chain)`;
+    const minSvc = parseInt(min_services, 10);
+    const maxSvc = parseInt(max_services, 10);
+    if (!isNaN(minSvc)) { conditions.push(`${svcCountSubq} >= $${idx++}`); values.push(minSvc); }
+    if (!isNaN(maxSvc)) { conditions.push(`${svcCountSubq} <= $${idx++}`); values.push(maxSvc); }
+
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const pageNum = parseInt(page, 10); const limitNum = parseInt(limit, 10); const offset = (pageNum - 1) * limitNum;
-    
-    // Build aggregate queries for statistics
-    const countSql = `SELECT COUNT(*) AS total FROM suppliers ${where}`;
+
+    // Aggregate queries for stats
+    const countSql = `SELECT COUNT(*) AS total FROM suppliers s ${where}`;
     const unstakingCondition = where ? 'AND' : 'WHERE';
-    const totalStakedSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_staked_tokens 
-                            FROM suppliers ${where} ${unstakingCondition} unstake_session_end_height IS NULL`;
-    // Unstaking queries filtered by last 24 hours
-    const whereWith24Hours = where ? `${where} AND last_seen >= NOW() - INTERVAL '24 hours'` : `WHERE last_seen >= NOW() - INTERVAL '24 hours'`;
-    const unstakingCondition24h = whereWith24Hours ? 'AND' : 'WHERE';
-    const unstakingCountSql = `SELECT COUNT(*) AS unstaking_count 
-                               FROM suppliers ${whereWith24Hours} ${unstakingCondition24h} unstake_session_end_height IS NOT NULL`;
-    const totalUnstakingSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_unstaking_tokens 
-                               FROM suppliers ${whereWith24Hours} ${unstakingCondition24h} unstake_session_end_height IS NOT NULL`;
-    
-    // Execute all queries in parallel for better performance
+    const totalStakedSql = `SELECT COALESCE(SUM(s.staked_amount), 0) AS total_staked_tokens
+                            FROM suppliers s ${where} ${unstakingCondition} s.unstake_session_end_height IS NULL`;
+    const whereWith24Hours = where
+      ? `${where} AND s.last_seen >= NOW() - INTERVAL '24 hours'`
+      : `WHERE s.last_seen >= NOW() - INTERVAL '24 hours'`;
+    const unstakingCountSql = `SELECT COUNT(*) AS unstaking_count
+                               FROM suppliers s ${whereWith24Hours} AND s.unstake_session_end_height IS NOT NULL`;
+    const totalUnstakingSql = `SELECT COALESCE(SUM(s.staked_amount), 0) AS total_unstaking_tokens
+                               FROM suppliers s ${whereWith24Hours} AND s.unstake_session_end_height IS NOT NULL`;
+
     const [countRes, totalStakedRes, unstakingCountRes, totalUnstakingRes] = await Promise.all([
       client.query(countSql, values),
       client.query(totalStakedSql, values),
       client.query(unstakingCountSql, values),
       client.query(totalUnstakingSql, values)
     ]);
-    
+
     const total = parseInt(countRes.rows[0].total, 10);
     const totalStakedTokens = parseFloat(totalStakedRes.rows[0].total_staked_tokens || '0');
     const unstakingCount = parseInt(unstakingCountRes.rows[0].unstaking_count || '0', 10);
     const totalUnstakingTokens = parseFloat(totalUnstakingRes.rows[0].total_unstaking_tokens || '0');
-    
-    const listSql = `SELECT address, chain, staked_amount, stake_denom, status, last_seen, unstake_session_end_height
-                     FROM suppliers ${where}
-                     ORDER BY last_seen DESC NULLS LAST
+
+    // Sort
+    const sortFieldMap = {
+      stake: 's.staked_amount',
+      status: 's.status',
+      last_seen: 's.last_seen',
+      services: svcCountSubq
+    };
+    const sortField = sortFieldMap[sort_by] || 's.staked_amount';
+    const sortDir = sort_order === 'asc' ? 'ASC' : 'DESC';
+
+    const listSql = `SELECT s.address, s.chain, s.staked_amount, s.stake_denom, s.status,
+                            s.last_seen, s.unstake_session_end_height, s.owner_address,
+                            ${svcCountSubq} AS services_count,
+                            (SELECT JSON_AGG(service_id ORDER BY service_id)
+                             FROM supplier_service_configs sc
+                             WHERE sc.supplier_address = s.address AND sc.chain = s.chain) AS service_ids
+                     FROM suppliers s ${where}
+                     ORDER BY ${sortField} ${sortDir} NULLS LAST
                      LIMIT $${idx} OFFSET $${idx + 1}`;
     const listRes = await client.query(listSql, [...values, limitNum, offset]);
-    res.json({ 
-      data: listRes.rows, 
-      meta: { 
-        total, 
-        page: pageNum, 
-        limit: limitNum, 
+    res.json({
+      data: listRes.rows,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
         totalPages: Math.ceil(total / limitNum),
         totalStakedTokens,
         unstakingCount24h: unstakingCount,
         totalUnstakingTokens24h: totalUnstakingTokens
-      } 
+      }
     });
   } catch (error) {
     console.error('Error fetching suppliers:', error);

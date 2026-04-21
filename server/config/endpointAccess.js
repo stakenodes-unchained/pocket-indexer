@@ -53,6 +53,8 @@ const ENDPOINT_ACCESS = {
     { method: "GET", path: "/api/v1/applications/:address" },
     { method: "GET", path: "/api/v1/applications/:address/usage" },
     { method: "GET", path: "/api/v1/applications/:address/claims/usage" },
+    { method: "GET", path: "/api/v1/suppliers" },
+    { method: "GET", path: "/api/v1/suppliers/:address" },
   ],
 
   // JWT_AUTH endpoints - Require valid JWT access token (for user-facing features)
@@ -124,8 +126,6 @@ const ENDPOINT_ACCESS = {
     { method: "GET", path: "/api/v1/transactions/stats" },
     { method: "POST", path: "/api/v1/transactions/stats" },
     { method: "GET", path: "/api/v1/transactions/:transaction_id" },
-    { method: "GET", path: "/api/v1/suppliers" },
-    { method: "GET", path: "/api/v1/suppliers/:address" },
     { method: "GET", path: "/api/v1/suppliers/:address/performance" },
     { method: "GET", path: "/api/v1/suppliers/:address/claims/performance" },
     { method: "GET", path: "/api/v1/gateways/:address" },
