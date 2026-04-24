@@ -655,10 +655,23 @@ class TransactionService {
       }
 
       // Status filter
+      // DB stores 'true' for success. Failed txns are stored as 'pending' (legacy indexer bug
+      // where false||'pending'='pending') or 'false' (new). Both must be matched for 'failed'.
       if (status) {
-        conditions.push(`t.status = $${idx}`);
-        values.push(status);
-        idx++;
+        if (status === 'success') {
+          conditions.push(`t.status = $${idx}`);
+          values.push('true');
+          idx++;
+        } else if (status === 'failed') {
+          conditions.push(`t.status IN ($${idx}, $${idx + 1})`);
+          values.push('false', 'pending');
+          idx += 2;
+        } else {
+          // Raw DB value passed directly (e.g. 'true', 'false', 'pending')
+          conditions.push(`t.status = $${idx}`);
+          values.push(status);
+          idx++;
+        }
       }
 
       // Date range filters
@@ -741,12 +754,21 @@ class TransactionService {
       // The WHERE clause is shared, so PostgreSQL can reuse query plan
       const countSql = `SELECT COUNT(*) AS total FROM transactions t ${where}`;
       
-      // Count failed transactions in the last 24 hours (independent of current filters)
-      const failedLast24hSql = `SELECT COUNT(*) AS failed_count 
-                                FROM transactions t 
-                                WHERE t.status = 'failed' 
-                                AND t.timestamp >= NOW() - INTERVAL '24 hours'`;
-      
+      // Count failed transactions in the last 24 hours, scoped to the requested chain.
+      // Match both 'false' (properly stored by fixed indexer) and 'pending' (legacy: old indexer
+      // stored failed txns as 'pending' due to `false || 'pending'` JS evaluation bug).
+      const failedLast24hSql = chain
+        ? `SELECT COUNT(*) AS failed_count
+           FROM transactions t
+           WHERE t.status IN ('false', 'pending')
+           AND t.chain = $1
+           AND t.timestamp >= NOW() - INTERVAL '24 hours'`
+        : `SELECT COUNT(*) AS failed_count
+           FROM transactions t
+           WHERE t.status IN ('false', 'pending')
+           AND t.timestamp >= NOW() - INTERVAL '24 hours'`;
+      const failedLast24hParams = chain ? [chain] : [];
+
       const queryPromises = [
         this.pgClient.query(listSql, listParams),
         this.pgClient.query(countSql, values).catch(err => {
@@ -754,7 +776,7 @@ class TransactionService {
           console.warn('COUNT query failed:', err.message);
           return { rows: [{ total: null }] };
         }),
-        this.pgClient.query(failedLast24hSql, []).catch(err => {
+        this.pgClient.query(failedLast24hSql, failedLast24hParams).catch(err => {
           // If failed count query fails, return 0
           console.warn('Failed transactions count query failed:', err.message);
           return { rows: [{ failed_count: '0' }] };
@@ -957,9 +979,19 @@ class TransactionService {
       }
 
       if (status) {
-        conditions.push(`t.status = $${idx}`);
-        values.push(status);
-        idx++;
+        if (status === 'success') {
+          conditions.push(`t.status = $${idx}`);
+          values.push('true');
+          idx++;
+        } else if (status === 'failed') {
+          conditions.push(`t.status IN ($${idx}, $${idx + 1})`);
+          values.push('false', 'pending');
+          idx += 2;
+        } else {
+          conditions.push(`t.status = $${idx}`);
+          values.push(status);
+          idx++;
+        }
       }
 
       if (start_date) {

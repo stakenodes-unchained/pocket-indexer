@@ -70,10 +70,21 @@ const cacheMiddleware = (ttl = 60) => {
     }
     
     try {
-      // Create cache key from URL, query params, AND authentication status
-      // This ensures authenticated and unauthenticated requests don't share cache
+      // Create cache key from URL, query params (GET) or body (POST), AND authentication status
+      // This ensures authenticated and unauthenticated requests don't share cache,
+      // and that different filter combinations produce different cache keys.
       const accountId = req.user?.accountId || 'public';
-      const cacheKey = `api:${req.method}:${req.path}:${stableQueryKey(req.query)}:user:${accountId}`;
+      let paramKey;
+      if (req.method === 'POST' && req.body && Object.keys(req.body).length > 0) {
+        const sortedBody = {};
+        for (const k of Object.keys(req.body).sort()) {
+          sortedBody[k] = req.body[k];
+        }
+        paramKey = JSON.stringify(sortedBody);
+      } else {
+        paramKey = stableQueryKey(req.query);
+      }
+      const cacheKey = `api:${req.method}:${req.path}:${paramKey}:user:${accountId}`;
 
       // Try to get from cache
       const cached = await redis.get(cacheKey);
@@ -1749,28 +1760,38 @@ app.get('/api/v1/chains', (req, res) => {
  */
 app.get('/api/v1/applications', async (req, res) => {
   try {
-    const { chain, status, address, page = 1, limit = 25 } = req.query;
+    const { chain, status, address, service_chain, sort_by, sort_order, page = 1, limit = 25 } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     const conditions = [];
     const values = [];
     let idx = 1;
     if (chain) { conditions.push(`chain = $${idx++}`); values.push(chain); }
-    if (status) { conditions.push(`status = $${idx++}`); values.push(status); }
+    if (status) {
+      // 'unstaked' covers both unstake_requested and fully unstaked states
+      if (status === 'unstaked') {
+        conditions.push(`status IN ('unstake_requested', 'unstaked')`);
+      } else {
+        conditions.push(`status = $${idx++}`);
+        values.push(status);
+      }
+    }
     if (address) { conditions.push(`address = $${idx++}`); values.push(address); }
+    // Filter by service chain (apps that serve this chain ID)
+    if (service_chain) { conditions.push(`$${idx++} = ANY(chains)`); values.push(service_chain); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const pageNum = parseInt(page, 10); const limitNum = parseInt(limit, 10); const offset = (pageNum - 1) * limitNum;
-    
+
     // Build aggregate queries for statistics
     const countSql = `SELECT COUNT(*) AS total FROM applications ${where}`;
     const unstakingCondition = where ? 'AND' : 'WHERE';
-    const totalStakedSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_staked_amount 
+    const totalStakedSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_staked_amount
                             FROM applications ${where} ${unstakingCondition} unstake_session_end_height IS NULL`;
-    const unstakingCountSql = `SELECT COUNT(*) AS unstaking_count 
+    const unstakingCountSql = `SELECT COUNT(*) AS unstaking_count
                                FROM applications ${where} ${unstakingCondition} unstake_session_end_height IS NOT NULL`;
-    const totalUnstakingSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_unstaking_tokens 
+    const totalUnstakingSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_unstaking_tokens
                                FROM applications ${where} ${unstakingCondition} unstake_session_end_height IS NOT NULL`;
-    
+
     // Execute all queries in parallel for better performance
     const [countRes, totalStakedRes, unstakingCountRes, totalUnstakingRes] = await Promise.all([
       client.query(countSql, values),
@@ -1778,15 +1799,20 @@ app.get('/api/v1/applications', async (req, res) => {
       client.query(unstakingCountSql, values),
       client.query(totalUnstakingSql, values)
     ]);
-    
+
     const total = parseInt(countRes.rows[0].total, 10);
     const totalStakedAmount = parseFloat(totalStakedRes.rows[0].total_staked_amount || '0');
     const unstakingCount = parseInt(unstakingCountRes.rows[0].unstaking_count || '0', 10);
     const totalUnstakingTokens = parseFloat(totalUnstakingRes.rows[0].total_unstaking_tokens || '0');
-    
+
+    // Build sort clause
+    const sortFieldMap = { stake: 'staked_amount', services: 'COALESCE(array_length(chains, 1), 0)', status: 'status', last_seen: 'last_seen' };
+    const sortField = sortFieldMap[sort_by] || 'last_seen';
+    const sortDir = sort_order === 'asc' ? 'ASC' : 'DESC';
+
     const listSql = `SELECT address, chain, staked_amount, stake_denom, status, chains, delegated, gateway_address, delegatee_gateway_addresses, unstake_session_end_height, last_seen
                      FROM applications ${where}
-                     ORDER BY last_seen DESC NULLS LAST
+                     ORDER BY ${sortField} ${sortDir} NULLS LAST
                      LIMIT $${idx} OFFSET $${idx + 1}`;
     const listRes = await client.query(listSql, [...values, limitNum, offset]);
     res.json({ 
@@ -2020,60 +2046,92 @@ app.get('/api/v1/suppliers/owners', cacheMiddleware(300), async (req, res) => {
  */
 app.get('/api/v1/suppliers', async (req, res) => {
   try {
-    const { chain, status, address, page = 1, limit = 25 } = req.query;
+    const { chain, status, address, sort_by, sort_order, min_services, max_services, page = 1, limit = 25 } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
     const conditions = [];
     const values = [];
     let idx = 1;
-    if (chain) { conditions.push(`chain = $${idx++}`); values.push(chain); }
-    if (status) { conditions.push(`status = $${idx++}`); values.push(status); }
-    if (address) { conditions.push(`address = $${idx++}`); values.push(address); }
+
+    if (chain) { conditions.push(`s.chain = $${idx++}`); values.push(chain); }
+    if (status) {
+      // Map UI status values to DB values
+      if (status === 'unstaking') {
+        conditions.push(`s.status = $${idx++}`);
+        values.push('unstake_requested');
+      } else {
+        conditions.push(`s.status = $${idx++}`);
+        values.push(status);
+      }
+    }
+    if (address) { conditions.push(`s.address = $${idx++}`); values.push(address); }
+
+    // Service count filters via correlated subquery
+    const svcCountSubq = `(SELECT COUNT(*) FROM supplier_service_configs sc WHERE sc.supplier_address = s.address AND sc.chain = s.chain)`;
+    const minSvc = parseInt(min_services, 10);
+    const maxSvc = parseInt(max_services, 10);
+    if (!isNaN(minSvc)) { conditions.push(`${svcCountSubq} >= $${idx++}`); values.push(minSvc); }
+    if (!isNaN(maxSvc)) { conditions.push(`${svcCountSubq} <= $${idx++}`); values.push(maxSvc); }
+
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const pageNum = parseInt(page, 10); const limitNum = parseInt(limit, 10); const offset = (pageNum - 1) * limitNum;
-    
-    // Build aggregate queries for statistics
-    const countSql = `SELECT COUNT(*) AS total FROM suppliers ${where}`;
+
+    // Aggregate queries for stats
+    const countSql = `SELECT COUNT(*) AS total FROM suppliers s ${where}`;
     const unstakingCondition = where ? 'AND' : 'WHERE';
-    const totalStakedSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_staked_tokens 
-                            FROM suppliers ${where} ${unstakingCondition} unstake_session_end_height IS NULL`;
-    // Unstaking queries filtered by last 24 hours
-    const whereWith24Hours = where ? `${where} AND last_seen >= NOW() - INTERVAL '24 hours'` : `WHERE last_seen >= NOW() - INTERVAL '24 hours'`;
-    const unstakingCondition24h = whereWith24Hours ? 'AND' : 'WHERE';
-    const unstakingCountSql = `SELECT COUNT(*) AS unstaking_count 
-                               FROM suppliers ${whereWith24Hours} ${unstakingCondition24h} unstake_session_end_height IS NOT NULL`;
-    const totalUnstakingSql = `SELECT COALESCE(SUM(staked_amount), 0) AS total_unstaking_tokens 
-                               FROM suppliers ${whereWith24Hours} ${unstakingCondition24h} unstake_session_end_height IS NOT NULL`;
-    
-    // Execute all queries in parallel for better performance
+    const totalStakedSql = `SELECT COALESCE(SUM(s.staked_amount), 0) AS total_staked_tokens
+                            FROM suppliers s ${where} ${unstakingCondition} s.unstake_session_end_height IS NULL`;
+    const whereWith24Hours = where
+      ? `${where} AND s.last_seen >= NOW() - INTERVAL '24 hours'`
+      : `WHERE s.last_seen >= NOW() - INTERVAL '24 hours'`;
+    const unstakingCountSql = `SELECT COUNT(*) AS unstaking_count
+                               FROM suppliers s ${whereWith24Hours} AND s.unstake_session_end_height IS NOT NULL`;
+    const totalUnstakingSql = `SELECT COALESCE(SUM(s.staked_amount), 0) AS total_unstaking_tokens
+                               FROM suppliers s ${whereWith24Hours} AND s.unstake_session_end_height IS NOT NULL`;
+
     const [countRes, totalStakedRes, unstakingCountRes, totalUnstakingRes] = await Promise.all([
       client.query(countSql, values),
       client.query(totalStakedSql, values),
       client.query(unstakingCountSql, values),
       client.query(totalUnstakingSql, values)
     ]);
-    
+
     const total = parseInt(countRes.rows[0].total, 10);
     const totalStakedTokens = parseFloat(totalStakedRes.rows[0].total_staked_tokens || '0');
     const unstakingCount = parseInt(unstakingCountRes.rows[0].unstaking_count || '0', 10);
     const totalUnstakingTokens = parseFloat(totalUnstakingRes.rows[0].total_unstaking_tokens || '0');
-    
-    const listSql = `SELECT address, chain, staked_amount, stake_denom, status, last_seen, unstake_session_end_height
-                     FROM suppliers ${where}
-                     ORDER BY last_seen DESC NULLS LAST
+
+    // Sort
+    const sortFieldMap = {
+      stake: 's.staked_amount',
+      status: 's.status',
+      last_seen: 's.last_seen',
+      services: svcCountSubq
+    };
+    const sortField = sortFieldMap[sort_by] || 's.staked_amount';
+    const sortDir = sort_order === 'asc' ? 'ASC' : 'DESC';
+
+    const listSql = `SELECT s.address, s.chain, s.staked_amount, s.stake_denom, s.status,
+                            s.last_seen, s.unstake_session_end_height, s.owner_address,
+                            ${svcCountSubq} AS services_count,
+                            (SELECT JSON_AGG(service_id ORDER BY service_id)
+                             FROM supplier_service_configs sc
+                             WHERE sc.supplier_address = s.address AND sc.chain = s.chain) AS service_ids
+                     FROM suppliers s ${where}
+                     ORDER BY ${sortField} ${sortDir} NULLS LAST
                      LIMIT $${idx} OFFSET $${idx + 1}`;
     const listRes = await client.query(listSql, [...values, limitNum, offset]);
-    res.json({ 
-      data: listRes.rows, 
-      meta: { 
-        total, 
-        page: pageNum, 
-        limit: limitNum, 
+    res.json({
+      data: listRes.rows,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
         totalPages: Math.ceil(total / limitNum),
         totalStakedTokens,
         unstakingCount24h: unstakingCount,
         totalUnstakingTokens24h: totalUnstakingTokens
-      } 
+      }
     });
   } catch (error) {
     console.error('Error fetching suppliers:', error);
@@ -2849,9 +2907,10 @@ async function getRewardAnalytics(params, client) {
   return result;
 }
 
-// Get claim reward analytics aggregated by service (across time period)
-// Similar to getRewardAnalytics but uses claims table and supports owner_address filtering
-async function getClaimRewardAnalytics(params, client) {
+// Dead code — this function declaration was superseded by the getClaimRewardAnalytics defined
+// later in this file (which uses claim_settlements). Removing to avoid confusion.
+// Original used claims table with claim_proof_status_int = 0.
+async function _getClaimRewardAnalytics_REMOVED(params, client) {
   const { owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, days, status = 'staked', page = 1, limit = 100 } = params;
   
   const conditions = [];
@@ -3398,36 +3457,26 @@ app.post('/api/v1/proof-submissions/summary', async (req, res) => {
 // Shared function for claims queries
 async function getClaims(params, client) {
   const { owner_address, supplier_address, application_address, service_id, chain, start_date, end_date, status = 'staked', page = 1, limit = 100 } = params;
-  
-  const conditions = [];
+
+  const conditions = [`cs.settlement_type = 'settled'`];
   const values = [];
   let idx = 1;
   let needsSupplierJoin = false;
-  
+
   if (chain) {
-    conditions.push(`c.chain = $${idx}::text`);
+    conditions.push(`cs.chain = $${idx}::text`);
     values.push(chain);
     idx++;
   }
-  
+
   // Handle owner_address filter
   if (owner_address) {
     needsSupplierJoin = true;
     conditions.push(`s.owner_address = $${idx++}`);
     values.push(owner_address);
   }
-  
-  // Handle status filter
-  const validStatuses = ['staked', 'unstaked', 'unstake_requested', 'all'];
-  const supplierStatus = validStatuses.includes(status) ? status : 'staked';
-  if (supplierStatus && supplierStatus !== 'all') {
-    needsSupplierJoin = true;
-    conditions.push(`s.status = $${idx++}`);
-    values.push(supplierStatus);
-  }
-  
+
   // Handle supplier_address - can be single string, comma-separated string, or array
-  // Can be owner address or operator address
   if (supplier_address) {
     let addresses;
     if (Array.isArray(supplier_address)) {
@@ -3437,73 +3486,97 @@ async function getClaims(params, client) {
     } else {
       addresses = [supplier_address];
     }
-    
+
     needsSupplierJoin = true;
     if (addresses.length === 1) {
-      // Single address - check if it's owner or operator
-      conditions.push(`(s.owner_address = $${idx}::text OR c.supplier_operator_address = $${idx}::text)`);
+      conditions.push(`(s.owner_address = $${idx}::text OR cs.supplier_operator_address = $${idx}::text)`);
       values.push(addresses[0]);
       idx++;
     } else if (addresses.length > 1) {
-      // Multiple addresses - use ANY(array) for efficiency
-      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR c.supplier_operator_address = ANY($${idx}::text[]))`);
+      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cs.supplier_operator_address = ANY($${idx}::text[]))`);
       values.push(addresses);
       idx++;
     }
   }
-  
+
+  // Status filter only applies when a specific supplier/owner is being filtered.
+  // Applying it globally would drop all historical claims from now-unstaked suppliers,
+  // causing silent data loss on the analytics views.
+  const validStatuses = ['staked', 'unstaked', 'unstake_requested', 'all'];
+  const supplierStatus = validStatuses.includes(status) ? status : 'staked';
+  if (needsSupplierJoin && supplierStatus !== 'all') {
+    conditions.push(`s.status = $${idx++}`);
+    values.push(supplierStatus);
+  }
+
   if (application_address) {
-    conditions.push(`c.application_address = $${idx}::text`);
+    conditions.push(`cs.application_address = $${idx}::text`);
     values.push(application_address);
     idx++;
   }
   if (service_id) {
-    conditions.push(`c.service_id = $${idx}::text`);
+    conditions.push(`cs.service_id = $${idx}::text`);
     values.push(service_id);
     idx++;
   }
   if (start_date) {
-    conditions.push(`c.timestamp >= $${idx}::timestamp`);
+    conditions.push(`cs.created_timestamp >= $${idx}::timestamp`);
     values.push(start_date);
     idx++;
   }
   if (end_date) {
-    conditions.push(`c.timestamp <= $${idx}::timestamp`);
+    conditions.push(`cs.created_timestamp <= $${idx}::timestamp`);
     values.push(end_date);
     idx++;
   }
-  
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  // Use INNER JOIN when filtering by supplier fields to ensure supplier exists
-  // Use LEFT JOIN only when we're not filtering by supplier fields
-  const joinClause = needsSupplierJoin 
-    ? `INNER JOIN suppliers s ON s.address = c.supplier_operator_address AND s.chain = c.chain`
+
+  const where = `WHERE ${conditions.join(' AND ')}`;
+  const joinClause = needsSupplierJoin
+    ? `LEFT JOIN suppliers s ON s.address = cs.supplier_operator_address AND s.chain = cs.chain`
     : '';
-  
+
   const pageNum = parseInt(page, 10);
   const limitNum = parseInt(limit, 10);
   const offset = (pageNum - 1) * limitNum;
-  
-  // Get total count
-  const countSql = `SELECT COUNT(*) AS total FROM claims c ${joinClause} ${where}`;
+
+  const countSql = `SELECT COUNT(*) AS total FROM claim_settlements cs ${joinClause} ${where}`;
   const countRes = await client.query(countSql, values);
   const total = parseInt(countRes.rows[0].total, 10);
-  
-  // Get paginated results
-  const listSql = `SELECT 
-    c.id, c.supplier_operator_address, c.application_address, c.service_id, c.session_id,
-    c.session_start_block_height, c.session_end_block_height, c.root_hash, c.proof, c.status,
-    c.timestamp, c.chain, c.claim_proof_status_int, c.claimed_upokt, c.claimed_upokt_amount,
-    c.num_claimed_compute_units, c.num_estimated_compute_units, c.num_relays,
-    c.compute_unit_efficiency, c.reward_per_relay, c.created_at
-    FROM claims c
+
+  const listSql = `SELECT
+    cs.id,
+    cs.supplier_operator_address,
+    cs.application_address,
+    cs.service_id,
+    cs.session_id,
+    NULL::bigint AS session_start_block_height,
+    cs.session_end_block_height,
+    cs.block_height,
+    cs.transaction_hash,
+    cs.settlement_type AS status,
+    cs.created_timestamp AS timestamp,
+    cs.chain,
+    cs.claim_proof_status_int,
+    cs.claimed_upokt,
+    cs.claimed_upokt AS claimed_upokt_amount,
+    cs.num_claimed_compute_units,
+    cs.num_estimated_compute_units,
+    cs.num_relays,
+    CASE WHEN cs.num_estimated_compute_units > 0
+      THEN (cs.num_claimed_compute_units::numeric / cs.num_estimated_compute_units::numeric) * 100
+      ELSE 0 END AS compute_unit_efficiency,
+    CASE WHEN cs.num_relays > 0
+      THEN cs.claimed_upokt::numeric / cs.num_relays
+      ELSE 0 END AS reward_per_relay,
+    cs.created_timestamp AS created_at
+    FROM claim_settlements cs
     ${joinClause}
     ${where}
-    ORDER BY c.timestamp DESC
+    ORDER BY cs.created_timestamp DESC
     LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
-  
+
   const listRes = await client.query(listSql, [...values, limitNum, offset]);
-  
+
   return {
     data: listRes.rows,
     meta: {
@@ -3575,67 +3648,155 @@ app.post('/api/v1/claims', async (req, res) => {
   }
 });
 
-// Shared function for claim reward analytics queries
+// Shared function for claim reward analytics queries — aggregates from claim_settlements (settled only)
 async function getClaimRewardAnalytics(params, client) {
-  const { supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, page = 1, limit = 100 } = params;
-  
-  const conditions = [];
+  const { owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, days, sort_by, sort_order, status, page = 1, limit = 100 } = params;
+
+  // Whitelist sort columns to prevent SQL injection
+  const sortColumnMap = {
+    rewards: 'total_rewards_upokt',
+    relays: 'total_relays',
+    efficiency: 'avg_efficiency_percent',
+    submissions: 'total_submissions',
+    reward_per_relay: 'avg_reward_per_relay',
+    total_rewards_upokt: 'total_rewards_upokt',
+    total_relays: 'total_relays',
+    avg_efficiency_percent: 'avg_efficiency_percent',
+    total_submissions: 'total_submissions',
+    avg_reward_per_relay: 'avg_reward_per_relay',
+  };
+  const orderCol = sortColumnMap[sort_by] || 'total_rewards_upokt';
+  const orderDir = sort_order === 'asc' ? 'ASC' : 'DESC';
+
+  const conditions = [`cs.settlement_type = 'settled'`];
   const values = [];
   let idx = 1;
-  
+  let needsSupplierJoin = false;
+
   if (chain) {
-    conditions.push(`chain = $${idx++}`);
+    conditions.push(`cs.chain = $${idx++}::text`);
     values.push(chain);
   }
-  
+
+  // Handle owner_address filter via suppliers join
+  if (owner_address) {
+    needsSupplierJoin = true;
+    conditions.push(`s.owner_address = $${idx++}::text`);
+    values.push(owner_address);
+  }
+
   // Handle single supplier_address or array of supplier_addresses
   if (supplier_addresses && Array.isArray(supplier_addresses) && supplier_addresses.length > 0) {
+    needsSupplierJoin = true;
     if (supplier_addresses.length === 1) {
-      conditions.push(`supplier_operator_address = $${idx++}`);
+      conditions.push(`(s.owner_address = $${idx}::text OR cs.supplier_operator_address = $${idx}::text)`);
       values.push(supplier_addresses[0]);
+      idx++;
     } else {
-      conditions.push(`supplier_operator_address = ANY($${idx++}::text[])`);
+      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cs.supplier_operator_address = ANY($${idx}::text[]))`);
       values.push(supplier_addresses);
+      idx++;
     }
   } else if (supplier_address) {
-    conditions.push(`supplier_operator_address = $${idx++}`);
-    values.push(supplier_address);
+    let addresses;
+    if (Array.isArray(supplier_address)) {
+      addresses = supplier_address;
+    } else if (typeof supplier_address === 'string' && supplier_address.includes(',')) {
+      addresses = supplier_address.split(',').map(a => a.trim()).filter(a => a.length > 0);
+    } else {
+      addresses = [supplier_address];
+    }
+    needsSupplierJoin = true;
+    if (addresses.length === 1) {
+      conditions.push(`(s.owner_address = $${idx}::text OR cs.supplier_operator_address = $${idx}::text)`);
+      values.push(addresses[0]);
+      idx++;
+    } else {
+      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cs.supplier_operator_address = ANY($${idx}::text[]))`);
+      values.push(addresses);
+      idx++;
+    }
   }
-  
+
+  // Status filter: only when a specific supplier/owner is filtered (same rule as getClaims/getClaimsSummary)
+  const validStatuses = ['staked', 'unstaked', 'unstake_requested', 'all'];
+  const supplierStatus = validStatuses.includes(status) ? status : 'staked';
+  if (needsSupplierJoin && supplierStatus !== 'all') {
+    conditions.push(`s.status = $${idx++}::text`);
+    values.push(supplierStatus);
+  }
+
   if (application_address) {
-    conditions.push(`application_address = $${idx++}`);
+    conditions.push(`cs.application_address = $${idx++}::text`);
     values.push(application_address);
   }
   if (service_id) {
-    conditions.push(`service_id = $${idx++}`);
+    conditions.push(`cs.service_id = $${idx++}::text`);
     values.push(service_id);
   }
+
+  // Date range: explicit dates take priority, otherwise use days window
   if (start_date) {
-    conditions.push(`hour_bucket >= $${idx++}::timestamp`);
+    conditions.push(`cs.created_timestamp >= $${idx++}::timestamp`);
     values.push(start_date);
   }
   if (end_date) {
-    conditions.push(`hour_bucket <= $${idx++}::timestamp`);
+    conditions.push(`cs.created_timestamp <= $${idx++}::timestamp`);
     values.push(end_date);
   }
-  
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  if (!start_date && !end_date && days) {
+    const daysNum = Math.max(1, parseInt(days, 10) || 30);
+    conditions.push(`cs.created_timestamp >= NOW() - INTERVAL '${daysNum} days'`);
+  }
+
+  const where = `WHERE ${conditions.join(' AND ')}`;
+  const joinClause = needsSupplierJoin
+    ? `LEFT JOIN suppliers s ON s.address = cs.supplier_operator_address AND s.chain = cs.chain`
+    : '';
+
   const pageNum = parseInt(page, 10);
   const limitNum = parseInt(limit, 10);
   const offset = (pageNum - 1) * limitNum;
-  
-  // Get total count
-  const countSql = `SELECT COUNT(*) AS total FROM claim_rewards ${where}`;
+
+  const countSql = `
+    SELECT COUNT(*) AS total FROM (
+      SELECT DISTINCT cs.service_id, cs.chain
+      FROM claim_settlements cs
+      ${joinClause}
+      ${where}
+    ) t`;
   const countRes = await client.query(countSql, values);
   const total = parseInt(countRes.rows[0]?.total || 0, 10);
-  
-  // Get paginated results
-  const listSql = `SELECT * FROM claim_rewards ${where}
-    ORDER BY hour_bucket DESC
+
+  const listSql = `
+    SELECT
+      cs.service_id,
+      cs.chain,
+      COUNT(*) AS total_submissions,
+      COUNT(*) AS total_claims,
+      SUM(cs.claimed_upokt) AS total_rewards_upokt,
+      SUM(cs.num_relays) AS total_relays,
+      SUM(cs.num_claimed_compute_units) AS total_claimed_compute_units,
+      SUM(cs.num_estimated_compute_units) AS total_estimated_compute_units,
+      CASE WHEN SUM(cs.num_estimated_compute_units) > 0
+        THEN (SUM(cs.num_claimed_compute_units)::numeric / SUM(cs.num_estimated_compute_units)::numeric) * 100
+        ELSE 0 END AS avg_efficiency_percent,
+      CASE WHEN SUM(cs.num_relays) > 0
+        THEN SUM(cs.claimed_upokt)::numeric / SUM(cs.num_relays)
+        ELSE 0 END AS avg_reward_per_relay,
+      MAX(cs.claimed_upokt) AS max_reward_per_submission,
+      MAX(cs.claimed_upokt) AS max_reward_per_claim,
+      MIN(cs.claimed_upokt) AS min_reward_per_submission,
+      MIN(cs.claimed_upokt) AS min_reward_per_claim
+    FROM claim_settlements cs
+    ${joinClause}
+    ${where}
+    GROUP BY cs.service_id, cs.chain
+    ORDER BY ${orderCol} ${orderDir}
     LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
-  
+
   const listRes = await client.query(listSql, [...values, limitNum, offset]);
-  
+
   return {
     data: listRes.rows || [],
     meta: {
@@ -3651,14 +3812,14 @@ async function getClaimRewardAnalytics(params, client) {
 // Similar to proof-submissions/rewards but uses claims table and supports owner_address and status filtering
 app.get('/api/v1/claims/rewards', cacheMiddleware(300), async (req, res) => {
   try {
-    const { owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, days, status = 'staked', page = 1, limit = 100 } = req.query;
+    const { owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, days, sort_by, sort_order, status = 'staked', page = 1, limit = 100 } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
-    
+
     // Validate status parameter
     const validStatuses = ['staked', 'unstaked', 'unstake_requested', 'all'];
     const supplierStatus = validStatuses.includes(status) ? status : 'staked';
-    
+
     const result = await getClaimRewardAnalytics({
       owner_address,
       supplier_address,
@@ -3669,6 +3830,8 @@ app.get('/api/v1/claims/rewards', cacheMiddleware(300), async (req, res) => {
       start_date,
       end_date,
       days,
+      sort_by,
+      sort_order,
       status: supplierStatus,
       page,
       limit
@@ -3684,24 +3847,24 @@ app.get('/api/v1/claims/rewards', cacheMiddleware(300), async (req, res) => {
 // POST endpoint for claim reward analytics with support for multiple supplier addresses, owner_address, and status
 app.post('/api/v1/claims/rewards', postCacheMiddleware(120), async (req, res) => {
   try {
-    const { owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, days, status = 'staked', page = 1, limit = 100 } = req.body;
-    
+    const { owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, start_date, end_date, days, sort_by, sort_order, status = 'staked', page = 1, limit = 100 } = req.body;
+
     // Validate input
     if (supplier_addresses && !Array.isArray(supplier_addresses)) {
       return res.status(400).json({ error: 'supplier_addresses must be an array' });
     }
-    
+
     // Validate status parameter
     const validStatuses = ['staked', 'unstaked', 'unstake_requested', 'all'];
     const supplierStatus = validStatuses.includes(status) ? status : 'staked';
-    
+
     await transactionService.connectDB();
     const client = transactionService.pgClient;
-    
+
     if (!client) {
       return res.status(500).json({ error: 'Database connection failed' });
     }
-    
+
     const result = await getClaimRewardAnalytics({
       owner_address,
       supplier_address,
@@ -3712,6 +3875,8 @@ app.post('/api/v1/claims/rewards', postCacheMiddleware(120), async (req, res) =>
       start_date,
       end_date,
       days,
+      sort_by,
+      sort_order,
       status: supplierStatus,
       page,
       limit
@@ -3726,64 +3891,51 @@ app.post('/api/v1/claims/rewards', postCacheMiddleware(120), async (req, res) =>
   }
 });
 
-// Shared function for claims summary queries
+// Shared function for claims summary queries — queries claim_settlements (settled only)
 async function getClaimsSummary(params, client) {
   const { start_date, end_date, owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, status = 'staked' } = params;
-  
-  const conditions = [];
+
+  const conditions = [`cs.settlement_type = 'settled'`];
   const values = [];
   let idx = 1;
   let needsSupplierJoin = false;
-  
+
   if (chain) {
-    conditions.push(`c.chain = $${idx}::text`);
+    conditions.push(`cs.chain = $${idx}::text`);
     values.push(chain);
     idx++;
   }
-  
+
   if (start_date) {
-    conditions.push(`c.timestamp >= $${idx}::timestamp`);
+    conditions.push(`cs.created_timestamp >= $${idx}::timestamp`);
     values.push(start_date);
     idx++;
   }
   if (end_date) {
-    conditions.push(`c.timestamp <= $${idx}::timestamp`);
+    conditions.push(`cs.created_timestamp <= $${idx}::timestamp`);
     values.push(end_date);
     idx++;
   }
-  // Default to last 24 hours if no explicit date range provided
   if (!start_date && !end_date) {
-    conditions.push(`c.timestamp >= NOW() - INTERVAL '24 hours'`);
+    conditions.push(`cs.created_timestamp >= NOW() - INTERVAL '24 hours'`);
   }
-  
+
   // Handle owner_address filter
   if (owner_address) {
     needsSupplierJoin = true;
     conditions.push(`s.owner_address = $${idx++}`);
     values.push(owner_address);
   }
-  
-  // Handle status filter
-  const validStatuses = ['staked', 'unstaked', 'unstake_requested', 'all'];
-  const supplierStatus = validStatuses.includes(status) ? status : 'staked';
-  if (supplierStatus && supplierStatus !== 'all') {
-    needsSupplierJoin = true;
-    conditions.push(`s.status = $${idx++}`);
-    values.push(supplierStatus);
-  }
-  
+
   // Handle supplier_address or supplier_addresses
-  // Can be owner address or operator address
   if (supplier_addresses && Array.isArray(supplier_addresses) && supplier_addresses.length > 0) {
     needsSupplierJoin = true;
     if (supplier_addresses.length === 1) {
-      // Single address - check if it's owner or operator
-      conditions.push(`c.supplier_operator_address = $${idx}::text`);
+      conditions.push(`(s.owner_address = $${idx}::text OR cs.supplier_operator_address = $${idx}::text)`);
       values.push(supplier_addresses[0]);
       idx++;
     } else {
-      // Multiple addresses - use ANY(array) for efficiency
-      conditions.push(`c.supplier_operator_address = ANY($${idx}::text[])`);
+      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cs.supplier_operator_address = ANY($${idx}::text[]))`);
       values.push(supplier_addresses);
       idx++;
     }
@@ -3796,58 +3948,70 @@ async function getClaimsSummary(params, client) {
     } else {
       addresses = [supplier_address];
     }
-    
+
     needsSupplierJoin = true;
     if (addresses.length === 1) {
-      // Single address - check if it's owner or operator
-      conditions.push(`(s.owner_address = $${idx}::text OR c.supplier_operator_address = $${idx}::text)`);
+      conditions.push(`(s.owner_address = $${idx}::text OR cs.supplier_operator_address = $${idx}::text)`);
       values.push(addresses[0]);
       idx++;
     } else if (addresses.length > 1) {
-      // Multiple addresses - use ANY(array) for efficiency
-      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR c.supplier_operator_address = ANY($${idx}::text[]))`);
+      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cs.supplier_operator_address = ANY($${idx}::text[]))`);
       values.push(addresses);
       idx++;
     }
   }
-  
+
+  // Status filter only applies when a specific supplier/owner is being filtered.
+  // Applying it globally drops historical claims from now-unstaked suppliers.
+  const validStatuses = ['staked', 'unstaked', 'unstake_requested', 'all'];
+  const supplierStatus = validStatuses.includes(status) ? status : 'staked';
+  if (needsSupplierJoin && supplierStatus !== 'all') {
+    conditions.push(`s.status = $${idx++}`);
+    values.push(supplierStatus);
+  }
+
   if (application_address) {
-    conditions.push(`c.application_address = $${idx}::text`);
+    conditions.push(`cs.application_address = $${idx}::text`);
     values.push(application_address);
     idx++;
   }
   if (service_id) {
-    conditions.push(`c.service_id = $${idx}::text`);
+    conditions.push(`cs.service_id = $${idx}::text`);
     values.push(service_id);
     idx++;
   }
-  
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  // Use INNER JOIN when filtering by supplier fields to ensure supplier exists
-  // Use LEFT JOIN only when we're not filtering by supplier fields
-  const joinClause = needsSupplierJoin 
-    ? `INNER JOIN suppliers s ON s.address = c.supplier_operator_address AND s.chain = c.chain`
+
+  const where = `WHERE ${conditions.join(' AND ')}`;
+  const joinClause = needsSupplierJoin
+    ? `LEFT JOIN suppliers s ON s.address = cs.supplier_operator_address AND s.chain = cs.chain`
     : '';
-  
-  const summarySql = `SELECT 
-    COUNT(*) as total_claims,
-    COUNT(DISTINCT c.supplier_operator_address) as unique_suppliers,
-    COUNT(DISTINCT c.application_address) as unique_applications,
-    COUNT(DISTINCT c.service_id) as unique_services,
-    SUM(c.claimed_upokt_amount) as total_rewards_upokt,
-    SUM(c.num_relays) as total_relays,
-    SUM(c.num_claimed_compute_units) as total_claimed_compute_units,
-    SUM(c.num_estimated_compute_units) as total_estimated_compute_units,
-    AVG(c.compute_unit_efficiency) as avg_efficiency_percent,
-    AVG(c.reward_per_relay) as avg_reward_per_relay,
-    MIN(c.timestamp) as first_claim,
-    MAX(c.timestamp) as last_claim
-    FROM claims c
+
+  const summarySql = `SELECT
+    COUNT(*) AS total_submissions,
+    COUNT(*) AS total_claims,
+    COUNT(DISTINCT cs.supplier_operator_address) AS unique_suppliers,
+    COUNT(DISTINCT cs.application_address) AS unique_applications,
+    COUNT(DISTINCT cs.service_id) AS unique_services,
+    SUM(cs.claimed_upokt) AS total_rewards_upokt,
+    SUM(cs.num_relays) AS total_relays,
+    SUM(cs.num_claimed_compute_units) AS total_claimed_compute_units,
+    SUM(cs.num_estimated_compute_units) AS total_estimated_compute_units,
+    CASE WHEN SUM(cs.num_estimated_compute_units) > 0
+      THEN (SUM(cs.num_claimed_compute_units)::numeric / SUM(cs.num_estimated_compute_units)::numeric) * 100
+      ELSE 0 END AS avg_efficiency_percent,
+    CASE WHEN SUM(cs.num_relays) > 0
+      THEN SUM(cs.claimed_upokt)::numeric / SUM(cs.num_relays)
+      ELSE 0 END AS avg_reward_per_relay,
+    MIN(cs.created_timestamp) AS first_submission,
+    MAX(cs.created_timestamp) AS last_submission,
+    MIN(cs.created_timestamp) AS first_claim,
+    MAX(cs.created_timestamp) AS last_claim
+    FROM claim_settlements cs
     ${joinClause}
     ${where}`;
-  
+
   const result = await client.query(summarySql, values);
-  
+
   return { data: result.rows[0] };
 }
 

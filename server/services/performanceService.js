@@ -531,81 +531,66 @@ async function getValidatorPerformance(params, client) {
  * @returns {Promise<Object>} Performance data with pagination metadata
  */
 async function getSupplierPerformance(params, client) {
-  const { 
-    owner_address, 
+  const {
+    owner_address,
     supplier_address, // Can be string or array
-    chain, 
-    service_id, 
-    start_date, 
-    end_date, 
-    group_by = 'day', 
-    page = 1, 
-    limit = 100 
+    chain,
+    service_id,
+    start_date,
+    end_date,
+    group_by = 'day',
+    page = 1,
+    limit = 100
   } = params;
 
-  // Build WHERE conditions over claims joined to suppliers
-  const conditions = ["c.claim_proof_status_int = 0"]; // successful claims only
+  // Settled claims only — claim_settlements is the source of truth
+  const conditions = [`cs.settlement_type = 'settled'`];
   const values = [];
   let idx = 1;
 
-  if (chain) { conditions.push(`c.chain = $${idx}::text`); values.push(chain); idx++; }
-  if (service_id) { conditions.push(`c.service_id = $${idx}::text`); values.push(service_id); idx++; }
-  if (start_date) { conditions.push(`c.timestamp >= $${idx}::timestamp`); values.push(start_date); idx++; }
-  if (end_date) { conditions.push(`c.timestamp <= $${idx}::timestamp`); values.push(end_date); idx++; }
-  
-  // Handle supplier_address - can be single string, comma-separated string, or array
-  // Addresses can be either owner addresses (pokt1...) or operator addresses (pokt1...)
-  // Owner addresses should match via owner_address in suppliers table
-  // Operator addresses should match via supplier_operator_address in claims
+  if (chain) { conditions.push(`cs.chain = $${idx}::text`); values.push(chain); idx++; }
+  if (service_id) { conditions.push(`cs.service_id = $${idx}::text`); values.push(service_id); idx++; }
+  if (start_date) { conditions.push(`cs.created_timestamp >= $${idx}::timestamp`); values.push(start_date); idx++; }
+  if (end_date) { conditions.push(`cs.created_timestamp <= $${idx}::timestamp`); values.push(end_date); idx++; }
+
+  // supplier_address can be a single address, comma-separated string (GET), or array (POST)
+  // Match against both operator address (on claim_settlements) and owner address (via suppliers join)
   if (supplier_address) {
     let addresses;
     if (Array.isArray(supplier_address)) {
       addresses = supplier_address;
     } else if (typeof supplier_address === 'string' && supplier_address.includes(',')) {
-      // Handle comma-separated string (for GET requests)
       addresses = supplier_address.split(',').map(addr => addr.trim()).filter(addr => addr.length > 0);
     } else {
       addresses = [supplier_address];
     }
-    
-    const addressConditions = [];
-    
-    // For suppliers, addresses can be either owner addresses or operator addresses
-    // We need to check both possibilities
+
     if (addresses.length === 1) {
-      // Single address - check if it's owner or operator
-      addressConditions.push(`(s.owner_address = $${idx}::text OR c.supplier_operator_address = $${idx}::text)`);
+      conditions.push(`(s.owner_address = $${idx}::text OR cs.supplier_operator_address = $${idx}::text)`);
       values.push(addresses[0]);
       idx++;
     } else {
-      // Multiple addresses - use ANY with array parameter
-      addressConditions.push(`(s.owner_address = ANY($${idx}::text[]) OR c.supplier_operator_address = ANY($${idx}::text[]))`);
+      conditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cs.supplier_operator_address = ANY($${idx}::text[]))`);
       values.push(addresses);
       idx++;
     }
-    
-    if (addressConditions.length > 0) {
-      conditions.push(`(${addressConditions.join(' OR ')})`);
-    }
   }
-  
+
   if (owner_address) { conditions.push(`s.owner_address = $${idx}::text`); values.push(owner_address); idx++; }
 
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const where = `WHERE ${conditions.join(' AND ')}`;
 
-  // Grouping
-  let bucketExpr = null;
-  if (group_by === 'hour') bucketExpr = `DATE_TRUNC('hour', c.timestamp) AS bucket`;
+  // Time bucket for grouping/trending
+  let bucketExpr;
+  if (group_by === 'hour') bucketExpr = `DATE_TRUNC('hour', cs.created_timestamp) AS bucket`;
   else if (group_by === 'total') bucketExpr = `NULL::timestamp AS bucket`;
-  else bucketExpr = `DATE_TRUNC('day', c.timestamp) AS bucket`;
+  else bucketExpr = `DATE_TRUNC('day', cs.created_timestamp) AS bucket`;
 
-  // Count total groups for pagination
   const pageNum = parseInt(page, 10);
   const limitNum = parseInt(limit, 10);
   const offset = (pageNum - 1) * limitNum;
 
-  // Determine if we're aggregating multiple suppliers
-  // Aggregation happens when multiple supplier addresses are provided
+  // Aggregating mode: multiple suppliers collapsed into a single time-series (no per-supplier breakdown)
   let isAggregating = false;
   if (supplier_address) {
     let addresses;
@@ -619,75 +604,83 @@ async function getSupplierPerformance(params, client) {
     isAggregating = addresses.length > 1;
   }
 
+  // Weighted efficiency and reward-per-relay are computed inline — claim_settlements
+  // has no stored computed columns, and simple AVG() would give wrong results when
+  // rows have different relay counts.
+  const efficiencyExpr = `ROUND(
+          CASE WHEN SUM(cs.num_estimated_compute_units) > 0
+            THEN (SUM(cs.num_claimed_compute_units)::numeric / SUM(cs.num_estimated_compute_units)::numeric) * 100
+            ELSE 0 END,
+          2) AS avg_efficiency_percent`;
+
+  const rewardPerRelayExpr = `ROUND(
+          CASE WHEN SUM(cs.num_relays) > 0
+            THEN SUM(cs.claimed_upokt)::numeric / SUM(cs.num_relays)::numeric
+            ELSE 0 END,
+          2) AS avg_reward_per_relay`;
+
   let countSql, listSql;
-  
+
   if (isAggregating) {
-    // Aggregated query - group only by bucket, not by supplier
+    // Multiple suppliers: collapse into bucket-only time series
     countSql = `
       SELECT COUNT(*) AS total FROM (
         SELECT ${bucketExpr.replace(' AS bucket', '')} AS bucket_key
-        FROM claims c
-        LEFT JOIN suppliers s ON s.address = c.supplier_operator_address AND s.chain = c.chain
+        FROM claim_settlements cs
+        LEFT JOIN suppliers s ON s.address = cs.supplier_operator_address AND s.chain = cs.chain
         ${where}
         GROUP BY bucket_key
       ) t`;
 
     listSql = `
-      SELECT 
+      SELECT
         ${bucketExpr},
         NULL::text AS supplier_operator_address,
         NULL::text AS owner_address,
         COALESCE(COUNT(*)::BIGINT, 0) AS total_claims,
-        COALESCE(SUM(c.num_relays)::BIGINT, 0) AS total_relays,
-        COALESCE(SUM(c.num_claimed_compute_units)::BIGINT, 0) AS total_claimed_compute_units,
-        COALESCE(SUM(c.num_estimated_compute_units)::BIGINT, 0) AS total_estimated_compute_units,
-        ROUND(AVG(c.compute_unit_efficiency)::numeric, 2) AS avg_efficiency_percent,
-        ROUND(
-          CASE 
-            WHEN SUM(c.num_relays) > 0 
-            THEN SUM(c.claimed_upokt_amount)::numeric / SUM(c.num_relays)::numeric
-            ELSE 0
-          END, 
-          2
-        ) AS avg_reward_per_relay,
-        COUNT(DISTINCT c.application_address) AS unique_applications,
-        COUNT(DISTINCT c.service_id) AS unique_services
-      FROM claims c
-      LEFT JOIN suppliers s ON s.address = c.supplier_operator_address AND s.chain = c.chain
+        COALESCE(SUM(cs.num_relays)::BIGINT, 0) AS total_relays,
+        COALESCE(SUM(cs.num_claimed_compute_units)::BIGINT, 0) AS total_claimed_compute_units,
+        COALESCE(SUM(cs.num_estimated_compute_units)::BIGINT, 0) AS total_estimated_compute_units,
+        ${efficiencyExpr},
+        ${rewardPerRelayExpr},
+        COUNT(DISTINCT cs.application_address) AS unique_applications,
+        COUNT(DISTINCT cs.service_id) AS unique_services
+      FROM claim_settlements cs
+      LEFT JOIN suppliers s ON s.address = cs.supplier_operator_address AND s.chain = cs.chain
       ${where}
       GROUP BY bucket
       ORDER BY bucket DESC
       LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
   } else {
-    // Normal query - group by bucket and supplier
+    // Single supplier (or no filter): per-supplier breakdown within each time bucket
     countSql = `
       SELECT COUNT(*) AS total FROM (
-        SELECT 
+        SELECT
           ${bucketExpr.replace(' AS bucket', '')} AS bucket_key,
-          c.supplier_operator_address
-        FROM claims c
-        LEFT JOIN suppliers s ON s.address = c.supplier_operator_address AND s.chain = c.chain
+          cs.supplier_operator_address
+        FROM claim_settlements cs
+        LEFT JOIN suppliers s ON s.address = cs.supplier_operator_address AND s.chain = cs.chain
         ${where}
-        GROUP BY bucket_key, c.supplier_operator_address
+        GROUP BY bucket_key, cs.supplier_operator_address
       ) t`;
 
     listSql = `
-      SELECT 
+      SELECT
         ${bucketExpr},
-        c.supplier_operator_address,
+        cs.supplier_operator_address,
         s.owner_address,
         COALESCE(COUNT(*)::BIGINT, 0) AS total_claims,
-        COALESCE(SUM(c.num_relays)::BIGINT, 0) AS total_relays,
-        COALESCE(SUM(c.num_claimed_compute_units)::BIGINT, 0) AS total_claimed_compute_units,
-        COALESCE(SUM(c.num_estimated_compute_units)::BIGINT, 0) AS total_estimated_compute_units,
-        ROUND(AVG(c.compute_unit_efficiency)::numeric, 2) AS avg_efficiency_percent,
-        ROUND(AVG(c.reward_per_relay)::numeric, 2) AS avg_reward_per_relay,
-        COUNT(DISTINCT c.application_address) AS unique_applications,
-        COUNT(DISTINCT c.service_id) AS unique_services
-      FROM claims c
-      LEFT JOIN suppliers s ON s.address = c.supplier_operator_address AND s.chain = c.chain
+        COALESCE(SUM(cs.num_relays)::BIGINT, 0) AS total_relays,
+        COALESCE(SUM(cs.num_claimed_compute_units)::BIGINT, 0) AS total_claimed_compute_units,
+        COALESCE(SUM(cs.num_estimated_compute_units)::BIGINT, 0) AS total_estimated_compute_units,
+        ${efficiencyExpr},
+        ${rewardPerRelayExpr},
+        COUNT(DISTINCT cs.application_address) AS unique_applications,
+        COUNT(DISTINCT cs.service_id) AS unique_services
+      FROM claim_settlements cs
+      LEFT JOIN suppliers s ON s.address = cs.supplier_operator_address AND s.chain = cs.chain
       ${where}
-      GROUP BY bucket, c.supplier_operator_address, s.owner_address
+      GROUP BY bucket, cs.supplier_operator_address, s.owner_address
       ORDER BY bucket DESC, total_relays DESC
       LIMIT $${idx}::integer OFFSET $${idx + 1}::integer`;
   }
@@ -828,32 +821,25 @@ async function getSupplierOwnerPerformance(params, client) {
  */
 async function getTopServicesByComputeUnits(params, client) {
   const { days = '30', chain, supplier_address, owner_address, page = 1, limit = 10 } = params;
-  
-  // Validate days
-  const validDays = ['7', '15', '30'];
-  const daysValue = validDays.includes(days) ? parseInt(days, 10) : 30;
-  
-  // Validate and parse pagination parameters
+
+  const daysValue = Math.max(1, Math.min(parseInt(days, 10) || 30, 365));
+
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
-  const limitNum = Math.min(Math.max(1, parseInt(limit, 10) || 10), 1000); // Cap at 1000 for performance
+  const limitNum = Math.min(Math.max(1, parseInt(limit, 10) || 10), 1000);
   const offset = (pageNum - 1) * limitNum;
-  
-  // Build WHERE conditions
-  // Put chain first for optimal index usage, so it's always $1 if provided
-  const conditions = [`ps.claim_proof_status_int = 0`, `ps.timestamp >= NOW() - INTERVAL '${daysValue} days'`];
+
+  // settled-only filter + time window; chain goes first for index usage
+  const conditions = [`cs.settlement_type = 'settled'`, `cs.created_timestamp >= NOW() - INTERVAL '${daysValue} days'`];
   const values = [];
   let idx = 1;
   let needsJoin = false;
-  
-  // Put chain first in WHERE clause for optimal index usage (always $1 if provided)
+
   if (chain) {
-    conditions.unshift(`ps.chain = $1::text`);
+    conditions.unshift(`cs.chain = $1::text`);
     values.unshift(chain);
-    idx = 2; // Next parameter starts at 2
+    idx = 2;
   }
-  
-  // Handle supplier_address filter - can be string, comma-separated string, or array
-  // Addresses can be either account addresses (pokt1...) or operator addresses (poktvaloper1...)
+
   if (supplier_address) {
     needsJoin = true;
     let addresses;
@@ -864,128 +850,104 @@ async function getTopServicesByComputeUnits(params, client) {
     } else {
       addresses = [supplier_address];
     }
-    
-    // Check if addresses are account addresses (pokt1...) or operator addresses (poktvaloper1...)
+
     const isAccountAddress = (addr) => addr && addr.startsWith('pokt1') && !addr.startsWith('poktvaloper1');
-    
-    // Separate account and operator addresses
     const accountAddresses = addresses.filter(isAccountAddress);
     const operatorAddresses = addresses.filter(addr => !isAccountAddress(addr));
-    
     const addressConditions = [];
-    
-    // Match account addresses via owner_address in suppliers table
-    // Also try matching directly against supplier_operator_address in case it contains account addresses
+
     if (accountAddresses.length > 0) {
       if (accountAddresses.length === 1) {
-        addressConditions.push(`(s.owner_address = $${idx}::text OR ps.supplier_operator_address = $${idx}::text)`);
+        addressConditions.push(`(s.owner_address = $${idx}::text OR cs.supplier_operator_address = $${idx}::text)`);
         values.push(accountAddresses[0]);
         idx++;
       } else {
-        // Use ANY with array parameter to avoid parameter explosion
-        addressConditions.push(`(s.owner_address = ANY($${idx}::text[]) OR ps.supplier_operator_address = ANY($${idx}::text[]))`);
+        addressConditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cs.supplier_operator_address = ANY($${idx}::text[]))`);
         values.push(accountAddresses);
         idx++;
       }
     }
-    
-    // Match operator addresses directly via supplier_operator_address
+
     if (operatorAddresses.length > 0) {
       if (operatorAddresses.length === 1) {
-        addressConditions.push(`ps.supplier_operator_address = $${idx}::text`);
+        addressConditions.push(`cs.supplier_operator_address = $${idx}::text`);
         values.push(operatorAddresses[0]);
         idx++;
       } else {
-        // Use ANY with array parameter to avoid parameter explosion
-        addressConditions.push(`ps.supplier_operator_address = ANY($${idx}::text[])`);
+        addressConditions.push(`cs.supplier_operator_address = ANY($${idx}::text[])`);
         values.push(operatorAddresses);
         idx++;
       }
     }
-    
+
     if (addressConditions.length > 0) {
       conditions.push(`(${addressConditions.join(' OR ')})`);
     }
   }
-  
-  // Handle owner_address filter
+
   if (owner_address) {
     needsJoin = true;
     conditions.push(`s.owner_address = $${idx}::text`);
     values.push(owner_address);
     idx++;
   }
-  
+
   const where = `WHERE ${conditions.join(' AND ')}`;
-  const join = needsJoin ? `LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address AND s.chain = ps.chain` : '';
-  
-  // Build count query to get total number of services for pagination
+  const join = needsJoin ? `LEFT JOIN suppliers s ON s.address = cs.supplier_operator_address AND s.chain = cs.chain` : '';
+
   const countSql = chain
-    ? `
-      SELECT COUNT(DISTINCT ps.service_id) as total
-      FROM proof_submissions ps
-      ${join}
-      ${where}
-    `
-    : `
-      SELECT COUNT(*) as total
-      FROM (
-        SELECT DISTINCT ps.service_id, ps.chain
-        FROM proof_submissions ps
-        ${join}
-        ${where}
-      ) t
-    `;
-  
-  // Optimized query - uses covering index for fast aggregation
-  // When chain is provided, we group only by service_id (faster)
-  // When chain is not provided, we include it in GROUP BY
-  // Calculate chain param index (it's always the first parameter if provided)
-  const chainParamIdx = chain ? 1 : null;
+    ? `SELECT COUNT(DISTINCT cs.service_id) AS total FROM claim_settlements cs ${join} ${where}`
+    : `SELECT COUNT(*) AS total FROM (
+        SELECT DISTINCT cs.service_id, cs.chain FROM claim_settlements cs ${join} ${where}
+      ) t`;
+
   const sql = chain
     ? `
-      SELECT 
-        ps.service_id,
-        $1::text as chain,
-        SUM(ps.num_claimed_compute_units) as total_claimed_compute_units,
-        SUM(ps.num_estimated_compute_units) as total_estimated_compute_units,
-        COUNT(*) as submission_count,
-        AVG(ps.compute_unit_efficiency) as avg_efficiency_percent,
-        MIN(ps.timestamp) as period_start,
-        MAX(ps.timestamp) as period_end
-      FROM proof_submissions ps
+      SELECT
+        cs.service_id,
+        $1::text AS chain,
+        SUM(cs.num_claimed_compute_units) AS total_claimed_compute_units,
+        SUM(cs.num_estimated_compute_units) AS total_estimated_compute_units,
+        COUNT(*) AS submission_count,
+        CASE WHEN SUM(cs.num_estimated_compute_units) > 0
+          THEN (SUM(cs.num_claimed_compute_units)::numeric / SUM(cs.num_estimated_compute_units)::numeric) * 100
+          ELSE 0 END AS avg_efficiency_percent,
+        MIN(cs.created_timestamp) AS period_start,
+        MAX(cs.created_timestamp) AS period_end
+      FROM claim_settlements cs
       ${join}
       ${where}
-      GROUP BY ps.service_id
+      GROUP BY cs.service_id
       ORDER BY total_claimed_compute_units DESC
       LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
     `
     : `
-      SELECT 
-        ps.service_id,
-        ps.chain,
-        SUM(ps.num_claimed_compute_units) as total_claimed_compute_units,
-        SUM(ps.num_estimated_compute_units) as total_estimated_compute_units,
-        COUNT(*) as submission_count,
-        AVG(ps.compute_unit_efficiency) as avg_efficiency_percent,
-        MIN(ps.timestamp) as period_start,
-        MAX(ps.timestamp) as period_end
-      FROM proof_submissions ps
+      SELECT
+        cs.service_id,
+        cs.chain,
+        SUM(cs.num_claimed_compute_units) AS total_claimed_compute_units,
+        SUM(cs.num_estimated_compute_units) AS total_estimated_compute_units,
+        COUNT(*) AS submission_count,
+        CASE WHEN SUM(cs.num_estimated_compute_units) > 0
+          THEN (SUM(cs.num_claimed_compute_units)::numeric / SUM(cs.num_estimated_compute_units)::numeric) * 100
+          ELSE 0 END AS avg_efficiency_percent,
+        MIN(cs.created_timestamp) AS period_start,
+        MAX(cs.created_timestamp) AS period_end
+      FROM claim_settlements cs
       ${join}
       ${where}
-      GROUP BY ps.service_id, ps.chain
+      GROUP BY cs.service_id, cs.chain
       ORDER BY total_claimed_compute_units DESC
       LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
     `;
-  
-  // Execute count and data queries in parallel
+
   const [countResult, servicesResult] = await Promise.all([
     client.query(countSql, values),
     client.query(sql, [...values, limitNum, offset])
   ]);
-  
+
   const total = parseInt(countResult.rows[0]?.total || '0', 10);
-  
+
   return {
     data: servicesResult.rows,
     meta: {
@@ -1015,32 +977,25 @@ async function getTopServicesByComputeUnits(params, client) {
  */
 async function getTopServicesByPerformance(params, client) {
   const { chain, days = '30', supplier_address, owner_address, page = 1, limit = 10 } = params;
-  
-  // Validate days
-  const validDays = ['7', '15', '30'];
-  const daysValue = validDays.includes(days) ? parseInt(days, 10) : 30;
-  
-  // Validate and parse pagination parameters
+
+  const daysValue = Math.max(1, Math.min(parseInt(days, 10) || 30, 365));
+
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
-  const limitNum = Math.min(Math.max(1, parseInt(limit, 10) || 10), 1000); // Cap at 1000 for performance
+  const limitNum = Math.min(Math.max(1, parseInt(limit, 10) || 10), 1000);
   const offset = (pageNum - 1) * limitNum;
-  
-  // Build WHERE conditions
-  // Put chain first for optimal index usage, so it's always $1 if provided
-  const conditions = [`ps.claim_proof_status_int = 0`, `ps.timestamp >= NOW() - INTERVAL '${daysValue} days'`];
+
+  // settled-only filter + time window; chain goes first for index usage
+  const conditions = [`cs.settlement_type = 'settled'`, `cs.created_timestamp >= NOW() - INTERVAL '${daysValue} days'`];
   const values = [];
   let idx = 1;
   let needsJoin = false;
-  
-  // Put chain first in WHERE clause for optimal index usage (always $1 if provided)
+
   if (chain) {
-    conditions.unshift(`ps.chain = $1::text`);
+    conditions.unshift(`cs.chain = $1::text`);
     values.unshift(chain);
-    idx = 2; // Next parameter starts at 2
+    idx = 2;
   }
-  
-  // Handle supplier_address filter - can be string, comma-separated string, or array
-  // Addresses can be either account addresses (pokt1...) or operator addresses (poktvaloper1...)
+
   if (supplier_address) {
     needsJoin = true;
     let addresses;
@@ -1051,159 +1006,128 @@ async function getTopServicesByPerformance(params, client) {
     } else {
       addresses = [supplier_address];
     }
-    
-    // Check if addresses are account addresses (pokt1...) or operator addresses (poktvaloper1...)
+
     const isAccountAddress = (addr) => addr && addr.startsWith('pokt1') && !addr.startsWith('poktvaloper1');
-    
-    // Separate account and operator addresses
     const accountAddresses = addresses.filter(isAccountAddress);
     const operatorAddresses = addresses.filter(addr => !isAccountAddress(addr));
-    
     const addressConditions = [];
-    
-    // Match account addresses via owner_address in suppliers table
-    // Also try matching directly against supplier_operator_address in case it contains account addresses
+
     if (accountAddresses.length > 0) {
       if (accountAddresses.length === 1) {
-        addressConditions.push(`(s.owner_address = $${idx}::text OR ps.supplier_operator_address = $${idx}::text)`);
+        addressConditions.push(`(s.owner_address = $${idx}::text OR cs.supplier_operator_address = $${idx}::text)`);
         values.push(accountAddresses[0]);
         idx++;
       } else {
-        // Use ANY with array parameter to avoid parameter explosion
-        addressConditions.push(`(s.owner_address = ANY($${idx}::text[]) OR ps.supplier_operator_address = ANY($${idx}::text[]))`);
+        addressConditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cs.supplier_operator_address = ANY($${idx}::text[]))`);
         values.push(accountAddresses);
         idx++;
       }
     }
-    
-    // Match operator addresses directly via supplier_operator_address
+
     if (operatorAddresses.length > 0) {
       if (operatorAddresses.length === 1) {
-        addressConditions.push(`ps.supplier_operator_address = $${idx}::text`);
+        addressConditions.push(`cs.supplier_operator_address = $${idx}::text`);
         values.push(operatorAddresses[0]);
         idx++;
       } else {
-        // Use ANY with array parameter to avoid parameter explosion
-        addressConditions.push(`ps.supplier_operator_address = ANY($${idx}::text[])`);
+        addressConditions.push(`cs.supplier_operator_address = ANY($${idx}::text[])`);
         values.push(operatorAddresses);
         idx++;
       }
     }
-    
+
     if (addressConditions.length > 0) {
       conditions.push(`(${addressConditions.join(' OR ')})`);
     }
   }
-  
-  // Handle owner_address filter
+
   if (owner_address) {
     needsJoin = true;
     conditions.push(`s.owner_address = $${idx}::text`);
     values.push(owner_address);
     idx++;
   }
-  
+
   const where = `WHERE ${conditions.join(' AND ')}`;
-  const join = needsJoin ? `LEFT JOIN suppliers s ON s.address = ps.supplier_operator_address AND s.chain = ps.chain` : '';
-  
-  // Build count query to get total number of services for pagination
+  const join = needsJoin ? `LEFT JOIN suppliers s ON s.address = cs.supplier_operator_address AND s.chain = cs.chain` : '';
+
   const countSql = chain
-    ? `
-      SELECT COUNT(DISTINCT ps.service_id) as total
-      FROM proof_submissions ps
-      ${join}
-      ${where}
-    `
-    : `
-      SELECT COUNT(*) as total
-      FROM (
-        SELECT DISTINCT ps.service_id, ps.chain
-        FROM proof_submissions ps
-        ${join}
-        ${where}
-      ) t
-    `;
-  
-  // Build grand_total query - calculate total compute units across all services
-  // This is needed for percentage calculations and should be calculated separately
-  // to ensure we have it even when a page has no results
+    ? `SELECT COUNT(DISTINCT cs.service_id) AS total FROM claim_settlements cs ${join} ${where}`
+    : `SELECT COUNT(*) AS total FROM (
+        SELECT DISTINCT cs.service_id, cs.chain FROM claim_settlements cs ${join} ${where}
+      ) t`;
+
   const grandTotalSql = `
-    SELECT COALESCE(SUM(ps.num_claimed_compute_units), 0) as total_compute_units
-    FROM proof_submissions ps
+    SELECT COALESCE(SUM(cs.num_claimed_compute_units), 0) AS total_compute_units
+    FROM claim_settlements cs
     ${join}
-    ${where}
-  `;
-  
-  // Single optimized query with CTE for paginated services
-  // Calculate chain param index (it's always the first parameter if provided)
-  const chainParamIdx = chain ? 1 : null;
+    ${where}`;
+
   const sql = chain
     ? `
       WITH service_totals AS (
-        SELECT 
-          ps.service_id,
-          $1::text as chain,
-          SUM(ps.num_claimed_compute_units) as total_claimed_compute_units,
-          SUM(ps.num_estimated_compute_units) as total_estimated_compute_units,
-          COUNT(*) as submission_count,
-          AVG(ps.compute_unit_efficiency) as avg_efficiency_percent,
-          MIN(ps.timestamp) as period_start,
-          MAX(ps.timestamp) as period_end
-        FROM proof_submissions ps
+        SELECT
+          cs.service_id,
+          $1::text AS chain,
+          SUM(cs.num_claimed_compute_units) AS total_claimed_compute_units,
+          SUM(cs.num_estimated_compute_units) AS total_estimated_compute_units,
+          COUNT(*) AS submission_count,
+          CASE WHEN SUM(cs.num_estimated_compute_units) > 0
+            THEN (SUM(cs.num_claimed_compute_units)::numeric / SUM(cs.num_estimated_compute_units)::numeric) * 100
+            ELSE 0 END AS avg_efficiency_percent,
+          MIN(cs.created_timestamp) AS period_start,
+          MAX(cs.created_timestamp) AS period_end
+        FROM claim_settlements cs
         ${join}
         ${where}
-        GROUP BY ps.service_id
+        GROUP BY cs.service_id
       )
-      SELECT 
-        st.*
-      FROM service_totals st
+      SELECT st.* FROM service_totals st
       ORDER BY st.total_claimed_compute_units DESC
       LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
     `
     : `
       WITH service_totals AS (
-        SELECT 
-          ps.service_id,
-          ps.chain,
-          SUM(ps.num_claimed_compute_units) as total_claimed_compute_units,
-          SUM(ps.num_estimated_compute_units) as total_estimated_compute_units,
-          COUNT(*) as submission_count,
-          AVG(ps.compute_unit_efficiency) as avg_efficiency_percent,
-          MIN(ps.timestamp) as period_start,
-          MAX(ps.timestamp) as period_end
-        FROM proof_submissions ps
+        SELECT
+          cs.service_id,
+          cs.chain,
+          SUM(cs.num_claimed_compute_units) AS total_claimed_compute_units,
+          SUM(cs.num_estimated_compute_units) AS total_estimated_compute_units,
+          COUNT(*) AS submission_count,
+          CASE WHEN SUM(cs.num_estimated_compute_units) > 0
+            THEN (SUM(cs.num_claimed_compute_units)::numeric / SUM(cs.num_estimated_compute_units)::numeric) * 100
+            ELSE 0 END AS avg_efficiency_percent,
+          MIN(cs.created_timestamp) AS period_start,
+          MAX(cs.created_timestamp) AS period_end
+        FROM claim_settlements cs
         ${join}
         ${where}
-        GROUP BY ps.service_id, ps.chain
+        GROUP BY cs.service_id, cs.chain
       )
-      SELECT 
-        st.*
-      FROM service_totals st
+      SELECT st.* FROM service_totals st
       ORDER BY st.total_claimed_compute_units DESC
       LIMIT $${idx}::integer OFFSET $${idx + 1}::integer
     `;
-  
-  // Execute count, grand_total, and data queries in parallel
+
   const [countResult, grandTotalResult, servicesResult] = await Promise.all([
     client.query(countSql, values),
     client.query(grandTotalSql, values),
     client.query(sql, [...values, limitNum, offset])
   ]);
-  
+
   const total = parseInt(countResult.rows[0]?.total || '0', 10);
   const totalComputeUnits = parseInt(grandTotalResult.rows[0]?.total_compute_units || '0', 10);
-  
-  // Calculate percentages and add rank (rank is global position, not page position)
+
   const services = servicesResult.rows
-    .filter(row => row.service_id) // Filter out any NULL service_ids
+    .filter(row => row.service_id)
     .map((service, index) => {
       const claimed = parseInt(service.total_claimed_compute_units || '0', 10);
-      const percentage = totalComputeUnits > 0 
+      const percentage = totalComputeUnits > 0
         ? parseFloat(((claimed / totalComputeUnits) * 100).toFixed(2))
         : 0;
-      
+
       return {
-        rank: offset + index + 1, // Global rank based on offset
+        rank: offset + index + 1,
         service_id: service.service_id,
         chain: service.chain,
         total_claimed_compute_units: claimed,
@@ -1215,7 +1139,7 @@ async function getTopServicesByPerformance(params, client) {
         period_end: service.period_end
       };
     });
-  
+
   return {
     data: services,
     total_compute_units: totalComputeUnits,

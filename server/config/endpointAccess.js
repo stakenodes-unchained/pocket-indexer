@@ -14,7 +14,9 @@ const ENDPOINT_ACCESS = {
     { method: "GET", path: "/api/v1/blocks/:block_id" },
     { method: "GET", path: "/api/v1/gateways" },
     { method: "GET", path: "/api/v1/services/top-by-compute-units" },
+    { method: "POST", path: "/api/v1/services/top-by-compute-units" },
     { method: "GET", path: "/api/v1/services/top-by-performance" },
+    { method: "POST", path: "/api/v1/services/top-by-performance" },
     { method: "GET", path: "/api/v1/services/:service_id" },
     // API Documentation endpoint (supports ?q=query for search)
     { method: "GET", path: "/api/v1/docs" },
@@ -26,33 +28,76 @@ const ENDPOINT_ACCESS = {
     { method: "POST", path: "/api/v1/auth/resend-verification" },
     { method: "POST", path: "/api/v1/auth/forgot-password" },
     { method: "POST", path: "/api/v1/auth/reset-password" },
+
+    // Blocks
+    { method: "GET", path: "/api/v1/blocks" },
+    { method: "GET", path: "/api/v1/blocks/:block_id" },
+
+    // Transactions - basic list & counts (explorer uses these)
+    { method: "GET", path: "/api/v1/transactions" },
+    { method: "POST", path: "/api/v1/transactions" },
+    { method: "GET", path: "/api/v1/transactions/count" },
+    { method: "GET", path: "/api/v1/transactions/stats" },
+    { method: "POST", path: "/api/v1/transactions/stats" },
+
+    // Suppliers - search, aggregates, and per-address detail (explorer uses all of these)
     { method: "GET", path: "/api/v1/suppliers/search" },
     { method: "GET", path: "/api/v1/suppliers/performance" },
     { method: "POST", path: "/api/v1/suppliers/performance" },
     { method: "GET", path: "/api/v1/suppliers/owners" },
+    { method: "GET", path: "/api/v1/suppliers" },
+    { method: "GET", path: "/api/v1/suppliers/:address/performance" },
+
+    // Validators - aggregates and domain list (explorer dashboard uses these)
+    { method: "GET", path: "/api/v1/validators/performance" },
+    { method: "POST", path: "/api/v1/validators/performance" },
+    { method: "GET", path: "/api/v1/validators/domains" },
+
+    // Services (explorer uses all 4)
+    { method: "GET", path: "/api/v1/services/top-by-compute-units" },
+    { method: "POST", path: "/api/v1/services/top-by-compute-units" },
+    { method: "GET", path: "/api/v1/services/top-by-performance" },
+    { method: "POST", path: "/api/v1/services/top-by-performance" },
+    { method: "GET", path: "/api/v1/services/:service_id" },
+
+    // Gateways
     { method: "GET", path: "/api/v1/gateways" },
     { method: "GET", path: "/api/v1/gateways/:address" },
+
+    // Delegations & Staking
     { method: "GET", path: "/api/v1/delegations" },
     { method: "GET", path: "/api/v1/staking" },
-    { method: "GET", path: "/api/v1/proof-submissions" },
-    { method: "GET", path: "/api/v1/proof-submissions/rewards" },
-    { method: "GET", path: "/api/v1/proof-submissions/summary" },
+
+    // Applications (explorer account pages use these)
+    { method: "GET", path: "/api/v1/applications" },
+    { method: "GET", path: "/api/v1/applications/:address" },
+    { method: "GET", path: "/api/v1/applications/:address/usage" },
+    { method: "GET", path: "/api/v1/applications/:address/claims/usage" },
+
+    // Claims (explorer dashboard uses these)
     { method: "GET", path: "/api/v1/claims" },
     { method: "POST", path: "/api/v1/claims" },
     { method: "GET", path: "/api/v1/claims/rewards" },
     { method: "POST", path: "/api/v1/claims/rewards" },
     { method: "GET", path: "/api/v1/claims/summary" },
     { method: "POST", path: "/api/v1/claims/summary" },
-    { method: "GET", path: "/api/v1/network-growth/summary" },
-    { method: "GET", path: "/api/v1/health/workers" },
-    // Network Growth endpoints
+
+    // Proof Submissions
+    { method: "GET", path: "/api/v1/proof-submissions" },
+    { method: "GET", path: "/api/v1/proof-submissions/rewards" },
+    { method: "GET", path: "/api/v1/proof-submissions/summary" },
+
+    // Network Growth (explorer uses all 4)
     { method: "GET", path: "/api/v1/network-growth" },
+    { method: "GET", path: "/api/v1/network-growth/summary" },
     { method: "GET", path: "/api/v1/network-growth/performance" },
     { method: "GET", path: "/api/v1/network-growth/entities" },
     { method: "GET", path: "/api/v1/applications" },
     { method: "GET", path: "/api/v1/applications/:address" },
     { method: "GET", path: "/api/v1/applications/:address/usage" },
     { method: "GET", path: "/api/v1/applications/:address/claims/usage" },
+    { method: "GET", path: "/api/v1/suppliers" },
+    { method: "GET", path: "/api/v1/suppliers/:address" },
   ],
 
   // JWT_AUTH endpoints - Require valid JWT access token (for user-facing features)
@@ -117,37 +162,24 @@ const ENDPOINT_ACCESS = {
     { method: "POST", path: "/api/admin/rate-limits/check" },
   ],
 
-  // TOKEN endpoints - Require valid API token
+  // TOKEN endpoints - Require valid API token (for API consumers / developers)
   TOKEN: [
-    // Transaction endpoints
-
-    { method: "GET", path: "/api/v1/transactions/stats" },
-    { method: "POST", path: "/api/v1/transactions/stats" },
+    // Transactions - individual record lookup
     { method: "GET", path: "/api/v1/transactions/:transaction_id" },
-    { method: "GET", path: "/api/v1/suppliers" },
-    { method: "GET", path: "/api/v1/suppliers/:address" },
     { method: "GET", path: "/api/v1/suppliers/:address/performance" },
     { method: "GET", path: "/api/v1/suppliers/:address/claims/performance" },
-    { method: "GET", path: "/api/v1/gateways/:address" },
-    { method: "GET", path: "/api/v1/delegations" },
-    { method: "GET", path: "/api/v1/staking" },
-    { method: "GET", path: "/api/v1/proof-submissions" },
-    { method: "GET", path: "/api/v1/proof-submissions/rewards" },
-    { method: "GET", path: "/api/v1/proof-submissions/summary" },
-    { method: "GET", path: "/api/v1/claims" },
-    { method: "POST", path: "/api/v1/claims" },
-    { method: "GET", path: "/api/v1/claims/rewards" },
-    { method: "POST", path: "/api/v1/claims/rewards" },
-    { method: "GET", path: "/api/v1/claims/summary" },
-    { method: "POST", path: "/api/v1/claims/summary" },
+
+    // Validators - search, per-address detail, owners
     { method: "GET", path: "/api/v1/validators/search" },
-    { method: "GET", path: "/api/v1/validators/performance" },
-    { method: "POST", path: "/api/v1/validators/performance" },
     { method: "GET", path: "/api/v1/validators/:operator_address/performance" },
-    { method: "GET", path: "/api/v1/validators/domains" },
     { method: "GET", path: "/api/v1/validators/owners" },
-    { method: "POST", path: "/api/v1/services/top-by-compute-units" },
-    { method: "POST", path: "/api/v1/services/top-by-performance" },
+
+    // Proof Submissions - write/query operations
+    { method: "POST", path: "/api/v1/proof-submissions" },
+    { method: "POST", path: "/api/v1/proof-submissions/rewards" },
+    { method: "POST", path: "/api/v1/proof-submissions/summary" },
+
+    // Metrics
     { method: "GET", path: "/api/v1/metrics/chains" },
   ],
 
@@ -169,8 +201,8 @@ const ENDPOINT_ACCESS = {
     { method: "GET", path: "/api/v1/health/redis/history" },
     { method: "GET", path: "/api/v1/health/redis/keyspace/history" },
     { method: "GET", path: "/api/v1/health/proof-parser" },
-    { method: "GET", path: "/api/v1/health/proof-parser/:chain" },
     { method: "GET", path: "/api/v1/health/proof-parser/stats" },
+    { method: "GET", path: "/api/v1/health/proof-parser/:chain" },
     { method: "GET", path: "/api/v1/metrics/chains/:chain" },
     { method: "GET", path: "/api/v1/logs/containers" },
     { method: "GET", path: "/api/v1/logs/containers/:containerId" },
