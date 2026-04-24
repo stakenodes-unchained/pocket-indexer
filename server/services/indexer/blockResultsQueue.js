@@ -312,7 +312,7 @@ async function isBlockProcessed(rpcName, height) {
     // Fallback to DB if not in Redis
     await connectClients();
     const result = await pgPool.query(
-      `SELECT 1 FROM block_results_processed WHERE chain = $1 AND height = $2 LIMIT 1`,
+      `SELECT 1 FROM block_results_processed WHERE chain = $1 AND height = $2 LIMIT 1 AND status = 'processed'`,
       [rpcName, height]
     );
     return result.rows.length > 0;
@@ -335,6 +335,7 @@ async function getProcessedBlocks(rpcName, startHeight, endHeight) {
     const result = await pgPool.query(
       `SELECT height FROM block_results_processed 
        WHERE chain = $1 AND height >= $2 AND height <= $3 
+       AND status = 'processed'
        ORDER BY height`,
       [rpcName, startHeight, endHeight]
     );
@@ -363,7 +364,7 @@ async function getUnprocessedBlocks(rpcName, startHeight, endHeight) {
        SELECT hr.height
        FROM height_range hr
        LEFT JOIN block_results_processed brp ON brp.chain = $1 AND brp.height = hr.height
-       WHERE brp.height IS NULL
+       WHERE brp.height IS NULL OR brp.status = 'failed'
        ORDER BY hr.height`,
       [rpcName, startHeight, endHeight]
     );
@@ -386,7 +387,7 @@ async function getProcessedBlocksCount(rpcName, startHeight, endHeight) {
     await connectClients();
     const result = await pgPool.query(
       `SELECT COUNT(*) as count FROM block_results_processed 
-       WHERE chain = $1 AND height >= $2 AND height <= $3`,
+       WHERE chain = $1 AND height >= $2 AND height <= $3 AND status = 'processed'`,
       [rpcName, startHeight, endHeight]
     );
     return parseInt(result.rows[0]?.count || 0, 10);

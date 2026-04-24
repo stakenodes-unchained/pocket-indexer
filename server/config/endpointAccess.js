@@ -7,7 +7,19 @@
 const ENDPOINT_ACCESS = {
   // PUBLIC endpoints - No authentication required
   PUBLIC: [
-    // Auth - unauthenticated flows
+    { method: "GET", path: "/api/v1/transactions" },
+    { method: "GET", path: "/api/v1/transactions/count" },
+    { method: "POST", path: "/api/v1/transactions" },
+    { method: "GET", path: "/api/v1/blocks" },
+    { method: "GET", path: "/api/v1/blocks/:block_id" },
+    { method: "GET", path: "/api/v1/gateways" },
+    { method: "GET", path: "/api/v1/services/top-by-compute-units" },
+    { method: "POST", path: "/api/v1/services/top-by-compute-units" },
+    { method: "GET", path: "/api/v1/services/top-by-performance" },
+    { method: "POST", path: "/api/v1/services/top-by-performance" },
+    { method: "GET", path: "/api/v1/services/:service_id" },
+    // API Documentation endpoint (supports ?q=query for search)
+    { method: "GET", path: "/api/v1/docs" },
     { method: "POST", path: "/api/v1/auth/register" },
     { method: "POST", path: "/api/v1/auth/login" },
     { method: "POST", path: "/api/v1/auth/refresh" },
@@ -80,12 +92,12 @@ const ENDPOINT_ACCESS = {
     { method: "GET", path: "/api/v1/network-growth/summary" },
     { method: "GET", path: "/api/v1/network-growth/performance" },
     { method: "GET", path: "/api/v1/network-growth/entities" },
-
-    // Health - basic worker status (public status page)
-    { method: "GET", path: "/api/v1/health/workers" },
-
-    // API Documentation
-    { method: "GET", path: "/api/v1/docs" },
+    { method: "GET", path: "/api/v1/applications" },
+    { method: "GET", path: "/api/v1/applications/:address" },
+    { method: "GET", path: "/api/v1/applications/:address/usage" },
+    { method: "GET", path: "/api/v1/applications/:address/claims/usage" },
+    { method: "GET", path: "/api/v1/suppliers" },
+    { method: "GET", path: "/api/v1/suppliers/:address" },
   ],
 
   // JWT_AUTH endpoints - Require valid JWT access token (for user-facing features)
@@ -154,9 +166,7 @@ const ENDPOINT_ACCESS = {
   TOKEN: [
     // Transactions - individual record lookup
     { method: "GET", path: "/api/v1/transactions/:transaction_id" },
-
-    // Suppliers - full list and per-address deep detail
-    { method: "GET", path: "/api/v1/suppliers/:address" },
+    { method: "GET", path: "/api/v1/suppliers/:address/performance" },
     { method: "GET", path: "/api/v1/suppliers/:address/claims/performance" },
 
     // Validators - search, per-address detail, owners
