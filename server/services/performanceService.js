@@ -590,9 +590,11 @@ async function getSupplierPerformance(params, client) {
   const limitNum = parseInt(limit, 10);
   const offset = (pageNum - 1) * limitNum;
 
-  // Aggregating mode: multiple suppliers collapsed into a single time-series (no per-supplier breakdown)
+  // Aggregating mode: multiple suppliers collapsed into a single time-series (no per-supplier breakdown).
+  // Only applies for time-series groupings (day/hour). For group_by='total' we always want
+  // per-supplier rows so the frontend can build supplierMap for charts/tables.
   let isAggregating = false;
-  if (supplier_address) {
+  if (supplier_address && group_by !== 'total') {
     let addresses;
     if (Array.isArray(supplier_address)) {
       addresses = supplier_address;
@@ -832,7 +834,6 @@ async function getTopServicesByComputeUnits(params, client) {
   const conditions = [`cs.settlement_type = 'settled'`, `cs.created_timestamp >= NOW() - INTERVAL '${daysValue} days'`];
   const values = [];
   let idx = 1;
-  let needsJoin = false;
 
   if (chain) {
     conditions.unshift(`cs.chain = $1::text`);
@@ -841,7 +842,6 @@ async function getTopServicesByComputeUnits(params, client) {
   }
 
   if (supplier_address) {
-    needsJoin = true;
     let addresses;
     if (Array.isArray(supplier_address)) {
       addresses = supplier_address;
@@ -856,18 +856,20 @@ async function getTopServicesByComputeUnits(params, client) {
     const operatorAddresses = addresses.filter(addr => !isAccountAddress(addr));
     const addressConditions = [];
 
+    // Account addresses: use subquery to find their operators — avoids JOIN chain mismatch
     if (accountAddresses.length > 0) {
       if (accountAddresses.length === 1) {
-        addressConditions.push(`(s.owner_address = $${idx}::text OR cs.supplier_operator_address = $${idx}::text)`);
+        addressConditions.push(`cs.supplier_operator_address IN (SELECT address FROM suppliers WHERE owner_address = $${idx}::text OR address = $${idx}::text)`);
         values.push(accountAddresses[0]);
         idx++;
       } else {
-        addressConditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cs.supplier_operator_address = ANY($${idx}::text[]))`);
+        addressConditions.push(`cs.supplier_operator_address IN (SELECT address FROM suppliers WHERE owner_address = ANY($${idx}::text[]) OR address = ANY($${idx}::text[]))`);
         values.push(accountAddresses);
         idx++;
       }
     }
 
+    // Operator addresses: direct filter on claim_settlements
     if (operatorAddresses.length > 0) {
       if (operatorAddresses.length === 1) {
         addressConditions.push(`cs.supplier_operator_address = $${idx}::text`);
@@ -885,20 +887,19 @@ async function getTopServicesByComputeUnits(params, client) {
     }
   }
 
+  // owner_address: use subquery to find operators — avoids chain mismatch in LEFT JOIN
   if (owner_address) {
-    needsJoin = true;
-    conditions.push(`s.owner_address = $${idx}::text`);
+    conditions.push(`cs.supplier_operator_address IN (SELECT address FROM suppliers WHERE owner_address = $${idx}::text)`);
     values.push(owner_address);
     idx++;
   }
 
   const where = `WHERE ${conditions.join(' AND ')}`;
-  const join = needsJoin ? `LEFT JOIN suppliers s ON s.address = cs.supplier_operator_address AND s.chain = cs.chain` : '';
 
   const countSql = chain
-    ? `SELECT COUNT(DISTINCT cs.service_id) AS total FROM claim_settlements cs ${join} ${where}`
+    ? `SELECT COUNT(DISTINCT cs.service_id) AS total FROM claim_settlements cs ${where}`
     : `SELECT COUNT(*) AS total FROM (
-        SELECT DISTINCT cs.service_id, cs.chain FROM claim_settlements cs ${join} ${where}
+        SELECT DISTINCT cs.service_id, cs.chain FROM claim_settlements cs ${where}
       ) t`;
 
   const sql = chain
@@ -915,7 +916,6 @@ async function getTopServicesByComputeUnits(params, client) {
         MIN(cs.created_timestamp) AS period_start,
         MAX(cs.created_timestamp) AS period_end
       FROM claim_settlements cs
-      ${join}
       ${where}
       GROUP BY cs.service_id
       ORDER BY total_claimed_compute_units DESC
@@ -934,7 +934,6 @@ async function getTopServicesByComputeUnits(params, client) {
         MIN(cs.created_timestamp) AS period_start,
         MAX(cs.created_timestamp) AS period_end
       FROM claim_settlements cs
-      ${join}
       ${where}
       GROUP BY cs.service_id, cs.chain
       ORDER BY total_claimed_compute_units DESC
@@ -988,7 +987,6 @@ async function getTopServicesByPerformance(params, client) {
   const conditions = [`cs.settlement_type = 'settled'`, `cs.created_timestamp >= NOW() - INTERVAL '${daysValue} days'`];
   const values = [];
   let idx = 1;
-  let needsJoin = false;
 
   if (chain) {
     conditions.unshift(`cs.chain = $1::text`);
@@ -997,7 +995,6 @@ async function getTopServicesByPerformance(params, client) {
   }
 
   if (supplier_address) {
-    needsJoin = true;
     let addresses;
     if (Array.isArray(supplier_address)) {
       addresses = supplier_address;
@@ -1012,18 +1009,20 @@ async function getTopServicesByPerformance(params, client) {
     const operatorAddresses = addresses.filter(addr => !isAccountAddress(addr));
     const addressConditions = [];
 
+    // Account addresses: use subquery to find their operators — avoids JOIN chain mismatch
     if (accountAddresses.length > 0) {
       if (accountAddresses.length === 1) {
-        addressConditions.push(`(s.owner_address = $${idx}::text OR cs.supplier_operator_address = $${idx}::text)`);
+        addressConditions.push(`cs.supplier_operator_address IN (SELECT address FROM suppliers WHERE owner_address = $${idx}::text OR address = $${idx}::text)`);
         values.push(accountAddresses[0]);
         idx++;
       } else {
-        addressConditions.push(`(s.owner_address = ANY($${idx}::text[]) OR cs.supplier_operator_address = ANY($${idx}::text[]))`);
+        addressConditions.push(`cs.supplier_operator_address IN (SELECT address FROM suppliers WHERE owner_address = ANY($${idx}::text[]) OR address = ANY($${idx}::text[]))`);
         values.push(accountAddresses);
         idx++;
       }
     }
 
+    // Operator addresses: direct filter on claim_settlements
     if (operatorAddresses.length > 0) {
       if (operatorAddresses.length === 1) {
         addressConditions.push(`cs.supplier_operator_address = $${idx}::text`);
@@ -1041,26 +1040,24 @@ async function getTopServicesByPerformance(params, client) {
     }
   }
 
+  // owner_address: use subquery to find operators — avoids chain mismatch in LEFT JOIN
   if (owner_address) {
-    needsJoin = true;
-    conditions.push(`s.owner_address = $${idx}::text`);
+    conditions.push(`cs.supplier_operator_address IN (SELECT address FROM suppliers WHERE owner_address = $${idx}::text)`);
     values.push(owner_address);
     idx++;
   }
 
   const where = `WHERE ${conditions.join(' AND ')}`;
-  const join = needsJoin ? `LEFT JOIN suppliers s ON s.address = cs.supplier_operator_address AND s.chain = cs.chain` : '';
 
   const countSql = chain
-    ? `SELECT COUNT(DISTINCT cs.service_id) AS total FROM claim_settlements cs ${join} ${where}`
+    ? `SELECT COUNT(DISTINCT cs.service_id) AS total FROM claim_settlements cs ${where}`
     : `SELECT COUNT(*) AS total FROM (
-        SELECT DISTINCT cs.service_id, cs.chain FROM claim_settlements cs ${join} ${where}
+        SELECT DISTINCT cs.service_id, cs.chain FROM claim_settlements cs ${where}
       ) t`;
 
   const grandTotalSql = `
     SELECT COALESCE(SUM(cs.num_claimed_compute_units), 0) AS total_compute_units
     FROM claim_settlements cs
-    ${join}
     ${where}`;
 
   const sql = chain
@@ -1078,7 +1075,6 @@ async function getTopServicesByPerformance(params, client) {
           MIN(cs.created_timestamp) AS period_start,
           MAX(cs.created_timestamp) AS period_end
         FROM claim_settlements cs
-        ${join}
         ${where}
         GROUP BY cs.service_id
       )
@@ -1100,7 +1096,6 @@ async function getTopServicesByPerformance(params, client) {
           MIN(cs.created_timestamp) AS period_start,
           MAX(cs.created_timestamp) AS period_end
         FROM claim_settlements cs
-        ${join}
         ${where}
         GROUP BY cs.service_id, cs.chain
       )

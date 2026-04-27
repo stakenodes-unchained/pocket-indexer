@@ -4672,9 +4672,16 @@ app.get('/api/v1/validators/owners', async (req, res) => {
  *   - applicationsTotalPages: Total pages for applications
  *   - suppliersTotalPages: Total pages for suppliers
  */
-app.get('/api/v1/services/:service_id', cacheMiddleware(300), async (req, res) => {
+app.get('/api/v1/services/:service_id', cacheMiddleware(300), async (req, res, next) => {
+  const { service_id } = req.params;
+  // These specific sub-resource GET handlers are registered after this parametric route.
+  // next('route') lets Express fall through to the correct handler instead of treating
+  // 'top-by-compute-units' or 'top-by-performance' as a :service_id lookup.
+  const RESERVED_SEGMENTS = new Set(['top-by-compute-units', 'top-by-performance']);
+  if (RESERVED_SEGMENTS.has(service_id)) {
+    return next('route');
+  }
   try {
-    const { service_id } = req.params;
     const { chain, page = 1, limit = 25 } = req.query;
 
     if (!service_id || typeof service_id !== 'string' || service_id.trim().length === 0) {
