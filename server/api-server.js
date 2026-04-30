@@ -3893,7 +3893,7 @@ app.post('/api/v1/claims/rewards', postCacheMiddleware(120), async (req, res) =>
 
 // Shared function for claims summary queries — queries claim_settlements (settled only)
 async function getClaimsSummary(params, client) {
-  const { start_date, end_date, owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, status = 'staked' } = params;
+  const { start_date, end_date, days, owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, status = 'staked' } = params;
 
   const conditions = [`cs.settlement_type = 'settled'`];
   const values = [];
@@ -3916,8 +3916,11 @@ async function getClaimsSummary(params, client) {
     values.push(end_date);
     idx++;
   }
-  if (!start_date && !end_date) {
-    conditions.push(`cs.created_timestamp >= NOW() - INTERVAL '24 hours'`);
+  if (!start_date && !end_date && days) {
+    const daysNum = Math.max(1, parseInt(days, 10) || 7);
+    conditions.push(`cs.created_timestamp >= NOW() - INTERVAL '${daysNum} days'`);
+  } else if (!start_date && !end_date && !days) {
+    conditions.push(`cs.created_timestamp >= NOW() - INTERVAL '7 days'`);
   }
 
   // Handle owner_address filter
@@ -4015,19 +4018,20 @@ async function getClaimsSummary(params, client) {
   return { data: result.rows[0] };
 }
 
-app.get('/api/v1/claims/summary', async (req, res) => {
+app.get('/api/v1/claims/summary', cacheMiddleware(300), async (req, res) => {
   try {
-    const { start_date, end_date, owner_address, supplier_address, application_address, service_id, chain, status = 'staked' } = req.query;
+    const { start_date, end_date, days, owner_address, supplier_address, application_address, service_id, chain, status = 'staked' } = req.query;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
-    
+
     // Validate status parameter
     const validStatuses = ['staked', 'unstaked', 'unstake_requested', 'all'];
     const supplierStatus = validStatuses.includes(status) ? status : 'staked';
-    
+
     const result = await getClaimsSummary({
       start_date,
       end_date,
+      days,
       owner_address,
       supplier_address,
       application_address,
@@ -4043,19 +4047,20 @@ app.get('/api/v1/claims/summary', async (req, res) => {
   }
 });
 
-app.post('/api/v1/claims/summary', async (req, res) => {
+app.post('/api/v1/claims/summary', postCacheMiddleware(120), async (req, res) => {
   try {
-    const { start_date, end_date, owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, status = 'staked' } = req.body;
+    const { start_date, end_date, days, owner_address, supplier_address, supplier_addresses, application_address, service_id, chain, status = 'staked' } = req.body;
     await transactionService.connectDB();
     const client = transactionService.pgClient;
-    
+
     // Validate status parameter
     const validStatuses = ['staked', 'unstaked', 'unstake_requested', 'all'];
     const supplierStatus = validStatuses.includes(status) ? status : 'staked';
-    
+
     const result = await getClaimsSummary({
       start_date,
       end_date,
+      days,
       owner_address,
       supplier_address,
       supplier_addresses,
@@ -4862,13 +4867,15 @@ app.get('/api/v1/services/:service_id', cacheMiddleware(300), async (req, res, n
  */
 app.get('/api/v1/services/top-by-compute-units', async (req, res) => {
   try {
-    const { days = '30', chain, supplier_address, owner_address, page, limit } = req.query;
-    
+    const { days = '30', start_date, end_date, chain, supplier_address, owner_address, page, limit } = req.query;
+
     await transactionService.connectDB();
     const client = transactionService.pgClient;
-    
+
     const result = await performanceService.getTopServicesByComputeUnits({
       days,
+      start_date,
+      end_date,
       chain,
       supplier_address,
       owner_address,
@@ -4893,13 +4900,15 @@ app.get('/api/v1/services/top-by-compute-units', async (req, res) => {
  */
 app.post('/api/v1/services/top-by-compute-units', async (req, res) => {
   try {
-    const { days = '30', chain, supplier_address, owner_address, page, limit } = req.body;
-    
+    const { days = '30', start_date, end_date, chain, supplier_address, owner_address, page, limit } = req.body;
+
     await transactionService.connectDB();
     const client = transactionService.pgClient;
-    
+
     const result = await performanceService.getTopServicesByComputeUnits({
       days,
+      start_date,
+      end_date,
       chain,
       supplier_address,
       owner_address,
@@ -4948,14 +4957,16 @@ app.post('/api/v1/services/top-by-compute-units', async (req, res) => {
  */
 app.get('/api/v1/services/top-by-performance', async (req, res) => {
   try {
-    const { chain, days = '30', supplier_address, owner_address, page, limit } = req.query;
-    
+    const { chain, days = '30', start_date, end_date, supplier_address, owner_address, page, limit } = req.query;
+
     await transactionService.connectDB();
     const client = transactionService.pgClient;
-    
+
     const result = await performanceService.getTopServicesByPerformance({
       chain,
       days,
+      start_date,
+      end_date,
       supplier_address,
       owner_address,
       page,
@@ -4979,14 +4990,16 @@ app.get('/api/v1/services/top-by-performance', async (req, res) => {
  */
 app.post('/api/v1/services/top-by-performance', async (req, res) => {
   try {
-    const { chain, days = '30', supplier_address, owner_address, page, limit } = req.body;
-    
+    const { chain, days = '30', start_date, end_date, supplier_address, owner_address, page, limit } = req.body;
+
     await transactionService.connectDB();
     const client = transactionService.pgClient;
-    
+
     const result = await performanceService.getTopServicesByPerformance({
       chain,
       days,
+      start_date,
+      end_date,
       supplier_address,
       owner_address,
       page,

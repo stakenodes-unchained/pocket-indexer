@@ -822,23 +822,39 @@ async function getSupplierOwnerPerformance(params, client) {
  * @returns {Promise<Object>} Top services data with metadata
  */
 async function getTopServicesByComputeUnits(params, client) {
-  const { days = '30', chain, supplier_address, owner_address, page = 1, limit = 10 } = params;
-
-  const daysValue = Math.max(1, Math.min(parseInt(days, 10) || 30, 365));
+  const { days = '30', start_date, end_date, chain, supplier_address, owner_address, page = 1, limit = 10 } = params;
 
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const limitNum = Math.min(Math.max(1, parseInt(limit, 10) || 10), 1000);
   const offset = (pageNum - 1) * limitNum;
 
-  // settled-only filter + time window; chain goes first for index usage
-  const conditions = [`cs.settlement_type = 'settled'`, `cs.created_timestamp >= NOW() - INTERVAL '${daysValue} days'`];
+  // settled-only base condition; time window added below
+  const conditions = [`cs.settlement_type = 'settled'`];
   const values = [];
   let idx = 1;
+
+  // daysValue always defined so the meta return can reference it safely
+  const daysValue = Math.max(1, Math.min(parseInt(days, 10) || 30, 365));
 
   if (chain) {
     conditions.unshift(`cs.chain = $1::text`);
     values.unshift(chain);
     idx = 2;
+  }
+
+  // Explicit date range takes priority over rolling days window
+  if (start_date) {
+    conditions.push(`cs.created_timestamp >= $${idx}::timestamp`);
+    values.push(start_date);
+    idx++;
+  }
+  if (end_date) {
+    conditions.push(`cs.created_timestamp <= $${idx}::timestamp`);
+    values.push(end_date);
+    idx++;
+  }
+  if (!start_date && !end_date) {
+    conditions.push(`cs.created_timestamp >= NOW() - INTERVAL '${daysValue} days'`);
   }
 
   if (supplier_address) {
@@ -954,7 +970,7 @@ async function getTopServicesByComputeUnits(params, client) {
       page: pageNum,
       limit: limitNum,
       totalPages: Math.ceil(total / limitNum),
-      days: daysValue,
+      days: start_date || end_date ? null : daysValue,
       chain: chain || 'all',
       period_start: servicesResult.rows[0]?.period_start || null,
       period_end: servicesResult.rows[0]?.period_end || null
@@ -975,23 +991,39 @@ async function getTopServicesByComputeUnits(params, client) {
  * @returns {Promise<Object>} Top services with percentage distribution
  */
 async function getTopServicesByPerformance(params, client) {
-  const { chain, days = '30', supplier_address, owner_address, page = 1, limit = 10 } = params;
-
-  const daysValue = Math.max(1, Math.min(parseInt(days, 10) || 30, 365));
+  const { chain, days = '30', start_date, end_date, supplier_address, owner_address, page = 1, limit = 10 } = params;
 
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const limitNum = Math.min(Math.max(1, parseInt(limit, 10) || 10), 1000);
   const offset = (pageNum - 1) * limitNum;
 
-  // settled-only filter + time window; chain goes first for index usage
-  const conditions = [`cs.settlement_type = 'settled'`, `cs.created_timestamp >= NOW() - INTERVAL '${daysValue} days'`];
+  // settled-only base condition; time window added below
+  const conditions = [`cs.settlement_type = 'settled'`];
   const values = [];
   let idx = 1;
+
+  // daysValue always defined so the meta return can reference it safely
+  const daysValue = Math.max(1, Math.min(parseInt(days, 10) || 30, 365));
 
   if (chain) {
     conditions.unshift(`cs.chain = $1::text`);
     values.unshift(chain);
     idx = 2;
+  }
+
+  // Explicit date range takes priority over rolling days window
+  if (start_date) {
+    conditions.push(`cs.created_timestamp >= $${idx}::timestamp`);
+    values.push(start_date);
+    idx++;
+  }
+  if (end_date) {
+    conditions.push(`cs.created_timestamp <= $${idx}::timestamp`);
+    values.push(end_date);
+    idx++;
+  }
+  if (!start_date && !end_date) {
+    conditions.push(`cs.created_timestamp >= NOW() - INTERVAL '${daysValue} days'`);
   }
 
   if (supplier_address) {
@@ -1143,7 +1175,7 @@ async function getTopServicesByPerformance(params, client) {
       page: pageNum,
       limit: limitNum,
       totalPages: Math.ceil(total / limitNum),
-      days: daysValue,
+      days: start_date || end_date ? null : daysValue,
       chain: chain || 'all',
       period_start: services[0]?.period_start || null,
       period_end: services[0]?.period_end || null
